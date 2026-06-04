@@ -1,0 +1,127 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
+  "name": "firestarter",
+  "displayName": "Firestarter Commerce",
+  "version": "1.0.0",
+  "description": "Execute commerce transactions from natural language. Find products matching a request, verify suppliers, get pricing, and optionally handle payment and delivery, with an approval step before money moves.",
+  "homepage": "https://api.firestarter.network",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["tsx", "firestarter-mcp"],
+  "env": {
+    "FIRESTARTER_API_KEY": {
+      "description": "API key for the Firestarter Commerce Execution API. Required — the server exits on startup if unset.",
+      "required": true
+    },
+    "FIRESTARTER_API_URL": {
+      "description": "Base URL for the Firestarter API. Optional — defaults to https://api.firestarter.network.",
+      "required": false,
+      "default": "https://api.firestarter.network"
+    }
+  },
+  "tools": [
+    {
+      "name": "firestarter_execute",
+      "description": "Execute a commerce transaction. Find products matching a natural language request, verify suppliers, get pricing, and optionally handle payment and delivery. Returns product options for approval.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "type": "string",
+            "description": "Natural language description of what to buy (e.g. 'specialty coffee beans under $30')"
+          },
+          "budget_max": {
+            "type": "number",
+            "description": "Maximum budget in USD"
+          },
+          "delivery_address": {
+            "type": "string",
+            "description": "Delivery address as a string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["cost", "speed", "quality"],
+            "description": "Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated)"
+          },
+          "auto_pay": {
+            "type": "boolean",
+            "description": "If true, automatically pay for the best option within budget. If false (default), present options for approval."
+          }
+        },
+        "required": ["request"]
+      }
+    },
+    {
+      "name": "firestarter_status",
+      "description": "Check the status of a Firestarter execution or list recent executions. Use this to check on orders, see what options were found, or get tracking updates.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string",
+            "description": "Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."
+          },
+          "status_filter": {
+            "type": "string",
+            "description": "Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_approve",
+      "description": "Approve an execution that is awaiting approval. This selects the best option and proceeds with payment.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string",
+            "description": "The execution ID to approve (e.g. 'exec_abc123')"
+          },
+          "selected_option": {
+            "type": "number",
+            "description": "Index of the option to select (0-based). Defaults to 0 (best option)."
+          }
+        },
+        "required": ["execution_id"]
+      }
+    },
+    {
+      "name": "firestarter_cancel",
+      "description": "Cancel an active execution. If payment was authorized, the hold will be released.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string",
+            "description": "The execution ID to cancel"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Reason for cancellation"
+          }
+        },
+        "required": ["execution_id"]
+      }
+    },
+    {
+      "name": "firestarter_message",
+      "description": "Send a follow-up message to an active execution. Use this to refine the search, change requirements, or ask questions about the options.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string",
+            "description": "The execution ID to message"
+          },
+          "message": {
+            "type": "string",
+            "description": "Follow-up message (e.g. 'I prefer organic options' or 'Can you find something cheaper?')"
+          }
+        },
+        "required": ["execution_id", "message"]
+      }
+    }
+  ]
+}
