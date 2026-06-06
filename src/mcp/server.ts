@@ -616,7 +616,7 @@ server.tool(
     pricing_rules: z.array(z.object({
       name: z.string().describe("Rule name (e.g. 'demand_surge')"),
       type: z.enum(["demand", "inventory", "competitive", "schedule"]).describe("Rule type"),
-      config: z.record(z.any()).describe("Rule config (e.g. { demand_threshold: 60, max_surge: 1.4 })"),
+      config: z.record(z.string(), z.any()).describe("Rule config (e.g. { demand_threshold: 60, max_surge: 1.4 })"),
     })).optional().describe("Dynamic pricing rules"),
   },
   async ({ listing_id, base_price, floor_price, ceiling_price, dynamic_pricing, pricing_rules }) => {
