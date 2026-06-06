@@ -615,7 +615,7 @@ server.tool(
     dynamic_pricing: z.boolean().optional().describe("Enable/disable dynamic pricing"),
     pricing_rules: z.array(z.object({
       name: z.string().describe("Rule name (e.g. 'demand_surge')"),
-      type: z.enum(["demand", "inventory", "competitive", "schedule"]).describe("Rule type"),
+      type: z.enum(["demand", "inventory", "competitive", "schedule", "geographic"]).describe("Rule type"),
       config: z.record(z.string(), z.any()).describe("Rule config (e.g. { demand_threshold: 60, max_surge: 1.4 })"),
     })).optional().describe("Dynamic pricing rules"),
   },

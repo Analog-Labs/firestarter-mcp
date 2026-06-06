@@ -262,7 +262,7 @@
               "type": "object",
               "properties": {
                 "name": { "type": "string", "description": "Rule name (e.g. 'demand_surge')" },
-                "type": { "type": "string", "enum": ["demand", "inventory", "competitive", "schedule"], "description": "Rule type" },
+                "type": { "type": "string", "enum": ["demand", "inventory", "competitive", "schedule", "geographic"], "description": "Rule type" },
                 "config": { "type": "object", "description": "Rule config (e.g. { demand_threshold: 60, max_surge: 1.4 })" }
               },
               "required": ["name", "type", "config"]
