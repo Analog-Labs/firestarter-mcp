@@ -173,6 +173,105 @@
         },
         "required": ["monitor_id"]
       }
+    },
+    {
+      "name": "firestarter_list",
+      "description": "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. The seller must already be registered — if you get a NO_SELLER_PROFILE error, register first via POST /v1/sellers.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_name": {
+            "type": "string",
+            "description": "Product name"
+          },
+          "base_price": {
+            "type": "number",
+            "description": "Base price in USD"
+          },
+          "category": {
+            "type": "string",
+            "description": "Product category (e.g. 'electronics/audio/earbuds')"
+          },
+          "floor_price": {
+            "type": "number",
+            "description": "Never sell below this price"
+          },
+          "ceiling_price": {
+            "type": "number",
+            "description": "Never surge above this price"
+          },
+          "dynamic_pricing": {
+            "type": "boolean",
+            "description": "Enable demand-based pricing"
+          },
+          "inventory_qty": {
+            "type": "number",
+            "description": "Available quantity"
+          }
+        },
+        "required": ["product_name", "base_price"]
+      }
+    },
+    {
+      "name": "firestarter_demand",
+      "description": "Check demand intelligence for a specific listing or category. See what buyers are searching for, demand trends, and pricing signals.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listing_id": {
+            "type": "string",
+            "description": "Specific listing ID to check demand for"
+          },
+          "category": {
+            "type": "string",
+            "description": "Check demand for a category (e.g. 'electronics/audio')"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_reprice",
+      "description": "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listing_id": {
+            "type": "string",
+            "description": "The listing ID to reprice"
+          },
+          "base_price": {
+            "type": "number",
+            "description": "New base price in USD"
+          },
+          "floor_price": {
+            "type": "number",
+            "description": "New floor price"
+          },
+          "ceiling_price": {
+            "type": "number",
+            "description": "New ceiling price"
+          },
+          "dynamic_pricing": {
+            "type": "boolean",
+            "description": "Enable/disable dynamic pricing"
+          },
+          "pricing_rules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "description": "Rule name (e.g. 'demand_surge')" },
+                "type": { "type": "string", "enum": ["demand", "inventory", "competitive", "schedule"], "description": "Rule type" },
+                "config": { "type": "object", "description": "Rule config (e.g. { demand_threshold: 60, max_surge: 1.4 })" }
+              },
+              "required": ["name", "type", "config"]
+            },
+            "description": "Dynamic pricing rules"
+          }
+        },
+        "required": ["listing_id"]
+      }
     }
   ]
 }

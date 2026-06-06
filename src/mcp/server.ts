@@ -501,6 +501,161 @@ server.tool(
   }
 );
 
+// ─── Seller Tools ──────────────────────────────────────────────────────────
+
+// Tool: firestarter_list
+server.tool(
+  "firestarter_list",
+  "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. The seller must already be registered (POST /v1/sellers) — if you get a NO_SELLER_PROFILE error, tell the user they need to register first.",
+  {
+    product_name: z.string().describe("Product name"),
+    base_price: z.number().describe("Base price in USD"),
+    category: z.string().optional().describe("Product category (e.g. 'electronics/audio/earbuds')"),
+    floor_price: z.number().optional().describe("Never sell below this price"),
+    ceiling_price: z.number().optional().describe("Never surge above this price"),
+    dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
+    inventory_qty: z.number().optional().describe("Available quantity"),
+  },
+  async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty }) => {
+    try {
+      const body: any = { product_name, base_price };
+      if (category) body.category = category;
+      if (floor_price !== undefined) body.floor_price = floor_price;
+      if (ceiling_price !== undefined) body.ceiling_price = ceiling_price;
+      if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
+      if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
+
+      const listing = await apiRequest("POST", "/v1/listings", body);
+
+      let text = `**Listing created: ${listing.product_name}**\n` +
+        `ID: ${listing.id}\n` +
+        `Base price: $${listing.base_price}\n`;
+      if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
+      if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
+      if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
+      if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
+
+      return {
+        content: [{ type: "text" as const, text }],
+      };
+    } catch (err: any) {
+      const hint = err.message.includes("NO_SELLER_PROFILE")
+        ? "\n\nYou need to register as a seller first (POST /v1/sellers) before creating listings."
+        : "";
+      return {
+        content: [{ type: "text" as const, text: `Error creating listing: ${err.message}${hint}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: firestarter_demand
+server.tool(
+  "firestarter_demand",
+  "Check demand intelligence for a specific listing or category. See what buyers are searching for, demand trends, and pricing signals.",
+  {
+    listing_id: z.string().optional().describe("Specific listing ID to check demand for"),
+    category: z.string().optional().describe("Check demand for a category (e.g. 'electronics/audio')"),
+  },
+  async ({ listing_id, category }) => {
+    try {
+      let data: any;
+
+      if (listing_id) {
+        data = await apiRequest("GET", `/v1/listings/${listing_id}/demand`);
+      } else {
+        data = await apiRequest("GET", "/v1/demand/feed?hours=24");
+      }
+
+      const items = data.signals || data.demand || [data];
+      if (!items || (Array.isArray(items) && items.length === 0)) {
+        return {
+          content: [{ type: "text" as const, text: "No demand signals found for the given criteria." }],
+        };
+      }
+
+      let text = listing_id
+        ? `**Demand for listing ${listing_id}**\n`
+        : `**Demand feed** (last 24 hours)\n`;
+
+      if (Array.isArray(items)) {
+        for (const item of items.slice(0, 15)) {
+          text += `- ${item.query || item.category || item.product || "Unknown"}`;
+          if (item.count) text += ` (${item.count} searches)`;
+          if (item.trend) text += ` | trend: ${item.trend}`;
+          if (item.avg_budget) text += ` | avg budget: $${item.avg_budget}`;
+          text += "\n";
+        }
+      } else {
+        text += JSON.stringify(items, null, 2);
+      }
+
+      return {
+        content: [{ type: "text" as const, text }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: "text" as const, text: `Error checking demand: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: firestarter_reprice
+server.tool(
+  "firestarter_reprice",
+  "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules.",
+  {
+    listing_id: z.string().describe("The listing ID to reprice"),
+    base_price: z.number().optional().describe("New base price in USD"),
+    floor_price: z.number().optional().describe("New floor price"),
+    ceiling_price: z.number().optional().describe("New ceiling price"),
+    dynamic_pricing: z.boolean().optional().describe("Enable/disable dynamic pricing"),
+    pricing_rules: z.array(z.object({
+      name: z.string().describe("Rule name (e.g. 'demand_surge')"),
+      type: z.enum(["demand", "inventory", "competitive", "schedule"]).describe("Rule type"),
+      config: z.record(z.any()).describe("Rule config (e.g. { demand_threshold: 60, max_surge: 1.4 })"),
+    })).optional().describe("Dynamic pricing rules"),
+  },
+  async ({ listing_id, base_price, floor_price, ceiling_price, dynamic_pricing, pricing_rules }) => {
+    try {
+      const body: any = {};
+      if (base_price !== undefined) body.base_price = base_price;
+      if (floor_price !== undefined) body.floor_price = floor_price;
+      if (ceiling_price !== undefined) body.ceiling_price = ceiling_price;
+      if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
+      if (pricing_rules !== undefined) body.pricing_rules = pricing_rules;
+
+      if (Object.keys(body).length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No pricing changes provided. Specify at least one field to update." }],
+          isError: true,
+        };
+      }
+
+      const listing = await apiRequest("PATCH", `/v1/listings/${listing_id}`, body);
+
+      let text = `**Listing ${listing_id} updated**\n`;
+      if (listing.base_price !== undefined) text += `Base price: $${listing.base_price}\n`;
+      if (listing.floor_price !== undefined) text += `Floor: $${listing.floor_price}\n`;
+      if (listing.ceiling_price !== undefined) text += `Ceiling: $${listing.ceiling_price}\n`;
+      if (listing.dynamic_pricing !== undefined) text += `Dynamic pricing: ${listing.dynamic_pricing ? "enabled" : "disabled"}\n`;
+      if (listing.pricing_rules?.length) text += `Pricing rules: ${listing.pricing_rules.length} rule(s)\n`;
+
+      return {
+        content: [{ type: "text" as const, text }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: "text" as const, text: `Error repricing: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ─── Start ──────────────────────────────────────────────────────────────────
 
 async function main() {
