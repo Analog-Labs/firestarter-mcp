@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "1.0.0",
-  "description": "Execute commerce transactions from natural language. Find products matching a request, verify suppliers, get pricing, and optionally handle payment and delivery, with an approval step before money moves.",
+  "description": "Execute commerce transactions and monitor prices from natural language. Find products, verify suppliers, handle payments, and set up persistent price/stock watches with intelligent change detection.",
   "homepage": "https://api.firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -121,6 +121,57 @@
           }
         },
         "required": ["execution_id", "message"]
+      }
+    },
+    {
+      "name": "firestarter_watch",
+      "description": "Create a price/stock monitor that watches products on a schedule. Get notified via webhook when prices drop, items restock, or new listings appear.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Name for this monitor" },
+          "query": { "type": "string", "description": "What to watch — natural language" },
+          "schedule": { "type": "string", "description": "How often to check (e.g. 'daily', 'every 6 hours')" },
+          "price_drop_pct": { "type": "number", "description": "Minimum price drop % to notify" },
+          "goal": { "type": "string", "description": "Goal for AI-powered meaningful change detection" },
+          "webhook_url": { "type": "string", "description": "Webhook URL for notifications" }
+        },
+        "required": ["name", "query"]
+      }
+    },
+    {
+      "name": "firestarter_watches",
+      "description": "List active monitors and their recent check results.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "monitor_id": { "type": "string", "description": "Get details for a specific monitor" },
+          "include_checks": { "type": "boolean", "description": "Include recent check history" }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_unwatch",
+      "description": "Pause, resume, or delete a monitor.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "monitor_id": { "type": "string", "description": "The monitor ID" },
+          "action": { "type": "string", "enum": ["pause", "resume", "delete"], "description": "Action to take" }
+        },
+        "required": ["monitor_id", "action"]
+      }
+    },
+    {
+      "name": "firestarter_check",
+      "description": "Trigger an immediate check on a monitor instead of waiting for the next scheduled run.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "monitor_id": { "type": "string", "description": "The monitor ID to check now" }
+        },
+        "required": ["monitor_id"]
       }
     }
   ]

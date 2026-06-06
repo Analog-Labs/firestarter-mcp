@@ -286,6 +286,221 @@ server.tool(
   }
 );
 
+// ─── Monitor Tools ─────────────────────────────────────────────────────────
+
+// Tool: firestarter_watch
+server.tool(
+  "firestarter_watch",
+  "Create a price/stock monitor that watches products on a schedule. Get notified via webhook when prices drop, items restock, or new listings appear.",
+  {
+    name: z.string().describe("Name for this monitor (e.g. 'AirPods price watch')"),
+    query: z.string().describe("What to watch — natural language (e.g. 'AirPods Pro 2 under $200')"),
+    schedule: z.string().optional().describe("How often to check: 'hourly', 'daily', 'daily at 9am', 'every 6 hours', or a cron expression. Default: 'daily'"),
+    price_drop_pct: z.number().optional().describe("Minimum price drop percentage to notify (e.g. 10 = notify on 10%+ drops)"),
+    goal: z.string().optional().describe("Natural language goal for AI-powered meaningful change detection (e.g. 'price drops below $180')"),
+    webhook_url: z.string().optional().describe("Webhook URL to receive change notifications"),
+  },
+  async ({ name, query, schedule, price_drop_pct, goal, webhook_url }) => {
+    try {
+      const body: any = {
+        name,
+        type: "product",
+        targets: [{ query }],
+        schedule: schedule || "daily",
+        conditions: {},
+      };
+
+      if (price_drop_pct) body.conditions.price_drop_pct = price_drop_pct;
+      if (goal) body.goal = goal;
+      if (webhook_url) body.notifications = { webhook: { url: webhook_url } };
+
+      const monitor = await apiRequest("POST", "/v1/monitors", body);
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `**Monitor created: ${monitor.name}**\n` +
+            `ID: ${monitor.id}\n` +
+            `Schedule: ${monitor.schedule} (${monitor.schedule_cron})\n` +
+            `Next check: ${monitor.next_check_at}\n` +
+            (goal ? `Goal: ${goal}\n` : "") +
+            `\nUse \`firestarter_watches\` to see all active monitors.`,
+        }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: "text" as const, text: `Error creating monitor: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: firestarter_watches
+server.tool(
+  "firestarter_watches",
+  "List active monitors and their recent check results. Shows what you're watching, last check status, and any recent price changes or alerts.",
+  {
+    monitor_id: z.string().optional().describe("Get details for a specific monitor ID. Omit to list all monitors."),
+    include_checks: z.boolean().optional().describe("Include recent check history (default: true for single monitor, false for list)"),
+  },
+  async ({ monitor_id, include_checks }) => {
+    try {
+      if (monitor_id) {
+        const monitor = await apiRequest("GET", `/v1/monitors/${monitor_id}`);
+        const checks = include_checks !== false
+          ? await apiRequest("GET", `/v1/monitors/${monitor_id}/checks?limit=5`)
+          : null;
+
+        let text = `**${monitor.name}** [${monitor.status}]\n` +
+          `Type: ${monitor.type} | Schedule: ${monitor.schedule}\n` +
+          `Targets: ${monitor.targets.map((t: any) => t.query).join(", ")}\n`;
+
+        if (monitor.goal) text += `Goal: ${monitor.goal}\n`;
+        if (monitor.last_check_at) text += `Last check: ${monitor.last_check_at}\n`;
+        if (monitor.next_check_at) text += `Next check: ${monitor.next_check_at}\n`;
+
+        if (checks?.checks?.length > 0) {
+          text += "\n**Recent checks:**\n";
+          for (const chk of checks.checks) {
+            const s = chk.summary || {};
+            text += `- ${chk.completed_at || chk.created_at}: ${chk.status}`;
+            if (s.price_drops) text += ` | ${s.price_drops} price drop(s)`;
+            if (s.new_listings) text += ` | ${s.new_listings} new listing(s)`;
+            text += ` | ${s.products_checked || 0} products checked\n`;
+
+            if (chk.changes?.length > 0) {
+              for (const c of chk.changes.slice(0, 3)) {
+                text += `  ${c.status}: ${c.product}`;
+                if (c.previous_price && c.current_price) text += ` $${c.previous_price} → $${c.current_price}`;
+                if (c.drop_pct) text += ` (-${c.drop_pct}%)`;
+                if (c.judgment?.meaningful) text += ` ✓ ${c.judgment.reason}`;
+                text += "\n";
+              }
+            }
+          }
+        }
+
+        return { content: [{ type: "text" as const, text }] };
+      }
+
+      // List all monitors
+      const data = await apiRequest("GET", "/v1/monitors");
+      const monitors = data.monitors || [];
+
+      if (monitors.length === 0) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "No monitors set up yet. Use `firestarter_watch` to create one.",
+          }],
+        };
+      }
+
+      const lines = [`**Active Monitors** (${monitors.length})\n`];
+      for (const m of monitors) {
+        lines.push(`- **${m.name}** [${m.status}] — ${m.schedule}`);
+        lines.push(`  ID: ${m.id} | Targets: ${m.targets.map((t: any) => t.query).join(", ")}`);
+        if (m.last_check_at) lines.push(`  Last check: ${m.last_check_at}`);
+      }
+
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (err: any) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: firestarter_unwatch
+server.tool(
+  "firestarter_unwatch",
+  "Pause or delete a monitor. Paused monitors can be resumed later; deleted monitors are permanent.",
+  {
+    monitor_id: z.string().describe("The monitor ID to pause or delete"),
+    action: z.enum(["pause", "resume", "delete"]).describe("Action to take: pause (stop checks, keep history), resume (restart checks), delete (permanent)"),
+  },
+  async ({ monitor_id, action }) => {
+    try {
+      if (action === "delete") {
+        await apiRequest("DELETE", `/v1/monitors/${monitor_id}`);
+        return {
+          content: [{ type: "text" as const, text: `Monitor ${monitor_id} deleted.` }],
+        };
+      }
+
+      const result = await apiRequest("POST", `/v1/monitors/${monitor_id}/${action}`);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Monitor ${monitor_id} ${action}d. Status: ${result.status}`,
+        }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool: firestarter_check
+server.tool(
+  "firestarter_check",
+  "Trigger an immediate check on a monitor. Runs the product search and diff right now instead of waiting for the next scheduled check.",
+  {
+    monitor_id: z.string().describe("The monitor ID to check now"),
+  },
+  async ({ monitor_id }) => {
+    try {
+      await apiRequest("POST", `/v1/monitors/${monitor_id}/run`);
+
+      // Wait a bit for the check to complete
+      await new Promise(r => setTimeout(r, 5000));
+
+      const checks = await apiRequest("GET", `/v1/monitors/${monitor_id}/checks?limit=1`);
+      const latest = checks.checks?.[0];
+
+      if (!latest || latest.status === "queued" || latest.status === "running") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Check queued for monitor ${monitor_id}. It may take a minute to complete. Use \`firestarter_watches\` to see results.`,
+          }],
+        };
+      }
+
+      const s = latest.summary || {};
+      let text = `**Check completed** for monitor ${monitor_id}\n`;
+      text += `Products checked: ${s.products_checked || 0}\n`;
+      text += `Price drops: ${s.price_drops || 0} | New listings: ${s.new_listings || 0}\n`;
+
+      if (latest.changes?.length > 0) {
+        text += "\n**Changes detected:**\n";
+        for (const c of latest.changes) {
+          text += `- ${c.status}: ${c.product}`;
+          if (c.previous_price && c.current_price) text += ` $${c.previous_price} → $${c.current_price}`;
+          if (c.drop_pct) text += ` (-${c.drop_pct}%)`;
+          if (c.judgment) text += c.judgment.meaningful ? ` ✓ ${c.judgment.reason}` : ` ○ ${c.judgment.reason}`;
+          text += "\n";
+        }
+      } else {
+        text += "\nNo changes detected since last check.";
+      }
+
+      return { content: [{ type: "text" as const, text }] };
+    } catch (err: any) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err.message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ─── Start ──────────────────────────────────────────────────────────────────
 
 async function main() {
