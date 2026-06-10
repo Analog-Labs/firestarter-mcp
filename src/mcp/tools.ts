@@ -13,6 +13,7 @@ function makeApiRequest(apiKey: string, apiBase: string) {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
+      "X-Firestarter-Source": "mcp",
     };
 
     const res = await fetch(url, {
