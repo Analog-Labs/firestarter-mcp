@@ -51,11 +51,17 @@ type ContentBlock =
 async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(`[firestarter-mcp] image fetch failed: ${res.status} for ${url.slice(0, 60)}`);
+      return null;
+    }
     const ct = res.headers.get("content-type") || "image/jpeg";
     const buf = await res.arrayBuffer();
-    return { data: Buffer.from(buf).toString("base64"), mimeType: ct.split(";")[0] };
-  } catch {
+    const mimeType = ct.split(";")[0];
+    console.error(`[firestarter-mcp] image fetched: ${buf.byteLength} bytes, ${mimeType}`);
+    return { data: Buffer.from(buf).toString("base64"), mimeType };
+  } catch (err: any) {
+    console.error(`[firestarter-mcp] image fetch error: ${err.message}`);
     return null;
   }
 }
@@ -115,6 +121,10 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
   if (lines.length > 0) {
     blocks.push({ type: "text", text: lines.join("\n") });
   }
+
+  const imageCount = blocks.filter(b => b.type === "image").length;
+  const textCount = blocks.filter(b => b.type === "text").length;
+  console.error(`[firestarter-mcp] formatExecution returning ${blocks.length} blocks (${textCount} text, ${imageCount} images)`);
 
   return blocks;
 }
