@@ -60,7 +60,7 @@ async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType
   }
 }
 
-async function formatExecutionWithImages(exec: any): Promise<ContentBlock[]> {
+async function formatExecution(exec: any): Promise<ContentBlock[]> {
   const blocks: ContentBlock[] = [];
   const lines: string[] = [];
 
@@ -74,30 +74,30 @@ async function formatExecutionWithImages(exec: any): Promise<ContentBlock[]> {
   if (exec.options && exec.options.length > 0) {
     lines.push("");
     lines.push("**Options found:**");
-    // Flush header text
     blocks.push({ type: "text", text: lines.join("\n") });
     lines.length = 0;
 
     // Fetch all images in parallel
-    const imagePromises = exec.options.map((opt: any) => {
-      const imageUrl = opt.metadata?.image || opt.image;
-      return imageUrl ? fetchImageAsBase64(imageUrl) : Promise.resolve(null);
-    });
-    const images = await Promise.all(imagePromises);
+    const imageUrls = exec.options.map((opt: any) => opt.metadata?.image || opt.image || null);
+    const images = await Promise.all(imageUrls.map((url: string | null) => url ? fetchImageAsBase64(url) : Promise.resolve(null)));
 
     for (let i = 0; i < exec.options.length; i++) {
       const opt = exec.options[i];
+      const imageUrl = imageUrls[i];
       const optLines: string[] = [];
       optLines.push(`\n**${i + 1}. ${opt.product_title}** — $${opt.total} from ${opt.supplier || opt.store || "Unknown"}`);
       if (opt.product_url) optLines.push(`  URL: ${opt.product_url}`);
+      if (imageUrl) optLines.push(`  ![${opt.product_title}](${imageUrl})`);
       if (opt.agent_reasoning) optLines.push(`  ${opt.agent_reasoning}`);
       blocks.push({ type: "text", text: optLines.join("\n") });
 
-      // Add image block if fetched successfully
       if (images[i]) {
         blocks.push({ type: "image", data: images[i]!.data, mimeType: images[i]!.mimeType });
       }
     }
+  } else {
+    blocks.push({ type: "text", text: lines.join("\n") });
+    lines.length = 0;
   }
 
   if (exec.steps && exec.steps.length > 0) {
@@ -146,7 +146,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
         const created = await apiRequest("POST", "/v1/executions", body);
         const exec = await pollExecution(apiRequest, created.id);
-        const blocks = await formatExecutionWithImages(exec);
+        const blocks = await formatExecution(exec);
 
         if (exec.status === "awaiting_approval") {
           blocks.push({ type: "text", text: "\n\n**Action needed:** Use `firestarter_approve` to approve an option, or `firestarter_cancel` to cancel." });
@@ -170,8 +170,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       try {
         if (execution_id) {
           const exec = await apiRequest("GET", `/v1/executions/${execution_id}`);
-          const blocks = await formatExecutionWithImages(exec);
-          return { content: blocks };
+          return { content: await formatExecution(exec) };
         }
         let path = "/v1/executions";
         if (status_filter) path += `?status=${encodeURIComponent(status_filter)}`;
@@ -205,7 +204,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (selected_option !== undefined) body.selected_option = selected_option;
         await apiRequest("POST", `/v1/executions/${execution_id}/approve`, body);
         const exec = await pollExecution(apiRequest, execution_id, 30_000);
-        const blocks = await formatExecutionWithImages(exec);
+        const blocks = await formatExecution(exec);
         blocks.unshift({ type: "text", text: "Execution approved.\n" });
         return { content: blocks };
       } catch (err: any) {
@@ -244,8 +243,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       try {
         await apiRequest("POST", `/v1/executions/${execution_id}/message`, { message });
         const exec = await pollExecution(apiRequest, execution_id, 30_000);
-        const blocks = await formatExecutionWithImages(exec);
-        return { content: blocks };
+        return { content: await formatExecution(exec) };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };
       }
