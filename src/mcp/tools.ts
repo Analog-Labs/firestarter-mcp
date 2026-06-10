@@ -58,8 +58,10 @@ function formatExecution(exec: any): string {
     lines.push("");
     lines.push("**Options found:**");
     for (const opt of exec.options) {
-      lines.push(`- **${opt.product_title}** — $${opt.total} from ${opt.store}`);
+      lines.push(`- **${opt.product_title}** — $${opt.total} from ${opt.supplier || opt.store || "Unknown"}`);
       if (opt.product_url) lines.push(`  URL: ${opt.product_url}`);
+      const imageUrl = opt.metadata?.image || opt.image;
+      if (imageUrl) lines.push(`  Image: ${imageUrl}`);
       if (opt.agent_reasoning) lines.push(`  ${opt.agent_reasoning}`);
     }
   }
