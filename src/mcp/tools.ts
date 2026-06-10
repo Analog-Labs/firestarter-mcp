@@ -44,7 +44,24 @@ async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, exec
   return apiRequest("GET", `/v1/executions/${executionId}`);
 }
 
-function formatExecution(exec: any): string {
+type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
+async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const ct = res.headers.get("content-type") || "image/jpeg";
+    const buf = await res.arrayBuffer();
+    return { data: Buffer.from(buf).toString("base64"), mimeType: ct.split(";")[0] };
+  } catch {
+    return null;
+  }
+}
+
+async function formatExecutionWithImages(exec: any): Promise<ContentBlock[]> {
+  const blocks: ContentBlock[] = [];
   const lines: string[] = [];
 
   lines.push(`**Execution ${exec.id}** — Status: ${exec.status}`);
@@ -57,12 +74,29 @@ function formatExecution(exec: any): string {
   if (exec.options && exec.options.length > 0) {
     lines.push("");
     lines.push("**Options found:**");
-    for (const opt of exec.options) {
-      lines.push(`- **${opt.product_title}** — $${opt.total} from ${opt.supplier || opt.store || "Unknown"}`);
-      if (opt.product_url) lines.push(`  URL: ${opt.product_url}`);
+    // Flush header text
+    blocks.push({ type: "text", text: lines.join("\n") });
+    lines.length = 0;
+
+    // Fetch all images in parallel
+    const imagePromises = exec.options.map((opt: any) => {
       const imageUrl = opt.metadata?.image || opt.image;
-      if (imageUrl) lines.push(`  Image: ${imageUrl}`);
-      if (opt.agent_reasoning) lines.push(`  ${opt.agent_reasoning}`);
+      return imageUrl ? fetchImageAsBase64(imageUrl) : Promise.resolve(null);
+    });
+    const images = await Promise.all(imagePromises);
+
+    for (let i = 0; i < exec.options.length; i++) {
+      const opt = exec.options[i];
+      const optLines: string[] = [];
+      optLines.push(`\n**${i + 1}. ${opt.product_title}** — $${opt.total} from ${opt.supplier || opt.store || "Unknown"}`);
+      if (opt.product_url) optLines.push(`  URL: ${opt.product_url}`);
+      if (opt.agent_reasoning) optLines.push(`  ${opt.agent_reasoning}`);
+      blocks.push({ type: "text", text: optLines.join("\n") });
+
+      // Add image block if fetched successfully
+      if (images[i]) {
+        blocks.push({ type: "image", data: images[i]!.data, mimeType: images[i]!.mimeType });
+      }
     }
   }
 
@@ -78,7 +112,11 @@ function formatExecution(exec: any): string {
     }
   }
 
-  return lines.join("\n");
+  if (lines.length > 0) {
+    blocks.push({ type: "text", text: lines.join("\n") });
+  }
+
+  return blocks;
 }
 
 // ─── Register all tools ─────────────────────────────────────────────────────
@@ -108,14 +146,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
         const created = await apiRequest("POST", "/v1/executions", body);
         const exec = await pollExecution(apiRequest, created.id);
-        const output = formatExecution(exec);
+        const blocks = await formatExecutionWithImages(exec);
 
         if (exec.status === "awaiting_approval") {
-          return {
-            content: [{ type: "text" as const, text: output + "\n\n**Action needed:** Use `firestarter_approve` to approve an option, or `firestarter_cancel` to cancel." }],
-          };
+          blocks.push({ type: "text", text: "\n\n**Action needed:** Use `firestarter_approve` to approve an option, or `firestarter_cancel` to cancel." });
         }
-        return { content: [{ type: "text" as const, text: output }] };
+        return { content: blocks };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };
       }
@@ -134,7 +170,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       try {
         if (execution_id) {
           const exec = await apiRequest("GET", `/v1/executions/${execution_id}`);
-          return { content: [{ type: "text" as const, text: formatExecution(exec) }] };
+          const blocks = await formatExecutionWithImages(exec);
+          return { content: blocks };
         }
         let path = "/v1/executions";
         if (status_filter) path += `?status=${encodeURIComponent(status_filter)}`;
@@ -168,7 +205,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (selected_option !== undefined) body.selected_option = selected_option;
         await apiRequest("POST", `/v1/executions/${execution_id}/approve`, body);
         const exec = await pollExecution(apiRequest, execution_id, 30_000);
-        return { content: [{ type: "text" as const, text: `Execution approved.\n\n${formatExecution(exec)}` }] };
+        const blocks = await formatExecutionWithImages(exec);
+        blocks.unshift({ type: "text", text: "Execution approved.\n" });
+        return { content: blocks };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error approving: ${err.message}` }], isError: true };
       }
@@ -205,7 +244,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       try {
         await apiRequest("POST", `/v1/executions/${execution_id}/message`, { message });
         const exec = await pollExecution(apiRequest, execution_id, 30_000);
-        return { content: [{ type: "text" as const, text: formatExecution(exec) }] };
+        const blocks = await formatExecutionWithImages(exec);
+        return { content: blocks };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };
       }
