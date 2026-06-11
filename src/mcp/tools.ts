@@ -7,6 +7,21 @@ import { z } from "zod";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+const API_REQUEST_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_API_TIMEOUT_MS || 12_000);
+const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 1_000);
+const EMBED_IMAGES = process.env.FIRESTARTER_MCP_EMBED_IMAGES === "true";
+const MAX_EMBED_IMAGES = Number(process.env.FIRESTARTER_MCP_MAX_EMBED_IMAGES || 2);
+const IMAGE_FETCH_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMAGE_TIMEOUT_MS || 1_500);
+const MAX_IMAGE_BYTES = Number(process.env.FIRESTARTER_MCP_MAX_IMAGE_BYTES || 2_000_000);
+
+function toErrorMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes("timed out") || msg.includes("aborted")) {
+    return "Firestarter API timed out. Please retry in a few seconds.";
+  }
+  return msg;
+}
+
 function makeApiRequest(apiKey: string, apiBase: string) {
   return async function apiRequest(method: string, path: string, body?: unknown) {
     const url = `${apiBase}${path}`;
@@ -20,6 +35,7 @@ function makeApiRequest(apiKey: string, apiBase: string) {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
     });
 
     const data = await res.json();
@@ -32,14 +48,14 @@ function makeApiRequest(apiKey: string, apiBase: string) {
 
 async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, executionId: string, timeoutMs: number = 60_000): Promise<any> {
   const start = Date.now();
-  const pollInterval = 2_000;
 
   while (Date.now() - start < timeoutMs) {
     const exec = await apiRequest("GET", `/v1/executions/${executionId}`);
-    if (["awaiting_approval", "completed", "failed", "cancelled", "paid", "shipping", "delivered"].includes(exec.status)) {
+    const hasOptions = Array.isArray(exec.options) && exec.options.length > 0;
+    if (hasOptions || ["awaiting_approval", "quoted", "completed", "failed", "cancelled", "paid", "shipping", "delivered"].includes(exec.status)) {
       return exec;
     }
-    await new Promise((r) => setTimeout(r, pollInterval));
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 
   return apiRequest("GET", `/v1/executions/${executionId}`);
@@ -51,13 +67,22 @@ type ContentBlock =
 
 async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
     if (!res.ok) {
       console.error(`[firestarter-mcp] image fetch failed: ${res.status} for ${url.slice(0, 60)}`);
       return null;
     }
+    const len = Number(res.headers.get("content-length") || 0);
+    if (len > 0 && len > MAX_IMAGE_BYTES) {
+      console.error(`[firestarter-mcp] image too large (${len} bytes), skipping: ${url.slice(0, 60)}`);
+      return null;
+    }
     const ct = res.headers.get("content-type") || "image/jpeg";
     const buf = await res.arrayBuffer();
+    if (buf.byteLength > MAX_IMAGE_BYTES) {
+      console.error(`[firestarter-mcp] image buffer too large (${buf.byteLength} bytes), skipping`);
+      return null;
+    }
     const mimeType = ct.split(";")[0];
     console.error(`[firestarter-mcp] image fetched: ${buf.byteLength} bytes, ${mimeType}`);
     return { data: Buffer.from(buf).toString("base64"), mimeType };
@@ -86,7 +111,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
 
     // Fetch all images in parallel
     const imageUrls = exec.options.map((opt: any) => opt.metadata?.image || opt.image || null);
-    const images = await Promise.all(imageUrls.map((url: string | null) => url ? fetchImageAsBase64(url) : Promise.resolve(null)));
+    const imageSlots = EMBED_IMAGES ? Math.max(0, Math.min(MAX_EMBED_IMAGES, exec.options.length)) : 0;
+    const images = await Promise.all(
+      imageUrls.map((url: string | null, idx: number) => {
+        if (!url || idx >= imageSlots) return Promise.resolve(null);
+        return fetchImageAsBase64(url);
+      })
+    );
 
     for (let i = 0; i < exec.options.length; i++) {
       const opt = exec.options[i];
@@ -164,7 +195,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         return { content: blocks };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -196,7 +227,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -219,7 +250,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         blocks.unshift({ type: "text", text: "Execution approved.\n" });
         return { content: blocks };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error approving: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error approving: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -237,7 +268,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         await apiRequest("POST", `/v1/executions/${execution_id}/cancel`, { reason });
         return { content: [{ type: "text" as const, text: `Execution ${execution_id} cancelled.${reason ? ` Reason: ${reason}` : ""}` }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error cancelling: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error cancelling: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -256,7 +287,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const exec = await pollExecution(apiRequest, execution_id, 30_000);
         return { content: await formatExecution(exec) };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -287,7 +318,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }],
         };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error creating monitor: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error creating monitor: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -345,7 +376,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -367,7 +398,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const result = await apiRequest("POST", `/v1/monitors/${monitor_id}/${action}`);
         return { content: [{ type: "text" as const, text: `Monitor ${monitor_id} ${action}d. Status: ${result.status}` }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -382,9 +413,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     async ({ monitor_id }) => {
       try {
         await apiRequest("POST", `/v1/monitors/${monitor_id}/run`);
-        await new Promise(r => setTimeout(r, 5000));
-        const checks = await apiRequest("GET", `/v1/monitors/${monitor_id}/checks?limit=1`);
-        const latest = checks.checks?.[0];
+        const pollStart = Date.now();
+        let latest: any = null;
+        while (Date.now() - pollStart < 8_000) {
+          const checks = await apiRequest("GET", `/v1/monitors/${monitor_id}/checks?limit=1`);
+          latest = checks.checks?.[0];
+          if (latest && latest.status !== "queued" && latest.status !== "running") break;
+          await new Promise((r) => setTimeout(r, 800));
+        }
         if (!latest || latest.status === "queued" || latest.status === "running") {
           return { content: [{ type: "text" as const, text: `Check queued for monitor ${monitor_id}. It may take a minute to complete. Use \`firestarter_watches\` to see results.` }] };
         }
@@ -404,7 +440,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -438,8 +474,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
-        const hint = err.message.includes("NO_SELLER_PROFILE") ? "\n\nYou need to register as a seller first (POST /v1/sellers) before creating listings." : "";
-        return { content: [{ type: "text" as const, text: `Error creating listing: ${err.message}${hint}` }], isError: true };
+        const msg = toErrorMessage(err);
+        const hint = msg.includes("NO_SELLER_PROFILE") ? "\n\nYou need to register as a seller first (POST /v1/sellers) before creating listings." : "";
+        return { content: [{ type: "text" as const, text: `Error creating listing: ${msg}${hint}` }], isError: true };
       }
     }
   );
@@ -478,7 +515,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error checking demand: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error checking demand: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -512,7 +549,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.dynamic_pricing !== undefined) text += `Dynamic pricing: ${listing.dynamic_pricing ? "enabled" : "disabled"}\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error repricing: ${err.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error repricing: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
