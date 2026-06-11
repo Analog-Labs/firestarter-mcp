@@ -625,6 +625,43 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_update_listing
+  server.tool(
+    "firestarter_update_listing",
+    "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. For pricing changes, use firestarter_reprice instead.",
+    {
+      listing_id: z.string().describe("The listing ID to update"),
+      product_name: z.string().optional().describe("New product name/title"),
+      description: z.string().optional().describe("New product description"),
+      category: z.string().optional().describe("New category (e.g. 'sports/tennis')"),
+      inventory_qty: z.number().optional().describe("Updated inventory quantity"),
+      status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
+    },
+    async ({ listing_id, product_name, description, category, inventory_qty, status }) => {
+      try {
+        const body: any = {};
+        if (product_name !== undefined) body.product_name = product_name;
+        if (description !== undefined) body.description = description;
+        if (category !== undefined) body.category = category;
+        if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
+        if (status !== undefined) body.status = status;
+        if (Object.keys(body).length === 0) {
+          return { content: [{ type: "text" as const, text: "No updates provided. Specify at least one field to change." }], isError: true };
+        }
+        const listing = await apiRequest("PATCH", `/v1/listings/${listing_id}`, body);
+        let text = `**Listing ${listing_id} updated**\n`;
+        if (listing.product_name) text += `Name: ${listing.product_name}\n`;
+        if (listing.description) text += `Description: ${listing.description.slice(0, 100)}${listing.description.length > 100 ? "..." : ""}\n`;
+        if (listing.category) text += `Category: ${listing.category}\n`;
+        if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
+        if (listing.status) text += `Status: ${listing.status}\n`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error updating listing: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_delist
   server.tool(
     "firestarter_delist",
