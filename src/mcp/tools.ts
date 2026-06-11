@@ -184,14 +184,27 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       delivery_address: z.string().optional().describe("Delivery address as a string"),
       priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated)"),
       auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget. If false (default), present options for approval."),
+      requested_by: z
+        .object({
+          name: z.string().optional().describe("Requester's display name, e.g. 'Durga'"),
+          id: z.string().optional().describe("Requester's platform user id, e.g. a Slack U... id"),
+          channel: z.string().optional().describe("Platform the request came from, e.g. 'slack', 'whatsapp'"),
+        })
+        .optional()
+        .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
-    async ({ request, listing_id, budget_max, delivery_address, priority, auto_pay }) => {
+    async ({ request, listing_id, budget_max, delivery_address, priority, auto_pay, requested_by }) => {
       try {
         const body: any = {
           request,
           preferences: { priority: priority || "quality", require_approval: !auto_pay },
         };
         if (listing_id) body.listing_id = listing_id;
+        // Attribution rides the existing free-form metadata column — the REST
+        // API stores body.metadata verbatim and the list endpoint echoes it.
+        if (requested_by && (requested_by.name || requested_by.id)) {
+          body.metadata = { requested_by };
+        }
         if (budget_max) body.budget = { max_total: budget_max, currency: "USD" };
         if (delivery_address) body.delivery_address = { address: delivery_address };
 
