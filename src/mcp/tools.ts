@@ -176,20 +176,22 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Execute a commerce transaction. Find products matching a natural language request, verify suppliers, get pricing, and optionally handle payment and delivery. Returns product options for approval.",
+    "Execute a commerce transaction. Find products matching a natural language request, verify suppliers, get pricing, and optionally handle payment and delivery. Returns product options for approval. When you have an exact Firestarter listing id (lst_..., e.g. from a firestarter.network/l/<id> share link), pass listing_id — the purchase pins to that exact listing instead of searching.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30')"),
+      listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
       budget_max: z.number().optional().describe("Maximum budget in USD"),
       delivery_address: z.string().optional().describe("Delivery address as a string"),
       priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated)"),
       auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget. If false (default), present options for approval."),
     },
-    async ({ request, budget_max, delivery_address, priority, auto_pay }) => {
+    async ({ request, listing_id, budget_max, delivery_address, priority, auto_pay }) => {
       try {
         const body: any = {
           request,
           preferences: { priority: priority || "quality", require_approval: !auto_pay },
         };
+        if (listing_id) body.listing_id = listing_id;
         if (budget_max) body.budget = { max_total: budget_max, currency: "USD" };
         if (delivery_address) body.delivery_address = { address: delivery_address };
 
