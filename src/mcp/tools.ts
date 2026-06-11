@@ -176,20 +176,35 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Execute a commerce transaction. Find products matching a natural language request, verify suppliers, get pricing, and optionally handle payment and delivery. Returns product options for approval.",
+    "Execute a commerce transaction. Find products matching a natural language request, verify suppliers, get pricing, and optionally handle payment and delivery. Returns product options for approval. When you have an exact Firestarter listing id (lst_..., e.g. from a firestarter.network/l/<id> share link), pass listing_id — the purchase pins to that exact listing instead of searching.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30')"),
+      listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
       budget_max: z.number().optional().describe("Maximum budget in USD"),
       delivery_address: z.string().optional().describe("Delivery address as a string"),
       priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated)"),
       auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget. If false (default), present options for approval."),
+      requested_by: z
+        .object({
+          name: z.string().optional().describe("Requester's display name, e.g. 'Durga'"),
+          id: z.string().optional().describe("Requester's platform user id, e.g. a Slack U... id"),
+          channel: z.string().optional().describe("Platform the request came from, e.g. 'slack', 'whatsapp'"),
+        })
+        .optional()
+        .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
-    async ({ request, budget_max, delivery_address, priority, auto_pay }) => {
+    async ({ request, listing_id, budget_max, delivery_address, priority, auto_pay, requested_by }) => {
       try {
         const body: any = {
           request,
           preferences: { priority: priority || "quality", require_approval: !auto_pay },
         };
+        if (listing_id) body.listing_id = listing_id;
+        // Attribution rides the existing free-form metadata column — the REST
+        // API stores body.metadata verbatim and the list endpoint echoes it.
+        if (requested_by && (requested_by.name || requested_by.id)) {
+          body.metadata = { requested_by };
+        }
         if (budget_max) body.budget = { max_total: budget_max, currency: "USD" };
         if (delivery_address) body.delivery_address = { address: delivery_address };
 
@@ -249,15 +264,36 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Approve an execution that is awaiting approval. This selects the best option and proceeds with payment. Only Firestarter-purchasable options can be approved — external browse-only results are rejected with their direct purchase link instead.",
+    "Approve an execution that is awaiting approval. By default this approves the pre-selected (best purchasable) option and proceeds with payment; pass selected_option or option_id to approve a different option. Only Firestarter-purchasable options can be approved — external browse-only results are rejected with their direct purchase link instead.",
     {
       execution_id: z.string().describe("The execution ID to approve (e.g. 'exec_abc123')"),
-      selected_option: z.number().optional().describe("Index of the option to select (0-based). Defaults to 0 (best option)."),
+      selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
+      option_id: z.string().optional().describe("Exact option id (e.g. 'opt_abc123') to approve, as returned in API errors or the execution resource. Takes precedence over selected_option."),
     },
-    async ({ execution_id, selected_option }) => {
+    async ({ execution_id, selected_option, option_id }) => {
       try {
         const body: any = {};
-        if (selected_option !== undefined) body.selected_option = selected_option;
+        if (option_id) {
+          body.option_id = option_id;
+        } else if (selected_option !== undefined) {
+          // The approve route takes an option *id*; resolve the displayed index
+          // against the execution's options (same match_score DESC order the
+          // agent saw). Previously this was sent as `selected_option`, which
+          // the API ignored — silently approving the pre-selected row instead.
+          const exec = await apiRequest("GET", `/v1/executions/${execution_id}`);
+          const opts: any[] = Array.isArray(exec.options) ? exec.options : [];
+          const chosen = opts[selected_option];
+          if (!chosen?.id) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Error approving: option index ${selected_option} is out of range — this execution has ${opts.length} option(s) (valid indexes 0-${Math.max(0, opts.length - 1)}).`,
+              }],
+              isError: true,
+            };
+          }
+          body.option_id = chosen.id;
+        }
         await apiRequest("POST", `/v1/executions/${execution_id}/approve`, body);
         const exec = await pollExecution(apiRequest, execution_id, 30_000);
         const blocks = await formatExecution(exec);
