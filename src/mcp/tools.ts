@@ -125,9 +125,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
     for (let i = 0; i < exec.options.length; i++) {
       const opt = exec.options[i];
       const imageUrl = imageUrls[i];
+      // #107: external marketplace results are browse-only — label them so no
+      // agent walks a buyer into approving one (the API rejects it anyway).
+      const browseOnly = opt.purchasable === false;
       const optLines: string[] = [];
-      optLines.push(`\n**${i + 1}. ${opt.product_title}** — $${opt.total} from ${opt.supplier || opt.store || "Unknown"}`);
+      optLines.push(`\n**${i + 1}. ${opt.product_title}** — $${opt.total} from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " — ⚠ browse-only (external)" : ""}`);
       if (opt.product_url) optLines.push(`  URL: ${opt.product_url}`);
+      if (browseOnly) optLines.push(`  External marketplace result — Firestarter cannot purchase it. Do not approve this option; share the URL so the buyer can purchase directly.`);
       if (imageUrl) optLines.push(`  ![${opt.product_title}](${imageUrl})`);
       if (opt.agent_reasoning) optLines.push(`  ${opt.agent_reasoning}`);
       blocks.push({ type: "text", text: optLines.join("\n") });
@@ -194,7 +198,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const blocks = await formatExecution(exec);
 
         if (exec.status === "awaiting_approval") {
-          blocks.push({ type: "text", text: "\n\n**Action needed:** Use `firestarter_approve` to approve an option, or `firestarter_cancel` to cancel." });
+          const opts = Array.isArray(exec.options) ? exec.options : [];
+          const purchasableCount = opts.filter((o: any) => o.purchasable !== false).length;
+          blocks.push({
+            type: "text",
+            text: purchasableCount === 0 && opts.length > 0
+              ? "\n\n**Note:** every result is an external marketplace listing — browse-only. Firestarter cannot purchase them: share the URLs so the buyer can purchase directly, use `firestarter_message` to refine the search toward Firestarter marketplace listings, or `firestarter_cancel`."
+              : `\n\n**Action needed:** Use \`firestarter_approve\` to approve an option, or \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only (external) options cannot be approved — share their URLs instead." : ""}`,
+          });
         }
         return { content: blocks };
       } catch (err: any) {
@@ -238,7 +249,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Approve an execution that is awaiting approval. This selects the best option and proceeds with payment.",
+    "Approve an execution that is awaiting approval. This selects the best option and proceeds with payment. Only Firestarter-purchasable options can be approved — external browse-only results are rejected with their direct purchase link instead.",
     {
       execution_id: z.string().describe("The execution ID to approve (e.g. 'exec_abc123')"),
       selected_option: z.number().optional().describe("Index of the option to select (0-based). Defaults to 0 (best option)."),
