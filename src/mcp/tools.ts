@@ -249,15 +249,36 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Approve an execution that is awaiting approval. This selects the best option and proceeds with payment. Only Firestarter-purchasable options can be approved — external browse-only results are rejected with their direct purchase link instead.",
+    "Approve an execution that is awaiting approval. By default this approves the pre-selected (best purchasable) option and proceeds with payment; pass selected_option or option_id to approve a different option. Only Firestarter-purchasable options can be approved — external browse-only results are rejected with their direct purchase link instead.",
     {
       execution_id: z.string().describe("The execution ID to approve (e.g. 'exec_abc123')"),
-      selected_option: z.number().optional().describe("Index of the option to select (0-based). Defaults to 0 (best option)."),
+      selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
+      option_id: z.string().optional().describe("Exact option id (e.g. 'opt_abc123') to approve, as returned in API errors or the execution resource. Takes precedence over selected_option."),
     },
-    async ({ execution_id, selected_option }) => {
+    async ({ execution_id, selected_option, option_id }) => {
       try {
         const body: any = {};
-        if (selected_option !== undefined) body.selected_option = selected_option;
+        if (option_id) {
+          body.option_id = option_id;
+        } else if (selected_option !== undefined) {
+          // The approve route takes an option *id*; resolve the displayed index
+          // against the execution's options (same match_score DESC order the
+          // agent saw). Previously this was sent as `selected_option`, which
+          // the API ignored — silently approving the pre-selected row instead.
+          const exec = await apiRequest("GET", `/v1/executions/${execution_id}`);
+          const opts: any[] = Array.isArray(exec.options) ? exec.options : [];
+          const chosen = opts[selected_option];
+          if (!chosen?.id) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Error approving: option index ${selected_option} is out of range — this execution has ${opts.length} option(s) (valid indexes 0-${Math.max(0, opts.length - 1)}).`,
+              }],
+              isError: true,
+            };
+          }
+          body.option_id = chosen.id;
+        }
         await apiRequest("POST", `/v1/executions/${execution_id}/approve`, body);
         const exec = await pollExecution(apiRequest, execution_id, 30_000);
         const blocks = await formatExecution(exec);
