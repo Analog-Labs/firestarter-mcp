@@ -13,6 +13,9 @@ const EMBED_IMAGES = process.env.FIRESTARTER_MCP_EMBED_IMAGES === "true";
 const MAX_EMBED_IMAGES = Number(process.env.FIRESTARTER_MCP_MAX_EMBED_IMAGES || 2);
 const IMAGE_FETCH_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMAGE_TIMEOUT_MS || 1_500);
 const MAX_IMAGE_BYTES = Number(process.env.FIRESTARTER_MCP_MAX_IMAGE_BYTES || 2_000_000);
+// Public share pages (GET /l/:id) — humans get a product card, agents get
+// machine-readable purchase instructions, chat apps unfurl a preview card.
+const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.network/l";
 
 function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -472,7 +475,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
-        text += `\nThere is no public listing URL — buyers' agents discover this through network search. Use \`firestarter_listings\` to view or share the listing summary anytime.`;
+        text += `Share link: ${SHARE_LINK_BASE}/${listing.id}\n`;
+        text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -485,7 +489,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_listings
   server.tool(
     "firestarter_listings",
-    "View your own product listings (seller side): name, current price, inventory, status, and demand. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — there are no public listing URLs (buyers' agents discover listings via network search), so render this summary instead of a link.",
+    "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — every listing has a public share link (https://firestarter.network/l/<id>) that unfurls into a product card and hands purchase instructions to any AI agent that opens it.",
     {
       listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list all active listings."),
     },
@@ -510,7 +514,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }
           if (l.demand_score != null) text += `Demand score: ${l.demand_score}\n`;
           if (l.created_at) text += `Listed: ${l.created_at}\n`;
-          text += `\nNo public listing page exists — buyers' agents find this via network search. Share this summary instead of a link.`;
+          text += `Share link: ${SHARE_LINK_BASE}/${l.id}\n`;
+          text += `\nPaste the share link bare in chat — it unfurls into a product card; humans get an "ask your AI agent to buy this" prompt and agents get machine-readable purchase instructions. Buyers' agents also find this via network search.`;
           return { content: [{ type: "text" as const, text }] };
         }
         const data = await apiRequest("GET", "/v1/listings");
@@ -524,7 +529,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (l.inventory_qty != null) text += `, qty ${l.inventory_qty}`;
           text += ` — ID ${l.id}\n`;
         }
-        text += `\nPass a listing ID for full detail. No public listing URLs exist — buyers' agents discover these via network search.`;
+        text += `\nPass a listing ID for full detail. Each listing has a share link (${SHARE_LINK_BASE}/<id>) that unfurls into a product card and hands purchase instructions to any agent that opens it.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -605,6 +610,34 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error repricing: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_delist
+  server.tool(
+    "firestarter_delist",
+    "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting — this takes the product off the market immediately.",
+    {
+      listing_id: z.string().describe("The listing ID (lst_...) to delist"),
+    },
+    async ({ listing_id }) => {
+      try {
+        await apiRequest("DELETE", `/v1/listings/${listing_id}`);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `**Listing ${listing_id} delisted.** It is no longer discoverable by buyers' agents, and its share link (${SHARE_LINK_BASE}/${listing_id}) now shows not-found. Relist anytime with \`firestarter_list\`.`,
+            },
+          ],
+        };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        const hint = /not found/i.test(msg)
+          ? "\n\nCall `firestarter_listings` to see your active listings and their IDs — it may already be delisted."
+          : "";
+        return { content: [{ type: "text" as const, text: `Error delisting: ${msg}${hint}` }], isError: true };
       }
     }
   );

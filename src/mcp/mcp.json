@@ -214,7 +214,7 @@
     },
     {
       "name": "firestarter_listings",
-      "description": "View your own product listings (seller side): name, current price, inventory, status, and demand. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — there are no public listing URLs (buyers' agents discover listings via network search), so render this summary instead of a link.",
+      "description": "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — every listing has a public share link (https://firestarter.network/l/<id>) that unfurls into a product card and hands purchase instructions to any AI agent that opens it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -281,6 +281,20 @@
               "required": ["name", "type", "config"]
             },
             "description": "Dynamic pricing rules"
+          }
+        },
+        "required": ["listing_id"]
+      }
+    },
+    {
+      "name": "firestarter_delist",
+      "description": "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting — this takes the product off the market immediately.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listing_id": {
+            "type": "string",
+            "description": "The listing ID (lst_...) to delist"
           }
         },
         "required": ["listing_id"]
