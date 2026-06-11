@@ -448,7 +448,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
-    "List a product for sale on Firestarter. Creates a new listing with pricing and inventory.",
+    "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. To VIEW listings you already have, use firestarter_listings instead.",
     {
       product_name: z.string().describe("Product name"),
       base_price: z.number().describe("Base price in USD"),
@@ -467,16 +467,71 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         const listing = await apiRequest("POST", "/v1/listings", body);
-        let text = `**Listing created: ${listing.product_name}**\nID: ${listing.id}\nBase price: $${listing.base_price}\n`;
+        let text = `**Listing created: ${listing.product_name}**\nID: ${listing.id}\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
+        text += `\nThere is no public listing URL — buyers' agents discover this through network search. Use \`firestarter_listings\` to view or share the listing summary anytime.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
         const hint = msg.includes("NO_SELLER_PROFILE") ? "\n\nYou need to register as a seller first (POST /v1/sellers) before creating listings." : "";
         return { content: [{ type: "text" as const, text: `Error creating listing: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_listings
+  server.tool(
+    "firestarter_listings",
+    "View your own product listings (seller side): name, current price, inventory, status, and demand. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — there are no public listing URLs (buyers' agents discover listings via network search), so render this summary instead of a link.",
+    {
+      listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list all active listings."),
+    },
+    async ({ listing_id }) => {
+      try {
+        if (listing_id) {
+          const l = await apiRequest("GET", `/v1/listings/${listing_id}`);
+          let text = `**${l.product_name}** [${l.status}]\nID: ${l.id}\n`;
+          text += `Price: $${Number(l.current_price).toFixed(2)}`;
+          const priceBits: string[] = [];
+          if (l.base_price != null && l.base_price !== l.current_price) priceBits.push(`base $${Number(l.base_price).toFixed(2)}`);
+          if (l.floor_price) priceBits.push(`floor $${Number(l.floor_price).toFixed(2)}`);
+          if (l.ceiling_price) priceBits.push(`ceiling $${Number(l.ceiling_price).toFixed(2)}`);
+          if (l.dynamic_pricing) priceBits.push("dynamic pricing on");
+          if (priceBits.length) text += ` (${priceBits.join(", ")})`;
+          text += "\n";
+          if (l.inventory_qty != null) text += `Inventory: ${l.inventory_qty}\n`;
+          if (l.category) text += `Category: ${l.category}\n`;
+          if (l.description) text += `Description: ${String(l.description).slice(0, 300)}\n`;
+          if (Array.isArray(l.images) && l.images.length > 0) {
+            text += `Image: ${l.images[0]}${l.images.length > 1 ? ` (+${l.images.length - 1} more)` : ""}\n`;
+          }
+          if (l.demand_score != null) text += `Demand score: ${l.demand_score}\n`;
+          if (l.created_at) text += `Listed: ${l.created_at}\n`;
+          text += `\nNo public listing page exists — buyers' agents find this via network search. Share this summary instead of a link.`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+        const data = await apiRequest("GET", "/v1/listings");
+        const listings = data.listings || [];
+        if (listings.length === 0) {
+          return { content: [{ type: "text" as const, text: "You have no active listings. Use `firestarter_list` to create one." }] };
+        }
+        let text = `**Your listings (${listings.length})**\n`;
+        for (const l of listings) {
+          text += `- **${l.product_name}** [${l.status}] — $${Number(l.current_price).toFixed(2)}`;
+          if (l.inventory_qty != null) text += `, qty ${l.inventory_qty}`;
+          text += ` — ID ${l.id}\n`;
+        }
+        text += `\nPass a listing ID for full detail. No public listing URLs exist — buyers' agents discover these via network search.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        const hint = /not found/i.test(msg)
+          ? "\n\nCall `firestarter_listings` with no arguments to see all your listings and their IDs."
+          : "";
+        return { content: [{ type: "text" as const, text: `Error fetching listings: ${msg}${hint}` }], isError: true };
       }
     }
   );

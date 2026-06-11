@@ -176,7 +176,7 @@
     },
     {
       "name": "firestarter_list",
-      "description": "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. The seller must already be registered — if you get a NO_SELLER_PROFILE error, register first via POST /v1/sellers.",
+      "description": "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. The seller must already be registered — if you get a NO_SELLER_PROFILE error, register first via POST /v1/sellers. To VIEW listings you already have, use firestarter_listings instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -210,6 +210,19 @@
           }
         },
         "required": ["product_name", "base_price"]
+      }
+    },
+    {
+      "name": "firestarter_listings",
+      "description": "View your own product listings (seller side): name, current price, inventory, status, and demand. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — there are no public listing URLs (buyers' agents discover listings via network search), so render this summary instead of a link.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listing_id": {
+            "type": "string",
+            "description": "Specific listing ID (lst_...) for full detail. Omit to list all active listings."
+          }
+        }
       }
     },
     {
