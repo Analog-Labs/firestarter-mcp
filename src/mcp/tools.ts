@@ -30,6 +30,11 @@ function toErrorMessage(err: unknown): string {
   return msg;
 }
 
+/** Strip backslashes LLMs sometimes inject when markdown-escaping underscores/hyphens in IDs. */
+function cleanListingId(id: string): string {
+  return id.replace(/\\/g, "");
+}
+
 /**
  * Non-2xx API responses carry structured bodies (code + extra data, e.g. the
  * possession-verification payload on 409s). Keep them on the thrown error so
@@ -84,7 +89,9 @@ function verificationAskText(err: unknown): string | null {
       ? "its source URL was already imported by another seller"
       : v.reason === "luxury_category"
         ? "it is a luxury-category item"
-        : "it is a high-value item";
+        : v.reason === "buyer_invite"
+          ? "a buyer requested an escrow-protected purchase of this exact item, so possession must be proven before it goes live"
+          : "it is a high-value item";
   return (
     `**Possession verification needed before this listing can go live** (${why}).\n\n` +
     `Verification code: **${v.code}**\n\n` +
@@ -240,7 +247,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .optional()
         .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
-    async ({ request, listing_id, budget_max, delivery_address, priority, auto_pay, requested_by }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, priority, auto_pay, requested_by }) => {
+      const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
           request,
@@ -564,7 +572,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         const listing = await apiRequest("POST", "/v1/listings", body);
-        let text = `**Listing created: ${listing.product_name}**\nID: ${listing.id}\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
+        let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
@@ -601,7 +609,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // give it more headroom than the default API budget.
         const draft = await apiRequest("POST", "/v1/listings/import", body, IMPORT_TIMEOUT_MS);
 
-        let text = `**Draft imported: ${draft.product_name}**\nID: ${draft.id}\nStatus: draft (NOT live - buyers cannot see or buy it yet)\n`;
+        let text = `**Draft imported: ${draft.product_name}**\nID: \`${draft.id}\`\nStatus: draft (NOT live - buyers cannot see or buy it yet)\n`;
         text += Number(draft.base_price) > 0
           ? `Price: $${draft.base_price} ${draft.currency}\n`
           : `Price: none found - set one with firestarter_reprice before activating\n`;
@@ -637,6 +645,58 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           hint = "\n\nAsk the seller to paste the listing text directly into chat and retry with raw_text.";
         }
         return { content: [{ type: "text" as const, text: `Error importing listing: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_request_escrow
+  // B1: the buyer-side counterpart of firestarter_import. The user found a
+  // listing on an EXTERNAL site and wants Firestarter escrow protection - we
+  // mint a claim link, but THE BUYER delivers it to the seller themselves.
+  server.tool(
+    "firestarter_request_escrow",
+    "BUYER-side tool: the user found a listing on another site (Craigslist, Facebook Marketplace, Gumtree, ...) and wants to pay through Firestarter escrow instead of cash/wire. Creates an escrow invite with a claim link for the SELLER, plus a ready-to-send message. The buyer must send that message to the seller themselves through the platform where they found the listing - Firestarter never contacts external sellers, and neither should you (never automate messages to Craigslist or marketplace posters). Needs the listing URL and the buyer's email (ask for it - that is where the goes-live notification lands). For Facebook Marketplace / eBay / Etsy / OfferUp / Mercari the page cannot be fetched, so also ask for the item title and price and pass them along.",
+    {
+      source_url: z.string().describe("URL of the external listing the buyer wants to purchase"),
+      buyer_email: z.string().describe("Buyer's email address - notified when the seller claims and the listing goes live"),
+      buyer_name: z.string().optional().describe("Buyer's first name (shown to the seller on the claim page)"),
+      title: z.string().optional().describe("Item title, buyer-supplied. Required in practice for platforms that block fetches (Facebook Marketplace etc.)."),
+      price: z.number().optional().describe("Asking price in the listing's currency, buyer-supplied (for blocked platforms)"),
+    },
+    async ({ source_url, buyer_email, buyer_name, title, price }) => {
+      try {
+        const body: any = { source_url, buyer_email };
+        if (buyer_name) body.buyer_name = buyer_name;
+        if (title) body.title = title;
+        if (price !== undefined) body.price = price;
+        // May fetch + extract the external page - same headroom as import.
+        const r = await apiRequest("POST", "/v1/escrow-invites", body, IMPORT_TIMEOUT_MS);
+
+        if (r.already_listed) {
+          let text = `**Good news - this item is already live on Firestarter.**\n`;
+          if (r.title) text += `Item: ${r.title}\n`;
+          text += `Share link: ${r.share_url}\n\nNo invite needed - the buyer can pay through escrow right now from that link.`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+
+        let text = `**Escrow request created${r.item?.title ? `: ${r.item.title}` : ""}**\n`;
+        if (r.item?.price) text += `Price: $${r.item.price}${r.item.currency ? ` ${r.item.currency}` : ""}\n`;
+        text += `Claim link (for the seller): ${r.claim_url}\nExpires: ${r.expires_at}\n\n`;
+        text += `**The buyer must send the seller this message themselves** - through the same place they found the listing (Craigslist reply email, Facebook Messenger, ...). Do not contact the seller for them. Suggested message:\n\n`;
+        text += `${r.suggested_message}\n\n`;
+        text += `What happens next: the seller claims the link, proves possession (photo of the item next to a handwritten code), the listing goes live, and the buyer gets an email at ${buyer_email} with the payment link. Funds are held in escrow until handoff.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (msg.includes("INVALID_BUYER_EMAIL")) {
+          hint = "\n\nAsk the buyer for a valid email address - it is where the goes-live notification lands.";
+        } else if (msg.includes("INVALID_URL")) {
+          hint = "\n\nThe listing URL was rejected. Ask the buyer to copy the full address bar URL of the listing.";
+        } else if (msg.includes("Too many requests")) {
+          hint = "\n\nRate limit hit - wait a bit before creating another escrow request.";
+        }
+        return { content: [{ type: "text" as const, text: `Error creating escrow request: ${msg}${hint}` }], isError: true };
       }
     }
   );
@@ -682,11 +742,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list all active listings."),
     },
-    async ({ listing_id }) => {
+    async ({ listing_id: rawListingId }) => {
+      const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         if (listing_id) {
           const l = await apiRequest("GET", `/v1/listings/${listing_id}`);
-          let text = `**${l.product_name}** [${l.status}]\nID: ${l.id}\n`;
+          let text = `**${l.product_name}** [${l.status}]\nID: \`${l.id}\`\n`;
           text += `Price: $${Number(l.current_price).toFixed(2)}`;
           const priceBits: string[] = [];
           if (l.base_price != null && l.base_price !== l.current_price) priceBits.push(`base $${Number(l.base_price).toFixed(2)}`);
@@ -716,7 +777,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         for (const l of listings) {
           text += `- **${l.product_name}** [${l.status}] — $${Number(l.current_price).toFixed(2)}`;
           if (l.inventory_qty != null) text += `, qty ${l.inventory_qty}`;
-          text += ` — ID ${l.id}\n`;
+          text += ` — ID \`${l.id}\`\n`;
         }
         text += `\nPass a listing ID for full detail. Each listing has a share link (${SHARE_LINK_BASE}/<id>) that unfurls into a product card and hands purchase instructions to any agent that opens it.`;
         return { content: [{ type: "text" as const, text }] };
@@ -738,7 +799,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().optional().describe("Specific listing ID to check demand for"),
       category: z.string().optional().describe("Check demand for a category (e.g. 'electronics/audio')"),
     },
-    async ({ listing_id }) => {
+    async ({ listing_id: rawListingId }) => {
+      const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         let data: any;
         if (listing_id) {
@@ -780,7 +842,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       ceiling_price: z.number().optional().describe("New ceiling price"),
       dynamic_pricing: z.boolean().optional().describe("Enable/disable dynamic pricing"),
     },
-    async ({ listing_id, base_price, floor_price, ceiling_price, dynamic_pricing }) => {
+    async ({ listing_id: rawListingId, base_price, floor_price, ceiling_price, dynamic_pricing }) => {
+      const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
         if (base_price !== undefined) body.base_price = base_price;
@@ -815,7 +878,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
     },
-    async ({ listing_id, product_name, description, category, inventory_qty, status }) => {
+    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status }) => {
+      const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
         if (product_name !== undefined) body.product_name = product_name;
@@ -923,7 +987,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       listing_id: z.string().describe("The listing ID (lst_...) to delist"),
     },
-    async ({ listing_id }) => {
+    async ({ listing_id: rawListingId }) => {
+      const listing_id = cleanListingId(rawListingId);
       try {
         await apiRequest("DELETE", `/v1/listings/${listing_id}`);
         return {
