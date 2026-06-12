@@ -30,6 +30,11 @@ function toErrorMessage(err: unknown): string {
   return msg;
 }
 
+/** Strip backslashes LLMs sometimes inject when markdown-escaping underscores/hyphens in IDs. */
+function cleanListingId(id: string): string {
+  return id.replace(/\\/g, "");
+}
+
 /**
  * Non-2xx API responses carry structured bodies (code + extra data, e.g. the
  * possession-verification payload on 409s). Keep them on the thrown error so
@@ -240,7 +245,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .optional()
         .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
-    async ({ request, listing_id, budget_max, delivery_address, priority, auto_pay, requested_by }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, priority, auto_pay, requested_by }) => {
+      const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
           request,
@@ -564,7 +570,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         const listing = await apiRequest("POST", "/v1/listings", body);
-        let text = `**Listing created: ${listing.product_name}**\nID: ${listing.id}\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
+        let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
@@ -601,7 +607,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // give it more headroom than the default API budget.
         const draft = await apiRequest("POST", "/v1/listings/import", body, IMPORT_TIMEOUT_MS);
 
-        let text = `**Draft imported: ${draft.product_name}**\nID: ${draft.id}\nStatus: draft (NOT live - buyers cannot see or buy it yet)\n`;
+        let text = `**Draft imported: ${draft.product_name}**\nID: \`${draft.id}\`\nStatus: draft (NOT live - buyers cannot see or buy it yet)\n`;
         text += Number(draft.base_price) > 0
           ? `Price: $${draft.base_price} ${draft.currency}\n`
           : `Price: none found - set one with firestarter_reprice before activating\n`;
@@ -682,11 +688,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list all active listings."),
     },
-    async ({ listing_id }) => {
+    async ({ listing_id: rawListingId }) => {
+      const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         if (listing_id) {
           const l = await apiRequest("GET", `/v1/listings/${listing_id}`);
-          let text = `**${l.product_name}** [${l.status}]\nID: ${l.id}\n`;
+          let text = `**${l.product_name}** [${l.status}]\nID: \`${l.id}\`\n`;
           text += `Price: $${Number(l.current_price).toFixed(2)}`;
           const priceBits: string[] = [];
           if (l.base_price != null && l.base_price !== l.current_price) priceBits.push(`base $${Number(l.base_price).toFixed(2)}`);
@@ -716,7 +723,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         for (const l of listings) {
           text += `- **${l.product_name}** [${l.status}] — $${Number(l.current_price).toFixed(2)}`;
           if (l.inventory_qty != null) text += `, qty ${l.inventory_qty}`;
-          text += ` — ID ${l.id}\n`;
+          text += ` — ID \`${l.id}\`\n`;
         }
         text += `\nPass a listing ID for full detail. Each listing has a share link (${SHARE_LINK_BASE}/<id>) that unfurls into a product card and hands purchase instructions to any agent that opens it.`;
         return { content: [{ type: "text" as const, text }] };
@@ -738,7 +745,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().optional().describe("Specific listing ID to check demand for"),
       category: z.string().optional().describe("Check demand for a category (e.g. 'electronics/audio')"),
     },
-    async ({ listing_id }) => {
+    async ({ listing_id: rawListingId }) => {
+      const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         let data: any;
         if (listing_id) {
@@ -780,7 +788,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       ceiling_price: z.number().optional().describe("New ceiling price"),
       dynamic_pricing: z.boolean().optional().describe("Enable/disable dynamic pricing"),
     },
-    async ({ listing_id, base_price, floor_price, ceiling_price, dynamic_pricing }) => {
+    async ({ listing_id: rawListingId, base_price, floor_price, ceiling_price, dynamic_pricing }) => {
+      const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
         if (base_price !== undefined) body.base_price = base_price;
@@ -815,7 +824,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
     },
-    async ({ listing_id, product_name, description, category, inventory_qty, status }) => {
+    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status }) => {
+      const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
         if (product_name !== undefined) body.product_name = product_name;
@@ -923,7 +933,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       listing_id: z.string().describe("The listing ID (lst_...) to delist"),
     },
-    async ({ listing_id }) => {
+    async ({ listing_id: rawListingId }) => {
+      const listing_id = cleanListingId(rawListingId);
       try {
         await apiRequest("DELETE", `/v1/listings/${listing_id}`);
         return {
