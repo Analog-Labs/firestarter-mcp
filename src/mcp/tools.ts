@@ -188,7 +188,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // flagged item+shipping total as "the listed price" to a buyer).
       const bdParts: string[] = [];
       if (opt.subtotal != null) bdParts.push(`$${opt.subtotal} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`);
-      if (opt.shipping_cost != null && Number(opt.shipping_cost) > 0) bdParts.push(`$${opt.shipping_cost} shipping`);
+      if (opt.shipping != null && Number(opt.shipping) > 0) bdParts.push(`$${opt.shipping} shipping`);
       if (opt.tax != null && Number(opt.tax) > 0) bdParts.push(`$${opt.tax} tax`);
       const breakdown = bdParts.length > 1 ? ` (${bdParts.join(" + ")})` : "";
       optLines.push(`\n**${i + 1}. ${opt.product_title}** — $${opt.total}${breakdown} from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " — ⚠ browse-only (external)" : ""}`);
