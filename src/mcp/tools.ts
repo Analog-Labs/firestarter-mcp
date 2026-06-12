@@ -89,7 +89,9 @@ function verificationAskText(err: unknown): string | null {
       ? "its source URL was already imported by another seller"
       : v.reason === "luxury_category"
         ? "it is a luxury-category item"
-        : "it is a high-value item";
+        : v.reason === "buyer_invite"
+          ? "a buyer requested an escrow-protected purchase of this exact item, so possession must be proven before it goes live"
+          : "it is a high-value item";
   return (
     `**Possession verification needed before this listing can go live** (${why}).\n\n` +
     `Verification code: **${v.code}**\n\n` +
@@ -643,6 +645,58 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           hint = "\n\nAsk the seller to paste the listing text directly into chat and retry with raw_text.";
         }
         return { content: [{ type: "text" as const, text: `Error importing listing: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_request_escrow
+  // B1: the buyer-side counterpart of firestarter_import. The user found a
+  // listing on an EXTERNAL site and wants Firestarter escrow protection - we
+  // mint a claim link, but THE BUYER delivers it to the seller themselves.
+  server.tool(
+    "firestarter_request_escrow",
+    "BUYER-side tool: the user found a listing on another site (Craigslist, Facebook Marketplace, Gumtree, ...) and wants to pay through Firestarter escrow instead of cash/wire. Creates an escrow invite with a claim link for the SELLER, plus a ready-to-send message. The buyer must send that message to the seller themselves through the platform where they found the listing - Firestarter never contacts external sellers, and neither should you (never automate messages to Craigslist or marketplace posters). Needs the listing URL and the buyer's email (ask for it - that is where the goes-live notification lands). For Facebook Marketplace / eBay / Etsy / OfferUp / Mercari the page cannot be fetched, so also ask for the item title and price and pass them along.",
+    {
+      source_url: z.string().describe("URL of the external listing the buyer wants to purchase"),
+      buyer_email: z.string().describe("Buyer's email address - notified when the seller claims and the listing goes live"),
+      buyer_name: z.string().optional().describe("Buyer's first name (shown to the seller on the claim page)"),
+      title: z.string().optional().describe("Item title, buyer-supplied. Required in practice for platforms that block fetches (Facebook Marketplace etc.)."),
+      price: z.number().optional().describe("Asking price in the listing's currency, buyer-supplied (for blocked platforms)"),
+    },
+    async ({ source_url, buyer_email, buyer_name, title, price }) => {
+      try {
+        const body: any = { source_url, buyer_email };
+        if (buyer_name) body.buyer_name = buyer_name;
+        if (title) body.title = title;
+        if (price !== undefined) body.price = price;
+        // May fetch + extract the external page - same headroom as import.
+        const r = await apiRequest("POST", "/v1/escrow-invites", body, IMPORT_TIMEOUT_MS);
+
+        if (r.already_listed) {
+          let text = `**Good news - this item is already live on Firestarter.**\n`;
+          if (r.title) text += `Item: ${r.title}\n`;
+          text += `Share link: ${r.share_url}\n\nNo invite needed - the buyer can pay through escrow right now from that link.`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+
+        let text = `**Escrow request created${r.item?.title ? `: ${r.item.title}` : ""}**\n`;
+        if (r.item?.price) text += `Price: $${r.item.price}${r.item.currency ? ` ${r.item.currency}` : ""}\n`;
+        text += `Claim link (for the seller): ${r.claim_url}\nExpires: ${r.expires_at}\n\n`;
+        text += `**The buyer must send the seller this message themselves** - through the same place they found the listing (Craigslist reply email, Facebook Messenger, ...). Do not contact the seller for them. Suggested message:\n\n`;
+        text += `${r.suggested_message}\n\n`;
+        text += `What happens next: the seller claims the link, proves possession (photo of the item next to a handwritten code), the listing goes live, and the buyer gets an email at ${buyer_email} with the payment link. Funds are held in escrow until handoff.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (msg.includes("INVALID_BUYER_EMAIL")) {
+          hint = "\n\nAsk the buyer for a valid email address - it is where the goes-live notification lands.";
+        } else if (msg.includes("INVALID_URL")) {
+          hint = "\n\nThe listing URL was rejected. Ask the buyer to copy the full address bar URL of the listing.";
+        } else if (msg.includes("Too many requests")) {
+          hint = "\n\nRate limit hit - wait a bit before creating another escrow request.";
+        }
+        return { content: [{ type: "text" as const, text: `Error creating escrow request: ${msg}${hint}` }], isError: true };
       }
     }
   );
