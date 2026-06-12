@@ -696,15 +696,109 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
+        // Error CODES ride on ApiError.code, never inside the message string.
+        const code: string = err?.code ?? "";
         let hint = "";
-        if (msg.includes("INVALID_BUYER_EMAIL")) {
+        if (code === "INVALID_BUYER_EMAIL") {
           hint = "\n\nAsk the buyer for a valid email address - it is where the goes-live notification lands.";
-        } else if (msg.includes("INVALID_URL")) {
+        } else if (code === "INVALID_URL") {
           hint = "\n\nThe listing URL was rejected. Ask the buyer to copy the full address bar URL of the listing.";
         } else if (msg.includes("Too many requests")) {
           hint = "\n\nRate limit hit - wait a bit before creating another escrow request.";
         }
         return { content: [{ type: "text" as const, text: `Error creating escrow request: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_assist_quote
+  // B4 Phase 3: price a courier crew (load + haul + unload) for a bulky item.
+  // PURE QUOTE - nothing booked, no money. Booking is a separate tool so a
+  // human always confirms the price first.
+  server.tool(
+    "firestarter_assist_quote",
+    "Get pickup+delivery quotes for a PHYSICAL item, including loading/unloading help (a courier crew) for bulky or heavy things - weight racks, sofas, appliances. Use when a buyer or seller asks how to move an item, or proactively when an item is clearly bulky. Pure price check: books nothing, charges nothing. Include lat/lng for both stops when the user shared a location pin - some couriers (Lalamove in Thailand) cannot quote without coordinates. Returns quotes cheapest-first with a quote_ref; to actually book one, confirm the price with the human FIRST, then call firestarter_assist_book.",
+    {
+      pickup_address: z.string().describe("Pickup street address"),
+      dropoff_address: z.string().describe("Dropoff street address"),
+      pickup_lat: z.number().optional(),
+      pickup_lng: z.number().optional(),
+      dropoff_lat: z.number().optional(),
+      dropoff_lng: z.number().optional(),
+      weight_kg: z.number().optional().describe("Approximate item weight in kg"),
+      bulky: z.boolean().optional().describe("Large/awkward item (furniture, gym equipment)"),
+      two_person: z.boolean().optional().describe("Needs two people to carry - adds a crew helper"),
+      needs_disassembly: z.boolean().optional(),
+      declared_value_cents: z.number().optional().describe("Item value in cents, for courier insurance on high-value items"),
+    },
+    async (a) => {
+      try {
+        const r = await apiRequest("POST", "/v1/assist/quote", {
+          pickup: { address: a.pickup_address, lat: a.pickup_lat, lng: a.pickup_lng },
+          dropoff: { address: a.dropoff_address, lat: a.dropoff_lat, lng: a.dropoff_lng },
+          handling: {
+            weight_kg: a.weight_kg, bulky: a.bulky, two_person: a.two_person,
+            needs_disassembly: a.needs_disassembly,
+          },
+          ...(a.declared_value_cents !== undefined ? { declared_value_cents: a.declared_value_cents } : {}),
+        }, IMPORT_TIMEOUT_MS);
+        if (r.enabled === false) {
+          return { content: [{ type: "text" as const, text: "Fulfillment assist is not enabled on this workspace yet - the item would need to be moved by the buyer and seller themselves." }] };
+        }
+        if (!r.quotes?.length) {
+          return { content: [{ type: "text" as const, text: "No courier could quote this route (outside coverage, or the item may be too large). Suggest the parties arrange the handoff themselves." }] };
+        }
+        let text = `**Courier options (cheapest first):**\n`;
+        for (const q of r.quotes.slice(0, 4)) {
+          const fee = (q.fee_cents / 100).toFixed(2);
+          text += `- ${q.provider}: ${fee} ${q.currency}${q.vehicle_class ? ` (${q.vehicle_class}` : ""}${q.includes_helper ? " + loading crew)" : q.vehicle_class ? ")" : ""}${q.eta_minutes ? ` ~${q.eta_minutes} min` : ""}\n  quote_ref: ${q.quote_ref}\n`;
+        }
+        text += `\nRelay the price to the human and get an explicit YES before booking. Then call firestarter_assist_book with the chosen quote_ref. Quotes expire in minutes - re-quote if they hesitate.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error quoting assist: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_assist_book
+  server.tool(
+    "firestarter_assist_book",
+    "Book a courier from a firestarter_assist_quote result. ONLY call after the human has explicitly confirmed the exact price - this dispatches a real crew and the fee is charged to the buyer's order. Link the purchase execution when there is one: the courier's proof-of-delivery photo then starts the escrow inspection window automatically.",
+    {
+      provider: z.string().describe("Provider name from the chosen quote (e.g. lalamove, nash)"),
+      quote_ref: z.string().describe("quote_ref from firestarter_assist_quote"),
+      pickup_address: z.string(),
+      dropoff_address: z.string(),
+      pickup_contact_name: z.string().optional(),
+      pickup_contact_phone: z.string().optional(),
+      dropoff_contact_name: z.string().optional(),
+      dropoff_contact_phone: z.string().optional(),
+      execution_id: z.string().optional().describe("The purchase execution this delivery fulfills (exec_...)"),
+      listing_id: z.string().optional(),
+      fee_cents: z.number().optional().describe("The confirmed quote fee, for the booking record"),
+    },
+    async (a) => {
+      try {
+        const r = await apiRequest("POST", "/v1/assist/book", {
+          provider: a.provider,
+          quote_ref: a.quote_ref,
+          pickup: { address: a.pickup_address, contact_name: a.pickup_contact_name, contact_phone: a.pickup_contact_phone },
+          dropoff: { address: a.dropoff_address, contact_name: a.dropoff_contact_name, contact_phone: a.dropoff_contact_phone },
+          ...(a.execution_id ? { execution_id: a.execution_id } : {}),
+          ...(a.listing_id ? { listing_id: a.listing_id } : {}),
+          ...(a.fee_cents !== undefined ? { fee_cents: a.fee_cents } : {}),
+        }, IMPORT_TIMEOUT_MS);
+        let text = `**Courier booked.** Booking ${r.id} (${r.provider}, ref ${r.provider_ref})\n`;
+        if (r.tracking_url) text += `Tracking: ${r.tracking_url}\n`;
+        text += r.next_step;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        const hint = msg.includes("BOOKING_FAILED")
+          ? "\n\nThe quote may have expired - run firestarter_assist_quote again and re-confirm with the human."
+          : "";
+        return { content: [{ type: "text" as const, text: `Error booking courier: ${msg}${hint}` }], isError: true };
       }
     }
   );
