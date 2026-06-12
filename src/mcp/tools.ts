@@ -11,6 +11,8 @@ const API_REQUEST_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_API_TIMEOUT_MS
 // Listing import fetches the source page server-side (10s cap) and may run an
 // LLM extraction on top - it needs more than the default API budget.
 const IMPORT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMPORT_TIMEOUT_MS || 25_000);
+// Evidence submission runs a vision soft-check server-side - same headroom.
+const VERIFY_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_VERIFY_TIMEOUT_MS || 25_000);
 const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 1_000);
 const EMBED_IMAGES = process.env.FIRESTARTER_MCP_EMBED_IMAGES === "true";
 const MAX_EMBED_IMAGES = Number(process.env.FIRESTARTER_MCP_MAX_EMBED_IMAGES || 2);
@@ -26,6 +28,23 @@ function toErrorMessage(err: unknown): string {
     return "Firestarter API timed out. Please retry in a few seconds.";
   }
   return msg;
+}
+
+/**
+ * Non-2xx API responses carry structured bodies (code + extra data, e.g. the
+ * possession-verification payload on 409s). Keep them on the thrown error so
+ * tool catch blocks can render specifics instead of a flattened string.
+ */
+class ApiError extends Error {
+  status: number;
+  code: string | null;
+  body: any;
+  constructor(message: string, status: number, body: any) {
+    super(message);
+    this.status = status;
+    this.code = typeof body?.code === "string" ? body.code : null;
+    this.body = body;
+  }
 }
 
 function makeApiRequest(apiKey: string, apiBase: string) {
@@ -46,10 +65,35 @@ function makeApiRequest(apiKey: string, apiBase: string) {
 
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.error || `API request failed: ${res.status}`);
+      throw new ApiError(data.error || `API request failed: ${res.status}`, res.status, data);
     }
     return data;
   };
+}
+
+/**
+ * Render the possession-verification ask (409 VERIFICATION_REQUIRED) as chat
+ * instructions the agent can relay verbatim. Returns null for other errors.
+ */
+function verificationAskText(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.code !== "VERIFICATION_REQUIRED") return null;
+  const v = err.body?.verification;
+  if (!v?.code) return null;
+  const why =
+    v.reason === "source_conflict"
+      ? "its source URL was already imported by another seller"
+      : v.reason === "luxury_category"
+        ? "it is a luxury-category item"
+        : "it is a high-value item";
+  return (
+    `**Possession verification needed before this listing can go live** (${why}).\n\n` +
+    `Verification code: **${v.code}**\n\n` +
+    `Ask the seller to:\n` +
+    `1. Write ${v.code} by hand on a piece of paper\n` +
+    `2. Photograph the paper next to the item - both clearly visible in one shot\n` +
+    `3. Send that photo here in chat\n\n` +
+    `Then submit it with firestarter_verify (listing_id + the photo URL). A match auto-approves in seconds - no human review on the happy path.`
+  );
 }
 
 async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, executionId: string, timeoutMs: number = 60_000): Promise<any> {
@@ -571,10 +615,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Array.isArray(draft.needs_review) && draft.needs_review.length > 0) {
           text += `Needs review (extraction was uncertain or found nothing): ${draft.needs_review.join(", ")}\n`;
         }
+        if (draft.verification?.status === "required") {
+          const why = draft.verification.reason === "source_conflict"
+            ? "this source URL was already imported by another seller"
+            : String(draft.verification.reason || "verification required");
+          text += `Heads-up: possession verification will be required at activation (${why}). The seller will get an FS-XXXX code to write by hand and photograph next to the item.\n`;
+        }
         text += `\nNext steps:\n`;
         text += `1. Walk the seller through the draft - fix details with firestarter_update_listing, set or adjust the price with firestarter_reprice.\n`;
         text += `2. Check payouts with firestarter_payouts - activation is blocked until the seller's Stripe payouts are connected.\n`;
-        text += `3. Only after the seller confirms it looks right: firestarter_update_listing with status "active". Then it becomes buyable and gets its share link.`;
+        text += `3. Only after the seller confirms it looks right: firestarter_update_listing with status "active". High-value (>= $500) and luxury-category items will ask for a possession photo first - relay the code instructions, then submit the seller's photo with firestarter_verify. Once active, it becomes buyable and gets its share link.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -756,7 +806,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_update_listing
   server.tool(
     "firestarter_update_listing",
-    "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also activates imported drafts (status 'active') - drafts need a positive price and the seller's Stripe payouts connected first (see firestarter_import / firestarter_payouts). For pricing changes, use firestarter_reprice instead.",
+    "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also activates imported drafts (status 'active') - drafts need a positive price and the seller's Stripe payouts connected first (see firestarter_import / firestarter_payouts). High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code to relay, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
     {
       listing_id: z.string().describe("The listing ID to update"),
       product_name: z.string().optional().describe("New product name/title"),
@@ -785,7 +835,83 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.status) text += `Status: ${listing.status}\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
+        // Activation can trip the possession-verification gate - surface the
+        // code + photo instructions instead of a flattened error string.
+        const ask = verificationAskText(err);
+        if (ask) {
+          return { content: [{ type: "text" as const, text: ask }], isError: true };
+        }
+        if (err instanceof ApiError && err.code === "VERIFICATION_PENDING") {
+          return {
+            content: [{ type: "text" as const, text: `Cannot activate yet: a verification photo was received but could not be auto-checked, so it is held for review. The seller can resubmit a clearer photo with firestarter_verify (item + handwritten code both visible).` }],
+            isError: true,
+          };
+        }
+        if (err instanceof ApiError && err.code === "VERIFICATION_FLAGGED") {
+          return {
+            content: [{ type: "text" as const, text: `Cannot activate yet: the last verification photo did not match this listing, so it is queued for review. Ask the seller for a clearer photo - the item and the handwritten code both visible in one shot - and resubmit with firestarter_verify.` }],
+            isError: true,
+          };
+        }
         return { content: [{ type: "text" as const, text: `Error updating listing: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_verify
+  // A3: possession-verification evidence. Wraps POST /v1/listings/:id/verification.
+  // The happy path is human-free: vision soft-check auto-approves, the agent
+  // relays the outcome and activates. Mismatches flag (resubmit allowed);
+  // vision errors hold as pending (fail-safe, never fail-open).
+  server.tool(
+    "firestarter_verify",
+    "Submit a possession-verification photo for a listing whose activation asked for one (high-value >= $500, luxury category, or a source-URL conflict). The seller writes the FS-XXXX code by hand, photographs the paper next to the item, and sends the photo in chat - pass that photo's URL here with the listing ID. A match verifies instantly (then activate via firestarter_update_listing); a mismatch is flagged and the seller can resubmit a clearer photo; an unreadable photo is held for review.",
+    {
+      listing_id: z.string().describe("The listing ID (lst_...) that needs possession verification"),
+      photo_url: z.string().describe("Public https URL of the seller's photo showing the item next to the handwritten verification code"),
+    },
+    async ({ listing_id, photo_url }) => {
+      try {
+        const r = await apiRequest("POST", `/v1/listings/${listing_id}/verification`, { photo_url }, VERIFY_TIMEOUT_MS);
+        if (r.verification_status === "verified") {
+          const already = !r.checked;
+          const text = already
+            ? `**Listing ${listing_id} is already verified.** Activate it with firestarter_update_listing (status "active") once the seller confirms the draft looks right.`
+            : `**Verified.** The photo matches the listing and the handwritten code - no human review needed.\n\nNext: after the seller confirms the draft looks right, activate with firestarter_update_listing (status "active").`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+        if (r.verification_status === "flagged") {
+          const text =
+            `**Not verified - the photo did not clearly match.**\n` +
+            `Item match: ${r.checked?.item_match === true ? "yes" : "no"} | Code match: ${r.checked?.code_match === true ? "yes" : "no"}\n\n` +
+            `It is queued for review, but the seller can resubmit right away: one clear photo with the item AND the handwritten code both visible, then call firestarter_verify again.`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+        // pending: vision could not check - held, never auto-approved
+        return {
+          content: [{ type: "text" as const, text: `**Photo received but not auto-checked.** ${r.message || "It is held for review."} The seller can also resubmit a clearer photo with firestarter_verify later.` }],
+        };
+      } catch (err: any) {
+        const ask = verificationAskText(err);
+        if (ask) {
+          // First evidence attempt on a collision-born draft: the code was
+          // just issued - relay the instructions, then resubmit the photo.
+          return { content: [{ type: "text" as const, text: ask }], isError: true };
+        }
+        if (err instanceof ApiError && err.code === "VERIFICATION_NOT_REQUIRED") {
+          return {
+            content: [{ type: "text" as const, text: `This listing does not need possession verification. Activate it directly with firestarter_update_listing (status "active").` }],
+            isError: true,
+          };
+        }
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (err instanceof ApiError && (err.code === "INVALID_PHOTO_URL" || err.code === "MISSING_PHOTO_URL")) {
+          hint = "\n\nThe photo must be a public https image URL (e.g. the URL of the photo the seller sent in chat). Ask the seller to re-send the photo if needed.";
+        } else if (/not found/i.test(msg)) {
+          hint = "\n\nCall firestarter_listings to check the listing ID.";
+        }
+        return { content: [{ type: "text" as const, text: `Error submitting verification photo: ${msg}${hint}` }], isError: true };
       }
     }
   );
