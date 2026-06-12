@@ -696,10 +696,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
+        // Error CODES ride on ApiError.code, never inside the message string.
+        const code: string = err?.code ?? "";
         let hint = "";
-        if (msg.includes("INVALID_BUYER_EMAIL")) {
+        if (code === "INVALID_BUYER_EMAIL") {
           hint = "\n\nAsk the buyer for a valid email address - it is where the goes-live notification lands.";
-        } else if (msg.includes("INVALID_URL")) {
+        } else if (code === "INVALID_URL") {
           hint = "\n\nThe listing URL was rejected. Ask the buyer to copy the full address bar URL of the listing.";
         } else if (msg.includes("Too many requests")) {
           hint = "\n\nRate limit hit - wait a bit before creating another escrow request.";
