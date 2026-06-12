@@ -183,7 +183,15 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // agent walks a buyer into approving one (the API rejects it anyway).
       const browseOnly = opt.purchasable === false;
       const optLines: string[] = [];
-      optLines.push(`\n**${i + 1}. ${opt.product_title}** — $${opt.total} from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " — ⚠ browse-only (external)" : ""}`);
+      // Line-item breakdown: "$55.80" with no context reads as a price
+      // discrepancy when the listing says $45.81 (debug 2026-06-12: agent
+      // flagged item+shipping total as "the listed price" to a buyer).
+      const bdParts: string[] = [];
+      if (opt.subtotal != null) bdParts.push(`$${opt.subtotal} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`);
+      if (opt.shipping_cost != null && Number(opt.shipping_cost) > 0) bdParts.push(`$${opt.shipping_cost} shipping`);
+      if (opt.tax != null && Number(opt.tax) > 0) bdParts.push(`$${opt.tax} tax`);
+      const breakdown = bdParts.length > 1 ? ` (${bdParts.join(" + ")})` : "";
+      optLines.push(`\n**${i + 1}. ${opt.product_title}** — $${opt.total}${breakdown} from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " — ⚠ browse-only (external)" : ""}`);
       if (opt.product_url) optLines.push(`  URL: ${opt.product_url}`);
       if (browseOnly) optLines.push(`  External marketplace result — Firestarter cannot purchase it. Do not approve this option; share the URL so the buyer can purchase directly.`);
       if (imageUrl) optLines.push(`  ![${opt.product_title}](${imageUrl})`);
