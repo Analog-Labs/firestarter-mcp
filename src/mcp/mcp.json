@@ -213,6 +213,36 @@
       }
     },
     {
+      "name": "firestarter_import",
+      "description": "Import a seller's EXISTING listing from another marketplace (Craigslist, Gumtree, their own site) into Firestarter. Give it the listing URL, or pasted listing text plus photo URLs, and it creates a DRAFT listing for the seller to review - not live, not buyable, no share link yet. eBay, Etsy, Facebook Marketplace, OfferUp and Mercari block server fetches: for those, do NOT send the URL - ask the seller to copy-paste the listing text and photo URLs instead. Activation (firestarter_update_listing, status 'active') requires a positive price (firestarter_reprice if the import found none) and the seller's Stripe payouts connected (firestarter_payouts).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source_url": {
+            "type": "string",
+            "description": "URL of the seller's existing listing (e.g. a Craigslist post). Omit for blocked platforms - paste text instead."
+          },
+          "raw_text": {
+            "type": "string",
+            "description": "Pasted listing text (title, price, description - at least 10 characters). Required when source_url is omitted or blocked; also fills gaps URL extraction missed."
+          },
+          "photo_urls": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Photo URLs for the listing, e.g. image links the seller pasted in chat. Seller photos lead the images array."
+          }
+        }
+      }
+    },
+    {
+      "name": "firestarter_payouts",
+      "description": "Check whether the seller's Stripe payouts are connected - required before an imported draft can be activated, and before the seller can be paid at all. If payouts are not connected, this also returns a Stripe onboarding link to send to the seller. Use it before activating imported drafts, or whenever a seller asks about getting paid.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
       "name": "firestarter_listings",
       "description": "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — every listing has a public share link (https://firestarter.network/l/<id>) that unfurls into a product card and hands purchase instructions to any AI agent that opens it.",
       "inputSchema": {
@@ -281,6 +311,41 @@
               "required": ["name", "type", "config"]
             },
             "description": "Dynamic pricing rules"
+          }
+        },
+        "required": ["listing_id"]
+      }
+    },
+    {
+      "name": "firestarter_update_listing",
+      "description": "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also activates imported drafts (status 'active') - drafts need a positive price and the seller's Stripe payouts connected first (see firestarter_import / firestarter_payouts). For pricing changes, use firestarter_reprice instead.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listing_id": {
+            "type": "string",
+            "description": "The listing ID to update"
+          },
+          "product_name": {
+            "type": "string",
+            "description": "New product name/title"
+          },
+          "description": {
+            "type": "string",
+            "description": "New product description"
+          },
+          "category": {
+            "type": "string",
+            "description": "New category (e.g. 'sports/tennis')"
+          },
+          "inventory_qty": {
+            "type": "number",
+            "description": "Updated inventory quantity"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "paused", "out_of_stock"],
+            "description": "New listing status"
           }
         },
         "required": ["listing_id"]
