@@ -8,6 +8,9 @@ import { z } from "zod";
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 const API_REQUEST_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_API_TIMEOUT_MS || 12_000);
+// Listing import fetches the source page server-side (10s cap) and may run an
+// LLM extraction on top - it needs more than the default API budget.
+const IMPORT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMPORT_TIMEOUT_MS || 25_000);
 const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 1_000);
 const EMBED_IMAGES = process.env.FIRESTARTER_MCP_EMBED_IMAGES === "true";
 const MAX_EMBED_IMAGES = Number(process.env.FIRESTARTER_MCP_MAX_EMBED_IMAGES || 2);
@@ -26,7 +29,7 @@ function toErrorMessage(err: unknown): string {
 }
 
 function makeApiRequest(apiKey: string, apiBase: string) {
-  return async function apiRequest(method: string, path: string, body?: unknown) {
+  return async function apiRequest(method: string, path: string, body?: unknown, timeoutMs: number = API_REQUEST_TIMEOUT_MS) {
     const url = `${apiBase}${path}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
@@ -38,7 +41,7 @@ function makeApiRequest(apiKey: string, apiBase: string) {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     const data = await res.json();
@@ -533,6 +536,95 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_import
+  // A2: the Cole-chat seller claim funnel. Wraps POST /v1/listings/import -
+  // the draft is reviewed in chat, then activated via firestarter_update_listing.
+  server.tool(
+    "firestarter_import",
+    "Import a seller's EXISTING listing from another marketplace (Craigslist, Gumtree, their own site) into Firestarter. Give it the listing URL, or pasted listing text plus photo URLs, and it creates a DRAFT listing for the seller to review - not live, not buyable, no share link yet. eBay, Etsy, Facebook Marketplace, OfferUp and Mercari block server fetches: for those, do NOT send the URL - ask the seller to copy-paste the listing text and photo URLs instead. Activation (firestarter_update_listing, status 'active') requires a positive price (firestarter_reprice if the import found none) and the seller's Stripe payouts connected (firestarter_payouts).",
+    {
+      source_url: z.string().optional().describe("URL of the seller's existing listing (e.g. a Craigslist post). Omit for blocked platforms - paste text instead."),
+      raw_text: z.string().optional().describe("Pasted listing text (title, price, description - at least 10 characters). Required when source_url is omitted or blocked; also fills gaps URL extraction missed."),
+      photo_urls: z.array(z.string()).optional().describe("Photo URLs for the listing, e.g. image links the seller pasted in chat. Seller photos lead the images array."),
+    },
+    async ({ source_url, raw_text, photo_urls }) => {
+      try {
+        const body: any = {};
+        if (source_url) body.source_url = source_url;
+        if (raw_text) body.raw_text = raw_text;
+        if (photo_urls && photo_urls.length > 0) body.photo_urls = photo_urls;
+        // Import does a server-side page fetch (10s cap) + LLM extraction -
+        // give it more headroom than the default API budget.
+        const draft = await apiRequest("POST", "/v1/listings/import", body, IMPORT_TIMEOUT_MS);
+
+        let text = `**Draft imported: ${draft.product_name}**\nID: ${draft.id}\nStatus: draft (NOT live - buyers cannot see or buy it yet)\n`;
+        text += Number(draft.base_price) > 0
+          ? `Price: $${draft.base_price} ${draft.currency}\n`
+          : `Price: none found - set one with firestarter_reprice before activating\n`;
+        if (draft.category) text += `Category: ${draft.category}\n`;
+        if (draft.condition) text += `Condition: ${draft.condition}\n`;
+        if (draft.description) {
+          const d = String(draft.description);
+          text += `Description: ${d.slice(0, 200)}${d.length > 200 ? "..." : ""}\n`;
+        }
+        text += `Photos: ${Array.isArray(draft.images) ? draft.images.length : 0}\n`;
+        if (Array.isArray(draft.needs_review) && draft.needs_review.length > 0) {
+          text += `Needs review (extraction was uncertain or found nothing): ${draft.needs_review.join(", ")}\n`;
+        }
+        text += `\nNext steps:\n`;
+        text += `1. Walk the seller through the draft - fix details with firestarter_update_listing, set or adjust the price with firestarter_reprice.\n`;
+        text += `2. Check payouts with firestarter_payouts - activation is blocked until the seller's Stripe payouts are connected.\n`;
+        text += `3. Only after the seller confirms it looks right: firestarter_update_listing with status "active". Then it becomes buyable and gets its share link.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (/blocks server-side fetches/i.test(msg)) {
+          hint = "\n\nThat platform cannot be fetched. Ask the seller to copy-paste the listing text (title, price, description) and photo URLs into chat, then call firestarter_import again with raw_text + photo_urls.";
+        } else if (/no active seller profile/i.test(msg) || msg.includes("NO_SELLER_PROFILE")) {
+          hint = "\n\nThe seller is not registered yet - they need a seller profile before importing. Point them to firestarter.network/sell to register, then retry.";
+        } else if (/could not fetch/i.test(msg)) {
+          hint = "\n\nAsk the seller to paste the listing text directly into chat and retry with raw_text.";
+        }
+        return { content: [{ type: "text" as const, text: `Error importing listing: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_payouts
+  server.tool(
+    "firestarter_payouts",
+    "Check whether the seller's Stripe payouts are connected - required before an imported draft can be activated, and before the seller can be paid at all. If payouts are not connected, this also returns a Stripe onboarding link to send to the seller. Use it before activating imported drafts, or whenever a seller asks about getting paid.",
+    {},
+    async () => {
+      try {
+        const status = await apiRequest("GET", "/v1/sellers/stripe-connect/status");
+        if (status.charges_enabled) {
+          let text = "**Payouts connected.** The seller's Stripe account can receive funds - imported drafts can be activated.";
+          if (!status.payouts_enabled) {
+            text += "\nNote: bank payouts are still pending verification on Stripe's side; this does not block activating listings.";
+          }
+          return { content: [{ type: "text" as const, text }] };
+        }
+        // Not payable yet - fetch an onboarding link so the seller can finish.
+        // Idempotent: an existing Connect account just gets a fresh link.
+        const link = await apiRequest("POST", "/v1/sellers/stripe-connect");
+        let text = status.connected
+          ? "**Payouts not finished.** The seller started Stripe onboarding but charges are not enabled yet.\n"
+          : "**Payouts not connected.** The seller has not set up Stripe payouts.\n";
+        text += `\nSend the seller this onboarding link (a secure Stripe-hosted page - send it bare so it is clickable):\n${link.onboarding_url}\n`;
+        text += `\nAfter they finish, run firestarter_payouts again to verify, then activate the listing.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        const hint = /no active seller profile/i.test(msg)
+          ? "\n\nThe seller is not registered yet - point them to firestarter.network/sell to register first."
+          : "";
+        return { content: [{ type: "text" as const, text: `Error checking payouts: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_listings
   server.tool(
     "firestarter_listings",
@@ -664,7 +756,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_update_listing
   server.tool(
     "firestarter_update_listing",
-    "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. For pricing changes, use firestarter_reprice instead.",
+    "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also activates imported drafts (status 'active') - drafts need a positive price and the seller's Stripe payouts connected first (see firestarter_import / firestarter_payouts). For pricing changes, use firestarter_reprice instead.",
     {
       listing_id: z.string().describe("The listing ID to update"),
       product_name: z.string().optional().describe("New product name/title"),
