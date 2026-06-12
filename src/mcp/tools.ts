@@ -795,7 +795,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
-        const hint = msg.includes("BOOKING_FAILED")
+        // Error CODES ride on ApiError.code, never inside the message string.
+        const hint = err?.code === "BOOKING_FAILED"
           ? "\n\nThe quote may have expired - run firestarter_assist_quote again and re-confirm with the human."
           : "";
         return { content: [{ type: "text" as const, text: `Error booking courier: ${msg}${hint}` }], isError: true };
