@@ -70,4 +70,29 @@ describe("firestarter_status margin disclosure (D3.5)", () => {
     expect(text).not.toMatch(/integration margin/);
     expect(text).not.toContain("Total with app margin");
   });
+
+  it("margin_bps explicitly 0 renders nothing extra", async () => {
+    const tools = captureTools();
+    installFetch(execWith({ margin_bps: 0, per_transaction_cap_cents: 5000 }));
+    const text = textOf(await tools.firestarter_status({ execution_id: "exec_d35" }));
+    expect(text).not.toContain("Total with app margin");
+  });
+
+  it("no cap field present -> falls back to the $50 default cap", async () => {
+    const tools = captureTools();
+    // 10% of $100 = $10, well under the default $50 cap -> $110.00
+    installFetch(execWith({ margin_bps: 1000 }));
+    const text = textOf(await tools.firestarter_status({ execution_id: "exec_d35" }));
+    expect(text).toContain("Total with app margin: $110.00 (+$10.00)");
+  });
+
+  it("shown total equals the charged total for the SAME option (render uses marginCentsFor)", async () => {
+    const { marginCentsFor } = await import("../../src/lib/margin.js");
+    const tools = captureTools();
+    installFetch(execWith({ margin_bps: 200, per_transaction_cap_cents: 5000 }));
+    const text = textOf(await tools.firestarter_status({ execution_id: "exec_d35" }));
+    // Sony option total is $100.00 -> charge path: marginCentsFor(10000,200)=200
+    const charged = marginCentsFor(10_000, 200);
+    expect(text).toContain(`(+$${(charged / 100).toFixed(2)})`);
+  });
 });
