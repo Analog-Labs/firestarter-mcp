@@ -110,7 +110,7 @@ async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, exec
   while (Date.now() - start < timeoutMs) {
     const exec = await apiRequest("GET", `/v1/executions/${executionId}`);
     const hasOptions = Array.isArray(exec.options) && exec.options.length > 0;
-    if (hasOptions || ["awaiting_approval", "quoted", "completed", "failed", "cancelled", "paid", "shipping", "delivered"].includes(exec.status)) {
+    if (hasOptions || ["awaiting_approval", "awaiting_payment_method", "quoted", "completed", "failed", "cancelled", "paid", "shipping", "delivered"].includes(exec.status)) {
       return exec;
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -159,6 +159,19 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
 
   if (exec.current_step) {
     lines.push(`Current step: ${exec.current_step}`);
+  }
+
+  // Order approved but no payment method on file — relay the no-login setup
+  // link so the buyer can finish (the order resumes automatically once a card
+  // is added). Without this the link never reached chat buyers and orders
+  // parked on awaiting_payment_method forever.
+  if (exec.status === "awaiting_payment_method") {
+    lines.push("");
+    lines.push(
+      exec.setup_url
+        ? `**Action needed — add a payment method to finish this order:** ${exec.setup_url}\n(No login needed. The order completes automatically once a card is added.)`
+        : "**Action needed:** this order is approved and waiting on a payment method. Ask the buyer to add a card from their dashboard billing settings; the order resumes automatically once added."
+    );
   }
 
   if (exec.options && exec.options.length > 0) {
