@@ -649,7 +649,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
-    "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. To VIEW listings you already have, use firestarter_listings instead.",
+    "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. When the seller sent a photo, pass its URL in image_urls so the listing has a product image. To VIEW listings you already have, use firestarter_listings instead.",
     {
       product_name: z.string().describe("Product name"),
       base_price: z.number().describe("Base price in USD"),
@@ -658,8 +658,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       ceiling_price: z.number().optional().describe("Never surge above this price"),
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Available quantity"),
+      image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). When the seller sent a photo, pass the URL from its '[image attached: <url>]' marker here — do not ask them to re-send a photo already in the conversation."),
     },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls }) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -667,12 +668,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (ceiling_price !== undefined) body.ceiling_price = ceiling_price;
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
+        if (image_urls?.length) body.images = image_urls;
         const listing = await apiRequest("POST", "/v1/listings", body);
         let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
+        if (Array.isArray(listing.images) && listing.images.length) text += `Photos: ${listing.images.length} attached\n`;
         text += `Share link: ${SHARE_LINK_BASE}/${listing.id}\n`;
         text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
         return { content: [{ type: "text" as const, text }] };
@@ -1068,8 +1071,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       category: z.string().optional().describe("New category (e.g. 'sports/tennis')"),
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
+      image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs (e.g. from the seller's '[image attached: <url>]' marker). Use this to add a photo to a listing that has none — never ask the seller to re-send a photo already in the conversation."),
     },
-    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status }) => {
+    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
@@ -1078,6 +1082,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (category !== undefined) body.category = category;
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (status !== undefined) body.status = status;
+        if (image_urls !== undefined) body.images = image_urls;
         if (Object.keys(body).length === 0) {
           return { content: [{ type: "text" as const, text: "No updates provided. Specify at least one field to change." }], isError: true };
         }
