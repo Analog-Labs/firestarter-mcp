@@ -305,7 +305,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             type: "text",
             text: purchasableCount === 0 && opts.length > 0
               ? "\n\n**Note:** every result is an external marketplace listing — browse-only. Firestarter cannot purchase them: share the URLs so the buyer can purchase directly, use `firestarter_message` to refine the search toward Firestarter marketplace listings, or `firestarter_cancel`."
-              : `\n\n**Action needed:** Use \`firestarter_approve\` to approve an option, or \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only (external) options cannot be approved — share their URLs instead." : ""}`,
+              : `\n\n**Action needed:** the user can reply "approve" to buy the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only (external) options cannot be approved — share their URLs instead." : ""}`,
           });
         }
         return { content: blocks };
@@ -350,14 +350,66 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Approve an execution that is awaiting approval. By default this approves the pre-selected (best purchasable) option and proceeds with payment; pass selected_option or option_id to approve a different option. Only Firestarter-purchasable options can be approved — external browse-only results are rejected with their direct purchase link instead.",
+    "Approve an execution that is awaiting approval. By default this approves the pre-selected (best purchasable) option and proceeds with payment; pass selected_option or option_id to approve a different option. Only Firestarter-purchasable options can be approved — external browse-only results are rejected with their direct purchase link instead. When the user just says \"approve\" without naming an order, omit execution_id: the tool resolves the pending purchase automatically (and asks which one only if several are pending).",
     {
-      execution_id: z.string().describe("The execution ID to approve (e.g. 'exec_abc123')"),
+      execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
       option_id: z.string().optional().describe("Exact option id (e.g. 'opt_abc123') to approve, as returned in API errors or the execution resource. Takes precedence over selected_option."),
     },
     async ({ execution_id, selected_option, option_id }) => {
       try {
+        // Bare "approve" (no execution_id): resolve the pending purchase so a
+        // user replying just "approve" in chat doesn't dead-end with "nothing
+        // pending approval" (issue #172). The /approve route needs an id, and
+        // the agent often no longer holds it a few turns after the prompt.
+        // Prefer an execution awaiting_approval; if none, fall through to one
+        // parked at awaiting_payment_method so the approve call returns the
+        // actionable PAYMENT_METHOD_REQUIRED guidance instead of a dead end.
+        if (!execution_id) {
+          const list = await apiRequest("GET", "/v1/executions?limit=20");
+          const all: any[] = Array.isArray(list?.executions)
+            ? list.executions
+            : Array.isArray(list)
+            ? list
+            : [];
+          const approvable = all.filter((e) => e.status === "awaiting_approval");
+          if (approvable.length === 1) {
+            execution_id = approvable[0].id;
+          } else if (approvable.length > 1) {
+            const lines = approvable
+              .slice(0, 10)
+              .map((e) => `- \`${e.id}\` — ${e.request_text?.slice(0, 60) || "(no description)"}`);
+            return {
+              content: [{
+                type: "text" as const,
+                text: `You have ${approvable.length} purchases awaiting approval. Call firestarter_approve again with the execution_id of the one to approve:\n${lines.join("\n")}`,
+              }],
+              isError: true,
+            };
+          } else {
+            const parked = all.filter((e) => e.status === "awaiting_payment_method");
+            if (parked.length >= 1) {
+              // Hand the most recent parked order to the approve route; it
+              // returns PAYMENT_METHOD_REQUIRED with a setup URL (actionable).
+              execution_id = parked[0].id;
+            } else {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: "There's nothing awaiting your approval right now. If you just started a search it may still be finding options — check firestarter_status, or start a new request.",
+                }],
+                isError: true,
+              };
+            }
+          }
+        }
+        if (!execution_id) {
+          return {
+            content: [{ type: "text" as const, text: "No execution to approve." }],
+            isError: true,
+          };
+        }
+
         const body: any = {};
         if (option_id) {
           body.option_id = option_id;
