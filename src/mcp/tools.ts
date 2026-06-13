@@ -4,6 +4,7 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { marginCentsFor } from "../lib/margin.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -207,9 +208,10 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // of the real number.
       if (!browseOnly && dm && dm.margin_bps > 0 && opt.total != null) {
         const itemCents = Math.round(Number(opt.total) * 100);
-        if (isFinite(itemCents) && itemCents > 0) {
-          const capCents = typeof dm.per_transaction_cap_cents === "number" ? dm.per_transaction_cap_cents : Infinity;
-          const marginCents = Math.min(Math.round((itemCents * dm.margin_bps) / 10000), capCents);
+        // Same pure function the charge path uses - shown == charged, always.
+        const capCents = typeof dm.per_transaction_cap_cents === "number" ? dm.per_transaction_cap_cents : undefined;
+        const marginCents = marginCentsFor(itemCents, dm.margin_bps, capCents);
+        if (marginCents > 0) {
           optLines.push(`  Total with app margin: $${((itemCents + marginCents) / 100).toFixed(2)} (+$${(marginCents / 100).toFixed(2)})`);
         }
       }
