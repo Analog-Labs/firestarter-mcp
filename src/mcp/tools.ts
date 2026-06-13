@@ -954,7 +954,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (l.category) text += `Category: ${l.category}\n`;
           if (l.description) text += `Description: ${String(l.description).slice(0, 300)}\n`;
           if (Array.isArray(l.images) && l.images.length > 0) {
-            text += `Image: ${l.images[0]}${l.images.length > 1 ? ` (+${l.images.length - 1} more)` : ""}\n`;
+            if (l.images.length === 1) {
+              text += `Image: ${l.images[0]}\n`;
+            } else {
+              text += `Images (${l.images.length}):\n`;
+              for (const img of l.images) text += `  - ${img}\n`;
+            }
           }
           if (l.demand_score != null) text += `Demand score: ${l.demand_score}\n`;
           if (l.created_at) text += `Listed: ${l.created_at}\n`;

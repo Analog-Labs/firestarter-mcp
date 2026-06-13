@@ -46,6 +46,16 @@ function installFetch() {
       if (method === "PATCH" && String(url).includes("/v1/listings/")) {
         return jsonResponse(200, { id: "lst_new1", product_name: "X", status: "active", images: body.images ?? [] });
       }
+      if (method === "GET" && /\/v1\/listings\/lst_/.test(String(url))) {
+        const id = String(url).split("/v1/listings/")[1];
+        const images =
+          id === "lst_multi"
+            ? ["https://img.test/1.jpg", "https://img.test/2.jpg", "https://img.test/3.jpg"]
+            : id === "lst_none"
+              ? []
+              : ["https://img.test/only.jpg"];
+        return jsonResponse(200, { id, product_name: "Sample", current_price: 5, base_price: 5, status: "active", images });
+      }
       throw new Error(`unexpected fetch: ${method} ${url}`);
     })
   );
@@ -88,5 +98,33 @@ describe("firestarter_list / update — image_urls", () => {
     const patch = fetchCalls.find((c) => c.method === "PATCH");
     expect(patch?.body.images).toEqual([url]);
     expect(res.isError).toBeFalsy();
+  });
+});
+
+describe("firestarter_listings — image URL output (so the agent can post photos to chat)", () => {
+  it("lists EVERY image URL for a multi-photo listing, not just the first", async () => {
+    installFetch();
+    const tools = captureTools();
+
+    const res = await tools.firestarter_listings({ listing_id: "lst_multi" });
+    const text = res.content[0].text as string;
+
+    expect(text).toContain("Images (3):");
+    expect(text).toContain("https://img.test/1.jpg");
+    expect(text).toContain("https://img.test/2.jpg");
+    expect(text).toContain("https://img.test/3.jpg");
+    // No lossy "(+N more)" truncation — the agent needs every URL to send each photo.
+    expect(text).not.toMatch(/more\)/);
+  });
+
+  it("shows the single image URL for a one-photo listing", async () => {
+    installFetch();
+    const tools = captureTools();
+
+    const res = await tools.firestarter_listings({ listing_id: "lst_one" });
+    const text = res.content[0].text as string;
+
+    expect(text).toContain("Image: https://img.test/only.jpg");
+    expect(text).not.toContain("Images (");
   });
 });
