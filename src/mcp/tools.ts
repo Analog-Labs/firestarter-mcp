@@ -163,6 +163,16 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
   if (exec.options && exec.options.length > 0) {
     lines.push("");
     lines.push("**Options found:**");
+    // D3.5: if this org charges a developer margin, disclose it WITH the
+    // prices the human is choosing among - so their approval is on the true
+    // total, not a number that grows at payment.
+    const dm = exec.developer_margin;
+    if (dm && typeof dm.margin_bps === "number" && dm.margin_bps > 0) {
+      const cap = typeof dm.per_transaction_cap_cents === "number" ? ` (capped at $${(dm.per_transaction_cap_cents / 100).toFixed(0)})` : "";
+      lines.push(
+        `> Heads-up: this app adds a ${(dm.margin_bps / 100).toFixed(2)}% integration margin${cap} on top of the prices below. It is applied at payment and included in the total you approve - state it to the buyer before they confirm.`
+      );
+    }
     blocks.push({ type: "text", text: lines.join("\n") });
     lines.length = 0;
 
@@ -192,6 +202,17 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       if (opt.tax != null && Number(opt.tax) > 0) bdParts.push(`$${opt.tax} tax`);
       const breakdown = bdParts.length > 1 ? ` (${bdParts.join(" + ")})` : "";
       optLines.push(`\n**${i + 1}. ${opt.product_title}** — $${opt.total}${breakdown} from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " — ⚠ browse-only (external)" : ""}`);
+      // D3.5: a purchasable option's TRUE total includes the app margin (added
+      // at payment, double-capped). Show it so "approve option 1" is approval
+      // of the real number.
+      if (!browseOnly && dm && dm.margin_bps > 0 && opt.total != null) {
+        const itemCents = Math.round(Number(opt.total) * 100);
+        if (isFinite(itemCents) && itemCents > 0) {
+          const capCents = typeof dm.per_transaction_cap_cents === "number" ? dm.per_transaction_cap_cents : Infinity;
+          const marginCents = Math.min(Math.round((itemCents * dm.margin_bps) / 10000), capCents);
+          optLines.push(`  Total with app margin: $${((itemCents + marginCents) / 100).toFixed(2)} (+$${(marginCents / 100).toFixed(2)})`);
+        }
+      }
       if (opt.product_url) optLines.push(`  URL: ${opt.product_url}`);
       if (browseOnly) optLines.push(`  External marketplace result — Firestarter cannot purchase it. Do not approve this option; share the URL so the buyer can purchase directly.`);
       if (imageUrl) optLines.push(`  ![${opt.product_title}](${imageUrl})`);
