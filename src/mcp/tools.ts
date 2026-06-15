@@ -5,6 +5,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { marginCentsFor } from "../lib/margin.js";
+import { isRelevantMatch } from "../lib/relevance.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -314,11 +315,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (exec.status === "awaiting_approval") {
           const opts = Array.isArray(exec.options) ? exec.options : [];
           const purchasableCount = opts.filter((o: any) => o.purchasable !== false).length;
+          // #206 relevance floor (shared isRelevantMatch, same threshold the
+          // worker uses to pre-select): never invite "approve the best option"
+          // when nothing is a confident match - an irrelevant top result must
+          // not be pitched as buyable.
+          const hasRelevantMatch = isRelevantMatch(opts.map((o: any) => o.match_score));
           blocks.push({
             type: "text",
-            text: purchasableCount === 0 && opts.length > 0
-              ? "\n\n**Note:** every result is an external marketplace listing — browse-only. Firestarter cannot purchase them: share the URLs so the buyer can purchase directly, use `firestarter_message` to refine the search toward Firestarter marketplace listings, or `firestarter_cancel`."
-              : `\n\n**Action needed:** the user can reply "approve" to buy the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only (external) options cannot be approved — share their URLs instead." : ""}`,
+            text: opts.length > 0 && !hasRelevantMatch
+              ? "\n\n**No confident match.** None of these results closely matches the request, so do not suggest buying any of them or name a \"best option\". Use `firestarter_message` to refine the search (add brand, model, size, or a price range), or share the result links so the buyer can browse. `firestarter_cancel` to stop."
+              : purchasableCount === 0 && opts.length > 0
+              ? "\n\n**Note:** every result is an external marketplace listing - browse-only. Firestarter cannot purchase them: share the URLs so the buyer can purchase directly, use `firestarter_message` to refine the search toward Firestarter marketplace listings, or `firestarter_cancel`."
+              : `\n\n**Action needed:** the user can reply "approve" to buy the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only (external) options cannot be approved - share their URLs instead." : ""}`,
           });
         }
         return { content: blocks };
