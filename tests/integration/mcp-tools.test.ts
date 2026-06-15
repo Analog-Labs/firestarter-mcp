@@ -84,7 +84,7 @@ Request: comfortable running shoes under $120
           text: `**Execution exec_abc** — Status: shipped
 Request: comfortable running shoes under $120
 
-Payment: $95.50 authorized (3% platform fee included)
+Payment: $95.50 authorized (5% + 50¢ platform fee included)
 Carrier: FedEx
 Tracking: 794629471294
 Estimated Delivery: June 8, 2026

@@ -70,7 +70,7 @@ const INVITE_201 = {
     platform: "craigslist",
     claim_url: "https://firestarter.network/claim/tok_mcp_abcdef",
     suggested_message:
-      "Hi! I'd like to buy your \"Power Rack\" listing and pay through Firestarter escrow so we're both protected - my payment is held until handoff, and there's nothing for you to pay up front (no listing fees, a 3% commission only when it sells). Claim the listing here and I can pay right away: https://firestarter.network/claim/tok_mcp_abcdef",
+      "Hi! I'd like to buy your \"Power Rack\" listing and pay through Firestarter escrow so we're both protected - my payment is held until handoff, and there's nothing for you to pay up front (no listing fees, a 5% + 50¢ commission only when it sells). Claim the listing here and I can pay right away: https://firestarter.network/claim/tok_mcp_abcdef",
     item: { title: "Power Rack", price: 800, currency: "USD" },
     expires_at: "2099-01-01T00:00:00.000Z",
     reused: false,
@@ -92,7 +92,7 @@ describe("firestarter_request_escrow", () => {
 
     expect(res.isError).toBeUndefined();
     expect(text).toContain("https://firestarter.network/claim/tok_mcp_abcdef");
-    expect(text).toContain("3% commission");
+    expect(text).toContain("5% + 50¢ commission");
     // The agent must hand the message to the BUYER to send - never automate.
     expect(text).toMatch(/send the seller this message themselves/i);
     expect(text).toMatch(/do not contact the seller/i);
