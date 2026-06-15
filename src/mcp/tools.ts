@@ -681,7 +681,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
-        const hint = msg.includes("NO_SELLER_PROFILE") ? "\n\nYou need to register as a seller first (POST /v1/sellers) before creating listings." : "";
+        // The REST 403 carries code NO_SELLER_PROFILE but its message is a plain
+        // sentence ("No active seller profile found...") - matching only the
+        // code token in the message missed it, so the agent got a bare error
+        // and looped (re-asking for details / "ran into an issue"). Detect via
+        // the structured code (phrasing as a fallback) and route to the chat
+        // seller-setup funnel the agent's skill knows.
+        const noSeller =
+          (err instanceof ApiError && err.code === "NO_SELLER_PROFILE") ||
+          /no active seller profile/i.test(msg) ||
+          msg.includes("NO_SELLER_PROFILE");
+        const hint = noSeller
+          ? "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Call firestarter_sell_link to give them a personalized setup link, then retry this listing once they have finished - you already have the product details, so do NOT ask for them again."
+          : "";
         return { content: [{ type: "text" as const, text: `Error creating listing: ${msg}${hint}` }], isError: true };
       }
     }
@@ -738,8 +750,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         let hint = "";
         if (/blocks server-side fetches/i.test(msg)) {
           hint = "\n\nThat platform cannot be fetched. Ask the seller to copy-paste the listing text (title, price, description) and photo URLs into chat, then call firestarter_import again with raw_text + photo_urls.";
-        } else if (/no active seller profile/i.test(msg) || msg.includes("NO_SELLER_PROFILE")) {
-          hint = "\n\nThe seller is not registered yet - they need a seller profile before importing. Point them to firestarter.network/sell to register, then retry.";
+        } else if ((err instanceof ApiError && err.code === "NO_SELLER_PROFILE") || /no active seller profile/i.test(msg) || msg.includes("NO_SELLER_PROFILE")) {
+          hint = "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Call firestarter_sell_link to give them a personalized setup link, then retry the import once they have finished.";
         } else if (/could not fetch/i.test(msg)) {
           hint = "\n\nAsk the seller to paste the listing text directly into chat and retry with raw_text.";
         }
