@@ -456,6 +456,38 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_payment_method
+  server.tool(
+    "firestarter_payment_method",
+    "Check the buyer's payment method status and get a link to add or update their card. Use this when a buyer asks about payment, wants to add a card before purchasing, or when an order is stuck at awaiting_payment_method. Returns a no-login Stripe setup link (works from any channel - WhatsApp, Slack, Telegram) plus a dashboard link as an alternative.",
+    {},
+    async () => {
+      try {
+        const methods = await apiRequest("GET", "/v1/payments/methods");
+        const cards = methods.payment_methods || [];
+        if (cards.length > 0) {
+          const card = cards.find((c: any) => c.card) || cards[0];
+          const detail = card.card ? `${card.card.brand} ending in ${card.card.last4} (expires ${card.card.exp_month}/${card.card.exp_year})` : "saved";
+          let text = `**Payment method on file:** ${detail}\n\nOrders will charge this card automatically. `;
+          text += `To update or add a different card, use this link:\n`;
+          const setup = await apiRequest("POST", "/v1/billing/setup-payment");
+          text += `${setup.url}\n\n`;
+          text += `Or go to the dashboard: https://firestarter.network/dashboard?tab=settings`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+        // No payment method - get a setup link
+        const setup = await apiRequest("POST", "/v1/billing/setup-payment");
+        let text = "**No payment method on file.** A card is needed before any purchase can complete.\n\n";
+        text += `Add a card here (no login needed - works from any device):\n${setup.url}\n\n`;
+        text += `Or add one from the dashboard: https://firestarter.network/dashboard?tab=settings\n\n`;
+        text += `Once added, any pending orders resume automatically.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error checking payment methods: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_cancel
   server.tool(
     "firestarter_cancel",
@@ -910,9 +942,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Check whether the seller's Stripe payouts are connected - required before an imported draft can be activated, and before the seller can be paid at all. If payouts are not connected, this also returns a Stripe onboarding link to send to the seller. Use it before activating imported drafts, or whenever a seller asks about getting paid.",
-    {},
-    async () => {
+    "Check whether the seller's Stripe payouts are connected - required before an imported draft can be activated, and before the seller can be paid at all. If payouts are not connected, this also returns a Stripe onboarding link to send to the seller. Use it before activating imported drafts, or whenever a seller asks about getting paid. Pass country (ISO 3166-1 alpha-2, e.g. 'TH', 'GB', 'IN') when the seller is outside the US so Stripe onboarding uses the right country.",
+    {
+      country: z.string().optional().describe("ISO 3166-1 alpha-2 country code for the seller (e.g. 'US', 'TH', 'GB', 'IN'). Only needed on first setup for non-US sellers."),
+    },
+    async ({ country }) => {
       try {
         const status = await apiRequest("GET", "/v1/sellers/stripe-connect/status");
         if (status.charges_enabled) {
@@ -924,7 +958,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         // Not payable yet - fetch an onboarding link so the seller can finish.
         // Idempotent: an existing Connect account just gets a fresh link.
-        const link = await apiRequest("POST", "/v1/sellers/stripe-connect");
+        const body: Record<string, string> = {};
+        if (country) body.country = country;
+        const link = await apiRequest("POST", "/v1/sellers/stripe-connect", Object.keys(body).length > 0 ? body : undefined);
         let text = status.connected
           ? "**Payouts not finished.** The seller started Stripe onboarding but charges are not enabled yet.\n"
           : "**Payouts not connected.** The seller has not set up Stripe payouts.\n";
