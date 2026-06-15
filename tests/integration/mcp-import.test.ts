@@ -164,7 +164,7 @@ describe("firestarter_import — draft import flow", () => {
     expect(text).toContain("raw_text + photo_urls");
   });
 
-  it("NO_SELLER_PROFILE points the seller at registration", async () => {
+  it("NO_SELLER_PROFILE routes the seller to firestarter_sell_link (issue #213)", async () => {
     installFetch(() => ({
       status: 403,
       json: {
@@ -177,8 +177,10 @@ describe("firestarter_import — draft import flow", () => {
 
     const res = await tools.firestarter_import({ source_url: DRAFT.import_url });
 
+    const text = textOf(res);
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toContain("firestarter.network/sell");
+    expect(text).toContain("NO_SELLER_PROFILE");
+    expect(text).toContain("firestarter_sell_link");
   });
 
   it("FETCH_FAILED suggests retrying with pasted text", async () => {
