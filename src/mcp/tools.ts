@@ -716,8 +716,28 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
         if (Array.isArray(listing.images) && listing.images.length) text += `Photos: ${listing.images.length} attached\n`;
-        text += `Share link: ${SHARE_LINK_BASE}/${listing.id}\n`;
-        text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
+        // Surface activation blocks so the seller knows WHY the listing is a
+        // draft and what to do about it — without this the agent just says
+        // "Status: draft" and the seller is stuck.
+        if (listing.status === "draft" && Array.isArray(listing.activation_blocked) && listing.activation_blocked.length > 0) {
+          text += `\n**This listing is saved as a draft.** Resolve the following before it can go live:\n`;
+          for (const block of listing.activation_blocked) {
+            text += `- ${block.message}\n`;
+          }
+          text += `\nOnce resolved, activate with \`firestarter_update_listing\` (status "active").`;
+        } else {
+          text += `Share link: ${SHARE_LINK_BASE}/${listing.id}\n`;
+          text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
+        }
+        // Surface payout warnings — listing is active but seller should
+        // connect Stripe to actually receive earnings.
+        if (Array.isArray(listing.activation_warnings) && listing.activation_warnings.length > 0) {
+          for (const warn of listing.activation_warnings) {
+            if (warn.code === "SELLER_PAYOUTS_RECOMMENDED") {
+              text += `\n\n⚠️ **Payouts not connected.** The listing is live and buyable, but earnings will be held until Stripe payouts are set up. Call \`firestarter_payouts\` to get an onboarding link.`;
+            }
+          }
+        }
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -744,7 +764,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // the draft is reviewed in chat, then activated via firestarter_update_listing.
   server.tool(
     "firestarter_import",
-    "Import a seller's EXISTING listing from another marketplace (Craigslist, Gumtree, their own site) into Firestarter. Give it the listing URL, or pasted listing text plus photo URLs, and it creates a DRAFT listing for the seller to review - not live, not buyable, no share link yet. Amazon, Walmart, eBay, Etsy, Facebook Marketplace, OfferUp and Mercari block server fetches: for those, do NOT send the URL - ask the seller to copy-paste the listing text and photo URLs instead. Other sites that block return PLATFORM_BLOCKED or EXTRACTION_EMPTY - when that happens, ask the seller to paste the listing text and photos. Activation (firestarter_update_listing, status 'active') requires a positive price (firestarter_reprice if the import found none) and the seller's Stripe payouts connected (firestarter_payouts).",
+    "Import a seller's EXISTING listing from another marketplace (Craigslist, Gumtree, their own site) into Firestarter. Give it the listing URL, or pasted listing text plus photo URLs, and it creates a DRAFT listing for the seller to review - not live, not buyable, no share link yet. Amazon, Walmart, eBay, Etsy, Facebook Marketplace, OfferUp and Mercari block server fetches: for those, do NOT send the URL - ask the seller to copy-paste the listing text and photo URLs instead. Other sites that block return PLATFORM_BLOCKED or EXTRACTION_EMPTY - when that happens, ask the seller to paste the listing text and photos. Activation (firestarter_update_listing, status 'active') requires a positive price (firestarter_reprice if the import found none) and at least one photo.",
     {
       source_url: z.string().optional().describe("URL of the seller's existing listing (e.g. a Craigslist post). Omit for blocked platforms - paste text instead."),
       raw_text: z.string().optional().describe("Pasted listing text (title, price, description - at least 10 characters). Required when source_url is omitted or blocked; also fills gaps URL extraction missed."),
@@ -782,7 +802,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         text += `\nNext steps:\n`;
         text += `1. Walk the seller through the draft - fix details with firestarter_update_listing, set or adjust the price with firestarter_reprice.\n`;
-        text += `2. Check payouts with firestarter_payouts - activation is blocked until the seller's Stripe payouts are connected.\n`;
+        text += `2. Check payouts with firestarter_payouts - the listing can go live without it, but earnings are held until the seller's Stripe payouts are connected.\n`;
         text += `3. Only after the seller confirms it looks right: firestarter_update_listing with status "active". High-value (>= $500) and luxury-category items will ask for a possession photo first - relay the code instructions, then submit the seller's photo with firestarter_verify. Once active, it becomes buyable and gets its share link.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
@@ -1124,7 +1144,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_update_listing
   server.tool(
     "firestarter_update_listing",
-    "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also activates imported drafts (status 'active') - drafts need a positive price and the seller's Stripe payouts connected first (see firestarter_import / firestarter_payouts). High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code to relay, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
+    "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also activates imported drafts (status 'active') - drafts need a positive price and at least one photo. High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code to relay, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
     {
       listing_id: z.string().describe("The listing ID to update"),
       product_name: z.string().optional().describe("New product name/title"),
