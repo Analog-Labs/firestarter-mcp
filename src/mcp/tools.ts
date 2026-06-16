@@ -170,7 +170,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
     lines.push("");
     lines.push(
       exec.setup_url
-        ? `**Action needed — add a payment method to finish this order:** ${exec.setup_url}\n(No login needed. The order completes automatically once a card is added.)`
+        ? `**Action needed:** [Add a payment method to finish this order](${exec.setup_url})\n(No login needed. The order completes automatically once a card is added.)`
         : "**Action needed:** this order is approved and waiting on a payment method. Ask the buyer to add a card from their dashboard billing settings; the order resumes automatically once added."
     );
   }
@@ -477,17 +477,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const card = cards.find((c: any) => c.card) || cards[0];
           const detail = card.card ? `${card.card.brand} ending in ${card.card.last4} (expires ${card.card.exp_month}/${card.card.exp_year})` : "saved";
           let text = `**Payment method on file:** ${detail}\n\nOrders will charge this card automatically. `;
-          text += `To update or add a different card, use this link:\n`;
           const setup = await apiRequest("POST", "/v1/billing/setup-payment");
-          text += `${setup.url}\n\n`;
-          text += `Or go to the dashboard: https://firestarter.network/dashboard?tab=settings`;
+          text += `To update or add a different card: [Update payment method](${setup.url})\n\n`;
+          text += `Or go to your [dashboard settings](https://firestarter.network/dashboard?tab=settings).`;
           return { content: [{ type: "text" as const, text }] };
         }
         // No payment method - get a setup link
         const setup = await apiRequest("POST", "/v1/billing/setup-payment");
         let text = "**No payment method on file.** A card is needed before any purchase can complete.\n\n";
-        text += `Add a card here (no login needed - works from any device):\n${setup.url}\n\n`;
-        text += `Or add one from the dashboard: https://firestarter.network/dashboard?tab=settings\n\n`;
+        text += `[Add a card](${setup.url}) (no login needed, works from any device)\n\n`;
+        text += `Or add one from your [dashboard settings](https://firestarter.network/dashboard?tab=settings)\n\n`;
         text += `Once added, any pending orders resume automatically.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
