@@ -16,10 +16,6 @@ const IMPORT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMPORT_TIMEOUT_MS |
 // Evidence submission runs a vision soft-check server-side - same headroom.
 const VERIFY_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_VERIFY_TIMEOUT_MS || 25_000);
 const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 1_000);
-const EMBED_IMAGES = process.env.FIRESTARTER_MCP_EMBED_IMAGES === "true";
-const MAX_EMBED_IMAGES = Number(process.env.FIRESTARTER_MCP_MAX_EMBED_IMAGES || 2);
-const IMAGE_FETCH_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMAGE_TIMEOUT_MS || 1_500);
-const MAX_IMAGE_BYTES = Number(process.env.FIRESTARTER_MCP_MAX_IMAGE_BYTES || 2_000_000);
 // Public share pages (GET /l/:id) — humans get a product card, agents get
 // machine-readable purchase instructions, chat apps unfurl a preview card.
 const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.network/l";
@@ -120,46 +116,32 @@ async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, exec
   return apiRequest("GET", `/v1/executions/${executionId}`);
 }
 
-type ContentBlock =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
-
-async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
-    if (!res.ok) {
-      console.error(`[firestarter-mcp] image fetch failed: ${res.status} for ${url.slice(0, 60)}`);
-      return null;
-    }
-    const len = Number(res.headers.get("content-length") || 0);
-    if (len > 0 && len > MAX_IMAGE_BYTES) {
-      console.error(`[firestarter-mcp] image too large (${len} bytes), skipping: ${url.slice(0, 60)}`);
-      return null;
-    }
-    const ct = res.headers.get("content-type") || "image/jpeg";
-    const buf = await res.arrayBuffer();
-    if (buf.byteLength > MAX_IMAGE_BYTES) {
-      console.error(`[firestarter-mcp] image buffer too large (${buf.byteLength} bytes), skipping`);
-      return null;
-    }
-    const mimeType = ct.split(";")[0];
-    console.error(`[firestarter-mcp] image fetched: ${buf.byteLength} bytes, ${mimeType}`);
-    return { data: Buffer.from(buf).toString("base64"), mimeType };
-  } catch (err: any) {
-    console.error(`[firestarter-mcp] image fetch error: ${err.message}`);
-    return null;
-  }
-}
+// #256: buyer confirmations no longer embed product photos inline. Base64 /
+// markdown images don't travel across chat channels (hosted-URL listings might
+// render, base64-stored ones never do, and several integrations can't display
+// either), and the share-link card already carries the photos. The tools
+// return text blocks only.
+type ContentBlock = { type: "text"; text: string };
 
 async function formatExecution(exec: any): Promise<ContentBlock[]> {
   const blocks: ContentBlock[] = [];
   const lines: string[] = [];
 
-  lines.push(`**Execution ${exec.id}** — Status: ${exec.status}`);
-  lines.push(`Request: ${exec.request_text}`);
+  const hasOptions = Array.isArray(exec.options) && exec.options.length > 0;
+  // #256: the buyer-facing confirmation (options presented for approval) must
+  // NOT lead with internal IDs. Drop the "Execution exec_…/Status/Request"
+  // header in that one state so the product leads; every other state (status
+  // checks, post-purchase tracking) keeps it as the track/dispute reference
+  // the spec explicitly allows.
+  const isApprovalConfirmation = exec.status === "awaiting_approval" && hasOptions;
 
-  if (exec.current_step) {
-    lines.push(`Current step: ${exec.current_step}`);
+  if (!isApprovalConfirmation) {
+    lines.push(`**Execution ${exec.id}** — Status: ${exec.status}`);
+    lines.push(`Request: ${exec.request_text}`);
+
+    if (exec.current_step) {
+      lines.push(`Current step: ${exec.current_step}`);
+    }
   }
 
   // Order approved but no payment method on file — relay the no-login setup
@@ -185,8 +167,8 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
     return blocks;
   }
 
-  if (exec.options && exec.options.length > 0) {
-    lines.push("");
+  if (hasOptions) {
+    if (lines.length > 0) lines.push("");
     lines.push("**Options found:**");
     // D3.5: if this org charges a developer margin, disclose it WITH the
     // prices the human is choosing among - so their approval is on the true
@@ -201,35 +183,29 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
     blocks.push({ type: "text", text: lines.join("\n") });
     lines.length = 0;
 
-    // Fetch all images in parallel
-    const imageUrls = exec.options.map((opt: any) => opt.metadata?.image || opt.image || null);
-    const imageSlots = EMBED_IMAGES ? Math.max(0, Math.min(MAX_EMBED_IMAGES, exec.options.length)) : 0;
-    const images = await Promise.all(
-      imageUrls.map((url: string | null, idx: number) => {
-        if (!url || idx >= imageSlots) return Promise.resolve(null);
-        return fetchImageAsBase64(url);
-      })
-    );
-
     for (let i = 0; i < exec.options.length; i++) {
       const opt = exec.options[i];
-      const imageUrl = imageUrls[i];
       // #107: external marketplace results are browse-only — label them so no
       // agent walks a buyer into approving one (the API rejects it anyway).
       const browseOnly = opt.purchasable === false;
       const optLines: string[] = [];
-      // Line-item breakdown: "$55.80" with no context reads as a price
-      // discrepancy when the listing says $45.81 (debug 2026-06-12: agent
-      // flagged item+shipping total as "the listed price" to a buyer).
-      const bdParts: string[] = [];
-      if (opt.subtotal != null) bdParts.push(`$${opt.subtotal} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`);
-      if (opt.shipping != null && Number(opt.shipping) > 0) bdParts.push(`$${opt.shipping} shipping`);
-      if (opt.tax != null && Number(opt.tax) > 0) bdParts.push(`$${opt.tax} tax`);
-      const breakdown = bdParts.length > 1 ? ` (${bdParts.join(" + ")})` : "";
-      optLines.push(`\n**${i + 1}. ${opt.product_title}** — $${opt.total}${breakdown} from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " — ⚠ browse-only (external)" : ""}`);
+      optLines.push(`\n**${i + 1}. ${opt.product_title}** from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " - browse-only (external)" : ""}`);
+      // #256: lead with the bold all-in total, then the line-item split, and
+      // ALWAYS state the tax status — a silent omission reads as a checkout
+      // surprise. The item+shipping split also stops an agent flagging the
+      // line-item total as a price discrepancy (debug 2026-06-12: "$55.80" with
+      // no context read as a mismatch against a $45.81 listing).
+      if (opt.total != null) {
+        const costParts: string[] = [];
+        if (opt.subtotal != null) costParts.push(`$${opt.subtotal} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`);
+        if (opt.shipping != null && Number(opt.shipping) > 0) costParts.push(`$${opt.shipping} shipping`);
+        const taxPhrase = opt.tax != null && Number(opt.tax) > 0 ? `$${opt.tax} tax` : "no tax";
+        const breakdown = costParts.length > 0 ? `${costParts.join(" + ")}, ${taxPhrase}` : taxPhrase;
+        optLines.push(`  **$${opt.total} all-in** - ${breakdown}`);
+      }
       // D3.5: a purchasable option's TRUE total includes the app margin (added
-      // at payment, double-capped). Show it so "approve option 1" is approval
-      // of the real number.
+      // at payment, double-capped). Show it so "confirm" approves the real
+      // number, not one that grows at payment.
       if (!browseOnly && dm && dm.margin_bps > 0 && opt.total != null) {
         const itemCents = Math.round(Number(opt.total) * 100);
         // Same pure function the charge path uses - shown == charged, always.
@@ -239,15 +215,17 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
           optLines.push(`  Total with app margin: $${((itemCents + marginCents) / 100).toFixed(2)} (+$${(marginCents / 100).toFixed(2)})`);
         }
       }
-      if (opt.product_url) optLines.push(`  URL: ${opt.product_url}`);
-      if (browseOnly) optLines.push(`  External marketplace result — Firestarter cannot purchase it. Do not approve this option; share the URL so the buyer can purchase directly.`);
-      if (imageUrl) optLines.push(`  ![${opt.product_title}](${imageUrl})`);
+      // #256: surface the exact link the API returned. For a Firestarter
+      // listing product_url is ALREADY the /l/<id> share link — use it verbatim
+      // and never reconstruct one from an id (stripping "lst_" yields a dead
+      // link). Keep it a BARE url, not a markdown link, so it stays tappable and
+      // unfurls in Slack/WhatsApp/Telegram (#272).
+      if (opt.product_url) {
+        optLines.push(browseOnly ? `  View on ${opt.supplier || opt.store || "site"}: ${opt.product_url}` : `  View listing: ${opt.product_url}`);
+      }
+      if (browseOnly) optLines.push(`  External marketplace result - Firestarter cannot purchase it. Do not approve this option; share the link so the buyer can purchase directly.`);
       if (opt.agent_reasoning) optLines.push(`  ${opt.agent_reasoning}`);
       blocks.push({ type: "text", text: optLines.join("\n") });
-
-      if (images[i]) {
-        blocks.push({ type: "image", data: images[i]!.data, mimeType: images[i]!.mimeType });
-      }
     }
   } else {
     blocks.push({ type: "text", text: lines.join("\n") });
@@ -270,9 +248,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
     blocks.push({ type: "text", text: lines.join("\n") });
   }
 
-  const imageCount = blocks.filter(b => b.type === "image").length;
-  const textCount = blocks.filter(b => b.type === "text").length;
-  console.error(`[firestarter-mcp] formatExecution returning ${blocks.length} blocks (${textCount} text, ${imageCount} images)`);
+  console.error(`[firestarter-mcp] formatExecution returning ${blocks.length} text blocks`);
 
   return blocks;
 }
@@ -336,7 +312,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               ? "\n\n**No confident match.** None of these results closely matches the request, so do not suggest buying any of them or name a \"best option\". Use `firestarter_message` to refine the search (add brand, model, size, or a price range), or share the result links so the buyer can browse. `firestarter_cancel` to stop."
               : purchasableCount === 0 && opts.length > 0
               ? "\n\n**Note:** every result is an external marketplace listing - browse-only. Firestarter cannot purchase them: share the URLs so the buyer can purchase directly, use `firestarter_message` to refine the search toward Firestarter marketplace listings, or `firestarter_cancel`."
-              : `\n\n**Action needed:** the user can reply "approve" to buy the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only (external) options cannot be approved - share their URLs instead." : ""}`,
+              : `\n\n**Action needed:** the user can reply "confirm" to place the order for the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only (external) options cannot be purchased - share their links instead." : ""}`,
           });
         }
         return { content: blocks };
