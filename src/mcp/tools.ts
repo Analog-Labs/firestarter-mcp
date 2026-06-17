@@ -724,8 +724,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Available quantity"),
       image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). When the seller sent a photo, pass the URL from its '[image attached: <url>]' marker here — do not ask them to re-send a photo already in the conversation."),
+      shipping: z.number().optional().describe("Shipping price in USD. Omit to use the network default ($9.99, free over $50). Set to 0 for free shipping."),
     },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, shipping }) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -734,12 +735,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (image_urls?.length) body.images = image_urls;
+        if (shipping !== undefined) body.shipping = shipping;
         const listing = await apiRequest("POST", "/v1/listings", body);
         let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
+        if (listing.shipping != null) text += `Shipping: $${listing.shipping.toFixed(2)} (seller-set)\n`;
+        else text += `Shipping: network default ($9.99, free over $50)\n`;
         if (Array.isArray(listing.images) && listing.images.length) text += `Photos: ${listing.images.length} attached\n`;
         // Surface activation blocks so the seller knows WHY the listing is a
         // draft and what to do about it — without this the agent just says
@@ -1134,15 +1138,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_reprice
   server.tool(
     "firestarter_reprice",
-    "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules.",
+    "Adjust pricing, shipping, or rules for an existing listing. Update base price, floor/ceiling limits, shipping fee, dynamic pricing settings, or pricing rules.",
     {
       listing_id: z.string().describe("The listing ID to reprice"),
       base_price: z.number().optional().describe("New base price in USD"),
       floor_price: z.number().optional().describe("New floor price"),
       ceiling_price: z.number().optional().describe("New ceiling price"),
       dynamic_pricing: z.boolean().optional().describe("Enable/disable dynamic pricing"),
+      shipping: z.number().optional().describe("Shipping price in USD. 0 = free shipping. Omit to keep current value. Set to null to revert to network default ($9.99, free over $50)."),
     },
-    async ({ listing_id: rawListingId, base_price, floor_price, ceiling_price, dynamic_pricing }) => {
+    async ({ listing_id: rawListingId, base_price, floor_price, ceiling_price, dynamic_pricing, shipping }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
@@ -1150,6 +1155,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (floor_price !== undefined) body.floor_price = floor_price;
         if (ceiling_price !== undefined) body.ceiling_price = ceiling_price;
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
+        if (shipping !== undefined) body.shipping = shipping;
         if (Object.keys(body).length === 0) {
           return { content: [{ type: "text" as const, text: "No pricing changes provided. Specify at least one field to update." }], isError: true };
         }
@@ -1159,6 +1165,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.floor_price !== undefined) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price !== undefined) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing !== undefined) text += `Dynamic pricing: ${listing.dynamic_pricing ? "enabled" : "disabled"}\n`;
+        if (listing.shipping != null) text += `Shipping: $${listing.shipping.toFixed(2)} (seller-set)\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error repricing: ${toErrorMessage(err)}` }], isError: true };
