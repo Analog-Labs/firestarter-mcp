@@ -243,6 +243,19 @@
       }
     },
     {
+      "name": "firestarter_connect_shopify",
+      "description": "Connect a seller's Shopify store to Firestarter. Reports an existing connection's status, or returns a one-click install link (bound to this seller's account) the merchant opens in a browser to approve access; once approved, their catalog syncs into their own Firestarter account and paid orders flow back to their store to fulfill.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "shop_handle": {
+            "type": "string",
+            "description": "The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit to check existing connection status."
+          }
+        }
+      }
+    },
+    {
       "name": "firestarter_listings",
       "description": "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — every listing has a public share link (https://firestarter.network/l/<id>) that unfurls into a product card and hands purchase instructions to any AI agent that opens it.",
       "inputSchema": {

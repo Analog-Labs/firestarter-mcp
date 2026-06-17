@@ -1085,7 +1085,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
 
-        const installUrl = `https://api.firestarter.network/auth/shopify?shop=${handle}.myshopify.com`;
+        // Mint the install link via the API so it carries a short-lived token
+        // that homes the connected store to THIS seller's org (not an orphan).
+        const link = await apiRequest("POST", "/v1/sellers/shopify-connect-link", { shop: `${handle}.myshopify.com` });
+        const installUrl = link.install_url as string;
         const text = [
           `**Send this link to the seller** (send it bare so it is clickable):`,
           installUrl,
