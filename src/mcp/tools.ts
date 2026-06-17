@@ -1034,6 +1034,82 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_connect_shopify
+  server.tool(
+    "firestarter_connect_shopify",
+    "Connect a seller's Shopify store to Firestarter. If the seller already has a Shopify connection, returns its status and sync info. If not, takes their Shopify store handle and returns a one-click install link. The seller clicks it, approves on Shopify, and their catalog syncs automatically. Use this when a seller mentions Shopify, wants to connect their store, or asks about syncing products. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain).",
+    {
+      shop_handle: z.string().optional().describe("The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit to check existing connection status. If the seller doesn't know their handle, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."),
+    },
+    async ({ shop_handle }) => {
+      try {
+        // Check existing connections first
+        const conns = await apiRequest("GET", "/v1/connections");
+        const shopifyConn = (conns.connections || []).find((c: any) => c.platform === "shopify");
+
+        if (shopifyConn) {
+          let text = `**Shopify store connected:** ${shopifyConn.shop_name || shopifyConn.shop_domain}\n`;
+          text += `Status: ${shopifyConn.status}\n`;
+          if (shopifyConn.last_synced_at) text += `Last catalog sync: ${shopifyConn.last_synced_at}\n`;
+          if (shopifyConn.error_message) text += `Error: ${shopifyConn.error_message}\n`;
+          text += `\nProducts from this store are already listed on Firestarter and discoverable by buyers' agents.`;
+          if (shop_handle) text += `\n\n(A new store handle was provided but a connection already exists. To connect a different store, disconnect the current one first from the dashboard.)`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+
+        // No connection — generate the install link
+        if (!shop_handle) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "**No Shopify store connected.**\n\nTo connect, I need the seller's Shopify store handle - the part before `.myshopify.com` in their Shopify admin URL.\n\nThey can find it in: Shopify admin > Settings > Domains > the permanent `xxxxx.myshopify.com` address (not their custom domain).\n\nAsk the seller for their store handle and call this tool again.",
+            }],
+          };
+        }
+
+        // Normalize: strip .myshopify.com if they pasted the full domain
+        const handle = shop_handle
+          .trim()
+          .toLowerCase()
+          .replace(/\.myshopify\.com$/, "")
+          .replace(/^https?:\/\//, "")
+          .replace(/\/$/, "");
+
+        if (!handle || /[^a-z0-9-]/.test(handle)) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `"${shop_handle}" doesn't look like a valid Shopify store handle. It should be letters, numbers, and hyphens only (e.g. 'my-store'). Ask the seller to check Shopify admin > Settings > Domains for their permanent .myshopify.com address.`,
+            }],
+            isError: true,
+          };
+        }
+
+        const installUrl = `https://api.firestarter.network/auth/shopify?shop=${handle}.myshopify.com`;
+        const text = [
+          `**Send this link to the seller** (send it bare so it is clickable):`,
+          installUrl,
+          ``,
+          `What happens when they click it:`,
+          `1. Shopify shows "Install / Allow" (they approve product read + order write)`,
+          `2. They land on the Firestarter "connected" page`,
+          `3. Their catalog syncs automatically and products become discoverable`,
+          `4. Paid orders flow back into their Shopify store`,
+          ``,
+          `The whole process takes about 10 seconds, no tokens to paste.`,
+          `After they finish, call firestarter_connect_shopify again to confirm the connection.`,
+        ].join("\n");
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        const hint = /no active seller profile/i.test(msg)
+          ? "\n\nThe seller is not registered yet - they need to sign up at firestarter.network/sell first, then connect Shopify."
+          : "";
+        return { content: [{ type: "text" as const, text: `Error checking Shopify connection: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_listings
   server.tool(
     "firestarter_listings",
