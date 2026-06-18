@@ -190,6 +190,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       const browseOnly = opt.purchasable === false;
       const optLines: string[] = [];
       optLines.push(`\n**${i + 1}. ${opt.product_title}** from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " - browse-only (external)" : ""}`);
+      // Surface the product image URL so the agent can relay it and chat
+      // clients auto-unfurl a preview. Bare URL on its own line — Slack,
+      // WhatsApp, and Telegram all auto-preview hosted image URLs.
+      const imageUrl = opt.image_url || opt.metadata?.image;
+      if (imageUrl && /^https?:\/\//i.test(String(imageUrl))) {
+        optLines.push(`  ${imageUrl}`);
+      }
       // #256: lead with the bold all-in total, then the line-item split, and
       // ALWAYS state the tax status — a silent omission reads as a checkout
       // surprise. The item+shipping split also stops an agent flagging the
