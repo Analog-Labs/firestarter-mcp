@@ -723,8 +723,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       inventory_qty: z.number().optional().describe("Available quantity"),
       image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). When the seller sent a photo, pass the URL from its '[image attached: <url>]' marker here — do not ask them to re-send a photo already in the conversation."),
       shipping: z.number().optional().describe("Shipping price in USD. Omit to use the network default ($9.99, free over $50). Set to 0 for free shipping."),
+      ship_from: z.object({
+        street1: z.string(),
+        street2: z.string().optional(),
+        city: z.string(),
+        state: z.string(),
+        zip: z.string(),
+        country: z.string().optional(),
+      }).optional().describe("Ship-from (origin) address — where this item ships FROM. Used to compute real shipping rates (#332). Omit to use your account's default fulfillment address."),
     },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, shipping }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, shipping, ship_from }) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -734,6 +742,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (image_urls?.length) body.images = image_urls;
         if (shipping !== undefined) body.shipping = shipping;
+        if (ship_from) body.ship_from = ship_from;
         const listing = await apiRequest("POST", "/v1/listings", body);
         let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
