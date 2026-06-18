@@ -139,6 +139,28 @@ describe("#256 buyer confirmation - rendering (firestarter_status)", () => {
     expect(text).toContain("$34.99 items x2");
   });
 
+  it("R2/R4: leads with condition + included/missing, and surfaces a delivery estimate", async () => {
+    const future = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+    installStatusFetch(approvalExec([{
+      ...INTERNAL_OPT,
+      delivery_estimate: future,
+      metadata: { image: "https://cdn.example.com/hub.jpg", condition: "refurbished", included: "USB-C cable", missing: "original box" },
+    }]));
+    const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
+    expect(text).toContain("(refurbished)"); // condition in the lead, in bold with the title
+    expect(text).toContain("Includes: USB-C cable");
+    expect(text).toContain("Not included: original box");
+    expect(text).toContain("Arrives in"); // delivery estimate rendered
+  });
+
+  it("R2/R4: omits condition/included/delivery lines when the option has none", async () => {
+    installStatusFetch(approvalExec([INTERNAL_OPT])); // no condition/delivery in fixture
+    const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
+    expect(text).not.toContain("Includes:");
+    expect(text).not.toContain("Not included:");
+    expect(text).not.toContain("Arrives in");
+  });
+
   it("R5: emits the share link verbatim (lst_ prefix intact), bare - no markdown, no 'URL:'", async () => {
     installStatusFetch(approvalExec([INTERNAL_OPT]));
     const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
