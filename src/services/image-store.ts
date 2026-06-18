@@ -7,16 +7,55 @@
  * swap the backend to S3/R2/Spaces later without touching the write paths.
  */
 import crypto from "node:crypto";
+import { Jimp } from "jimp";
 import { pool } from "../db/pool.js";
 import { logger } from "../lib/logger.js";
 
 const API_URL = process.env.API_URL || "https://api.firestarter.network";
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // reject anything over 6MB
+const THUMB_MAX_DIM = 320; // px — list/search/gallery thumbnails
 const DATA_URI_RE = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/;
 
 /** Public URL for a stored blob id. */
 export function blobUrl(id: string): string {
   return `${API_URL}/v1/img/${id}`;
+}
+
+/** Deterministic, hex-safe id for a blob's thumbnail variant. */
+export function thumbBlobId(id: string): string {
+  return crypto.createHash("sha256").update(id + ":thumb").digest("hex").slice(0, 32);
+}
+
+/**
+ * #336: lazily produce (and cache) a downscaled thumbnail for a stored blob.
+ * Generated on first request and stored alongside the full-res blob, so list /
+ * search / gallery surfaces can load light images while the detail page keeps
+ * full-res. Returns null if the source is missing or undecodable (e.g. webp) —
+ * the caller then serves the full image, so this never breaks an <img>.
+ */
+export async function getOrCreateThumb(id: string): Promise<{ contentType: string; bytes: Buffer } | null> {
+  const tid = thumbBlobId(id);
+  const existing = await pool.query("SELECT content_type, bytes FROM listing_image_blobs WHERE id = $1", [tid]);
+  if (existing.rows[0]) return { contentType: existing.rows[0].content_type, bytes: existing.rows[0].bytes };
+
+  const src = await pool.query("SELECT bytes FROM listing_image_blobs WHERE id = $1", [id]);
+  if (!src.rows[0]) return null;
+  try {
+    const img = await Jimp.read(src.rows[0].bytes as Buffer);
+    if (img.width > THUMB_MAX_DIM || img.height > THUMB_MAX_DIM) {
+      img.scaleToFit({ w: THUMB_MAX_DIM, h: THUMB_MAX_DIM });
+    }
+    const bytes = await img.getBuffer("image/jpeg", { quality: 72 });
+    await pool.query(
+      `INSERT INTO listing_image_blobs (id, content_type, bytes, byte_size)
+       VALUES ($1, 'image/jpeg', $2, $3) ON CONFLICT (id) DO NOTHING`,
+      [tid, bytes, bytes.length]
+    );
+    return { contentType: "image/jpeg", bytes };
+  } catch (err) {
+    logger.warn("image-store: thumbnail generation failed", { id, error: (err as Error).message });
+    return null;
+  }
 }
 
 /**
