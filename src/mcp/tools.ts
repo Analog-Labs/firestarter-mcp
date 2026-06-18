@@ -189,7 +189,14 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // agent walks a buyer into approving one (the API rejects it anyway).
       const browseOnly = opt.purchasable === false;
       const optLines: string[] = [];
-      optLines.push(`\n**${i + 1}. ${opt.product_title}** from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " - browse-only (external)" : ""}`);
+      // #256: lead with the product name AND condition (new/used/refurbished —
+      // often the deciding factor), then what's included/missing, from metadata.
+      const condition = typeof opt.metadata?.condition === "string" && opt.metadata.condition.trim() ? ` (${opt.metadata.condition.trim()})` : "";
+      optLines.push(`\n**${i + 1}. ${opt.product_title}${condition}** from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " - browse-only (external)" : ""}`);
+      const included = typeof opt.metadata?.included === "string" ? opt.metadata.included.trim() : "";
+      const missing = typeof opt.metadata?.missing === "string" ? opt.metadata.missing.trim() : "";
+      if (included) optLines.push(`  Includes: ${included}`);
+      if (missing) optLines.push(`  Not included: ${missing}`);
       // Surface the product image URL so the agent can relay it and chat
       // clients auto-unfurl a preview. Bare URL on its own line — Slack,
       // WhatsApp, and Telegram all auto-preview hosted image URLs.
@@ -209,6 +216,14 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
         const taxPhrase = opt.tax != null && Number(opt.tax) > 0 ? `$${opt.tax} tax` : "no tax";
         const breakdown = costParts.length > 0 ? `${costParts.join(" + ")}, ${taxPhrase}` : taxPhrase;
         optLines.push(`  **$${opt.total} all-in** - ${breakdown}`);
+      }
+      // #256: tell the buyer when it arrives (delivery_estimate is a DATE).
+      if (opt.delivery_estimate) {
+        const d = new Date(opt.delivery_estimate);
+        if (!isNaN(d.getTime())) {
+          const days = Math.ceil((d.getTime() - Date.now()) / 86400000);
+          optLines.push(days > 0 ? `  Arrives in ~${days} day${days === 1 ? "" : "s"} (${opt.delivery_estimate})` : `  Delivery estimate: ${opt.delivery_estimate}`);
+        }
       }
       // D3.5: a purchasable option's TRUE total includes the app margin (added
       // at payment, double-capped). Show it so "confirm" approves the real
