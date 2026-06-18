@@ -1372,4 +1372,126 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     }
   );
+
+  // ── Seller order management tools ─────────────────────────────────────────
+
+  // Tool: firestarter_seller_orders
+  server.tool(
+    "firestarter_seller_orders",
+    "View the seller's incoming orders - shows product, amount, payout status, and order status. Use when a seller asks about their orders, sales, or recent activity.",
+    {},
+    async () => {
+      try {
+        const data = await apiRequest("GET", "/v1/sellers/orders");
+        const orders = data.orders || [];
+        if (orders.length === 0) {
+          return { content: [{ type: "text" as const, text: "No orders yet. Once a buyer purchases one of your listings, orders will appear here." }] };
+        }
+        const lines = [`**Your Orders** (${orders.length})\n`];
+        for (const o of orders) {
+          const amount = o.amount_cents ? `$${(o.amount_cents / 100).toFixed(2)}` : "pending";
+          const payout = o.net_payout_cents ? `$${(o.net_payout_cents / 100).toFixed(2)} net` : "";
+          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}`);
+        }
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error fetching orders: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_confirm_order
+  server.tool(
+    "firestarter_confirm_order",
+    "Confirm a pending order. Use when a seller wants to accept/confirm an incoming order. The order ID comes from firestarter_seller_orders.",
+    {
+      order_id: z.string().describe("The seller_earnings ID from firestarter_seller_orders (not the execution ID)"),
+    },
+    async ({ order_id }) => {
+      try {
+        await apiRequest("PUT", `/v1/sellers/orders/${order_id}/confirm`);
+        return { content: [{ type: "text" as const, text: `**Order confirmed.** The buyer has been notified. Next step: ship the item and add tracking with firestarter_ship_order.` }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error confirming order: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_ship_order
+  server.tool(
+    "firestarter_ship_order",
+    "Mark an order as shipped by adding the carrier and tracking number. Use after the seller has shipped the item. The buyer gets tracking info automatically.",
+    {
+      order_id: z.string().describe("The seller_earnings ID from firestarter_seller_orders"),
+      tracking_number: z.string().describe("Carrier tracking number"),
+      carrier: z.string().optional().describe("Carrier name (e.g. 'USPS', 'UPS', 'FedEx'). Defaults to USPS."),
+    },
+    async ({ order_id, tracking_number, carrier }) => {
+      try {
+        const body: any = { tracking_number };
+        if (carrier) body.carrier = carrier;
+        await apiRequest("POST", `/v1/sellers/orders/${order_id}/ship`, body);
+        return { content: [{ type: "text" as const, text: `**Order shipped.** Tracking: ${carrier || "USPS"} ${tracking_number}. The buyer can now track their delivery.` }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error marking shipped: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_seller_analytics
+  server.tool(
+    "firestarter_seller_analytics",
+    "View seller revenue and order analytics - total revenue, order count, average order value, and 30-day daily breakdown. Use when a seller asks about their performance, earnings, or sales trends.",
+    {},
+    async () => {
+      try {
+        const data = await apiRequest("GET", "/v1/sellers/analytics");
+        let text = "**Seller Analytics**\n";
+        text += `Total revenue: $${(data.revenue_cents / 100).toFixed(2)}\n`;
+        text += `Total orders: ${data.orders}\n`;
+        text += `Average order: $${(data.avg_order_cents / 100).toFixed(2)}\n`;
+        if (data.daily?.length > 0) {
+          text += `\n**Last 30 days:**\n`;
+          for (const d of data.daily.slice(-7)) {
+            text += `  ${d.date}: $${(d.revenue_cents / 100).toFixed(2)} (${d.orders} order${d.orders !== 1 ? "s" : ""})\n`;
+          }
+          if (data.daily.length > 7) text += `  ... and ${data.daily.length - 7} more days\n`;
+        }
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error fetching analytics: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_seller_disputes
+  server.tool(
+    "firestarter_seller_disputes",
+    "View and manage disputes on the seller's orders. Lists open disputes with reasons. Use when a seller mentions a dispute, complaint, or return issue.",
+    {
+      resolve_id: z.string().optional().describe("Dispute ID to resolve. Omit to list all disputes."),
+      resolution: z.string().optional().describe("Resolution text when resolving a dispute (e.g. 'Refund issued', 'Replacement sent')."),
+    },
+    async ({ resolve_id, resolution }) => {
+      try {
+        if (resolve_id) {
+          await apiRequest("PUT", `/v1/sellers/disputes/${resolve_id}/resolve`, { resolution: resolution || "resolved" });
+          return { content: [{ type: "text" as const, text: `**Dispute resolved.** Resolution: ${resolution || "resolved"}` }] };
+        }
+        const data = await apiRequest("GET", "/v1/sellers/disputes");
+        const disputes = data.disputes || [];
+        if (disputes.length === 0) {
+          return { content: [{ type: "text" as const, text: "No disputes. All orders are in good standing." }] };
+        }
+        const lines = [`**Disputes** (${disputes.length})\n`];
+        for (const d of disputes) {
+          lines.push(`- **${d.product || "Order"}** - Reason: ${d.reason || "Not specified"} - Status: ${d.status}${d.resolution ? ` - Resolution: ${d.resolution}` : ""}`);
+        }
+        lines.push(`\nTo resolve a dispute, call this tool again with resolve_id.`);
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error with disputes: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
 }
