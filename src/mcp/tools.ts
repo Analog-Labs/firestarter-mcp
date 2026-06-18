@@ -731,8 +731,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         zip: z.string(),
         country: z.string().optional(),
       }).optional().describe("Ship-from (origin) address — where this item ships FROM. Used to compute real shipping rates (#332). Omit to use your account's default fulfillment address."),
+      shipping_policy: z.object({
+        mode: z.enum(["domestic", "list", "worldwide"]),
+        countries: z.array(z.string()).optional(),
+        exclude: z.array(z.string()).optional(),
+      }).optional().describe("Where the seller is willing to ship this item. Omit to default to domestic (ships only within the ship-from country). mode 'domestic' = home country only; mode 'list' with countries:['CA','GB',...] = home country plus those ISO alpha-2 destinations; mode 'worldwide' (optionally exclude:['BR',...]) = everywhere except excluded codes. Sanctioned/embargoed destinations are always blocked regardless of this setting."),
     },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, shipping, ship_from }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, shipping, ship_from, shipping_policy }) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -743,6 +748,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (image_urls?.length) body.images = image_urls;
         if (shipping !== undefined) body.shipping = shipping;
         if (ship_from) body.ship_from = ship_from;
+        if (shipping_policy) body.shipping_policy = shipping_policy;
         const listing = await apiRequest("POST", "/v1/listings", body);
         let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
@@ -1313,6 +1319,42 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
         return { content: [{ type: "text" as const, text: `Error updating listing: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_set_shipping_policy
+  // #332: the "widen on demand" path. A buyer's checkout can come back
+  // SHIPPING_NOT_OFFERED when the seller hadn't opted into that destination;
+  // the seller says "yes, ship there too" and this updates the listing's
+  // allow-list. Platform hard rules (sanctions etc.) still apply downstream.
+  server.tool(
+    "firestarter_set_shipping_policy",
+    "Set where a seller is willing to ship a listing. Use this when a buyer wants delivery to a country the listing does not yet cover (a checkout came back 'seller not shipping to that destination') and the seller agrees to ship there — or whenever the seller wants to change their shipping reach. mode 'domestic' = ship-from country only (the default); mode 'list' = the home country plus the countries you name (ISO alpha-2, e.g. ['CA','GB','AU']); mode 'worldwide' = everywhere except any you exclude. Sanctioned/embargoed destinations stay blocked regardless. Sets the policy for one listing — pass its ID.",
+    {
+      listing_id: z.string().describe("The listing ID whose shipping policy to set"),
+      mode: z.enum(["domestic", "list", "worldwide"]).describe("'domestic' = ship-from country only; 'list' = home country plus the named countries; 'worldwide' = everywhere except excluded"),
+      countries: z.array(z.string()).optional().describe("mode 'list' only: ISO alpha-2 destination codes to serve, e.g. ['CA','GB']. The ship-from country is always included automatically."),
+      exclude: z.array(z.string()).optional().describe("mode 'worldwide' only: ISO alpha-2 codes to carve out, e.g. ['BR']."),
+    },
+    async ({ listing_id: rawListingId, mode, countries, exclude }) => {
+      const listing_id = cleanListingId(rawListingId);
+      if (mode === "list" && !(countries && countries.length > 0)) {
+        return { content: [{ type: "text" as const, text: "mode 'list' needs at least one country in `countries` (ISO alpha-2, e.g. ['CA','GB']). Ask the seller which destinations to add." }], isError: true };
+      }
+      try {
+        const policy: any = { mode };
+        if (mode === "list" && countries?.length) policy.countries = countries;
+        if (mode === "worldwide" && exclude?.length) policy.exclude = exclude;
+        const listing = await apiRequest("PATCH", `/v1/listings/${listing_id}`, { shipping_policy: policy });
+        const sp = listing.shipping_policy || policy;
+        let text = `**Shipping policy updated for ${listing.product_name || listing_id}**\n`;
+        if (sp.mode === "domestic") text += `Ships: domestically only (within the ship-from country).\n`;
+        else if (sp.mode === "list") text += `Ships to: home country${sp.countries?.length ? " + " + sp.countries.join(", ") : ""}.\n`;
+        else text += `Ships: worldwide${sp.exclude?.length ? " except " + sp.exclude.join(", ") : ""}.\n`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error setting shipping policy: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
