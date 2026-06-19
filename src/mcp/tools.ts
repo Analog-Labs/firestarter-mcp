@@ -126,7 +126,7 @@ async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, exec
 
 // MCP content blocks: text + image (base64) for inline rendering in any client.
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB cap
-const IMAGE_FETCH_TIMEOUT_MS = 5_000;
+const IMAGE_FETCH_TIMEOUT_MS = 3_000; // 3s per image (keep total under MCP client timeout)
 const MAX_EMBED_IMAGES = 3; // cap inline images per response
 
 type ContentBlock =
@@ -149,7 +149,7 @@ async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType
   }
 }
 
-async function formatExecution(exec: any): Promise<ContentBlock[]> {
+async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Promise<ContentBlock[]> {
   const blocks: ContentBlock[] = [];
   const lines: string[] = [];
 
@@ -278,15 +278,18 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
 
     // Fetch product images for the top options and include as MCP image blocks
     // so any connected client (Claude Desktop, Cursor, etc.) renders them inline.
-    const imageUrls = exec.options
-      .slice(0, MAX_EMBED_IMAGES)
-      .map((opt: any) => opt.image_url || opt.metadata?.image || null)
-      .filter((url: string | null): url is string => !!url && /^https?:\/\//i.test(url));
+    // Skip when called from time-sensitive paths (execute polls for 45s already).
+    if (!opts?.skipImages) {
+      const imageUrls = exec.options
+        .slice(0, MAX_EMBED_IMAGES)
+        .map((opt: any) => opt.image_url || opt.metadata?.image || null)
+        .filter((url: string | null): url is string => !!url && /^https?:\/\//i.test(url));
 
-    if (imageUrls.length > 0) {
-      const images = await Promise.all(imageUrls.map(fetchImageAsBase64));
-      for (const img of images) {
-        if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
+      if (imageUrls.length > 0) {
+        const images = await Promise.all(imageUrls.map(fetchImageAsBase64));
+        for (const img of images) {
+          if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
+        }
       }
     }
   } else {
@@ -357,8 +360,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (delivery_address) body.delivery_address = { address: delivery_address };
 
         const created = await apiRequest("POST", "/v1/executions", body);
-        const exec = await pollExecution(apiRequest, created.id);
-        const blocks = await formatExecution(exec);
+        const exec = await pollExecution(apiRequest, created.id, 45_000);
+        // Skip images on execute (already used 45s polling; images on status check)
+        const blocks = await formatExecution(exec, { skipImages: true });
 
         if (exec.status === "awaiting_approval") {
           const opts = Array.isArray(exec.options) ? exec.options : [];
