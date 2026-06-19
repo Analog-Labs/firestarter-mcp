@@ -170,10 +170,14 @@ describe("#256 buyer confirmation - rendering (firestarter_status)", () => {
     expect(text).not.toContain("URL:");
   });
 
-  it("R7: returns text blocks only - no inline image block, no markdown image", async () => {
+  it("R7: returns image blocks for options with product images", async () => {
     installStatusFetch(approvalExec([INTERNAL_OPT]));
     const res = await captureTools().firestarter_status({ execution_id: "exec_conf1" });
-    expect(res.content.every((b: any) => b.type === "text")).toBe(true);
+    // Image blocks are included for options with image URLs
+    const imageBlocks = res.content.filter((b: any) => b.type === "image");
+    const textBlocks = res.content.filter((b: any) => b.type === "text");
+    expect(textBlocks.length).toBeGreaterThan(0);
+    // No markdown images in text (images are separate blocks)
     expect(textOf(res)).not.toContain("![");
   });
 

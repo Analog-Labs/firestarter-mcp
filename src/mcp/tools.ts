@@ -15,7 +15,7 @@ const API_REQUEST_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_API_TIMEOUT_MS
 const IMPORT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMPORT_TIMEOUT_MS || 25_000);
 // Evidence submission runs a vision soft-check server-side - same headroom.
 const VERIFY_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_VERIFY_TIMEOUT_MS || 25_000);
-const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 1_000);
+const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 2_500);
 // Public share pages (GET /l/:id) — humans get a product card, agents get
 // machine-readable purchase instructions, chat apps unfurl a preview card.
 const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.network/l";
@@ -103,25 +103,51 @@ function verificationAskText(err: unknown): string | null {
 
 async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, executionId: string, timeoutMs: number = 60_000): Promise<any> {
   const start = Date.now();
+  const TERMINAL_STATUSES = ["awaiting_approval", "awaiting_payment_method", "quoted", "completed", "failed", "cancelled", "paid", "shipping", "delivered"];
 
   while (Date.now() - start < timeoutMs) {
-    const exec = await apiRequest("GET", `/v1/executions/${executionId}`);
-    const hasOptions = Array.isArray(exec.options) && exec.options.length > 0;
-    if (hasOptions || ["awaiting_approval", "awaiting_payment_method", "quoted", "completed", "failed", "cancelled", "paid", "shipping", "delivered"].includes(exec.status)) {
-      return exec;
+    // Use the lightweight poll endpoint (1 query) instead of the full
+    // execution resource (3 queries + JOIN) during the wait loop.
+    try {
+      const poll = await apiRequest("GET", `/v1/executions/${executionId}/poll`);
+      if (poll.has_options || TERMINAL_STATUSES.includes(poll.status)) {
+        break;
+      }
+    } catch {
+      // Fallback: if /poll 404s (old API version), break and fetch full.
+      break;
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 
+  // Single full fetch once the execution is ready.
   return apiRequest("GET", `/v1/executions/${executionId}`);
 }
 
-// #256: buyer confirmations no longer embed product photos inline. Base64 /
-// markdown images don't travel across chat channels (hosted-URL listings might
-// render, base64-stored ones never do, and several integrations can't display
-// either), and the share-link card already carries the photos. The tools
-// return text blocks only.
-type ContentBlock = { type: "text"; text: string };
+// MCP content blocks: text + image (base64) for inline rendering in any client.
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB cap
+const IMAGE_FETCH_TIMEOUT_MS = 5_000;
+const MAX_EMBED_IMAGES = 3; // cap inline images per response
+
+type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
+/** Fetch an image URL and return base64 for MCP image blocks. */
+async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
+    if (!res.ok) return null;
+    const contentLength = Number(res.headers.get("content-length") || 0);
+    if (contentLength > MAX_IMAGE_BYTES) return null;
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > MAX_IMAGE_BYTES) return null;
+    const mimeType = (res.headers.get("content-type") || "image/jpeg").split(";")[0];
+    return { data: Buffer.from(buf).toString("base64"), mimeType };
+  } catch {
+    return null;
+  }
+}
 
 async function formatExecution(exec: any): Promise<ContentBlock[]> {
   const blocks: ContentBlock[] = [];
@@ -248,6 +274,20 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       if (browseOnly) optLines.push(`  External marketplace result - Firestarter cannot purchase it. Do not approve this option; share the link so the buyer can purchase directly.`);
       if (opt.agent_reasoning) optLines.push(`  ${opt.agent_reasoning}`);
       blocks.push({ type: "text", text: optLines.join("\n") });
+    }
+
+    // Fetch product images for the top options and include as MCP image blocks
+    // so any connected client (Claude Desktop, Cursor, etc.) renders them inline.
+    const imageUrls = exec.options
+      .slice(0, MAX_EMBED_IMAGES)
+      .map((opt: any) => opt.image_url || opt.metadata?.image || null)
+      .filter((url: string | null): url is string => !!url && /^https?:\/\//i.test(url));
+
+    if (imageUrls.length > 0) {
+      const images = await Promise.all(imageUrls.map(fetchImageAsBase64));
+      for (const img of images) {
+        if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
+      }
     }
   } else {
     blocks.push({ type: "text", text: lines.join("\n") });
