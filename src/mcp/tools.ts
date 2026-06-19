@@ -50,7 +50,7 @@ class ApiError extends Error {
   }
 }
 
-function makeApiRequest(apiKey: string, apiBase: string) {
+export function makeApiRequest(apiKey: string, apiBase: string) {
   return async function apiRequest(method: string, path: string, body?: unknown, timeoutMs: number = API_REQUEST_TIMEOUT_MS) {
     const url = `${apiBase}${path}`;
     const headers: Record<string, string> = {
@@ -577,6 +577,94 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text: `Execution ${execution_id} cancelled.${reason ? ` Reason: ${reason}` : ""}` }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error cancelling: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_track_order
+  server.tool(
+    "firestarter_track_order",
+    "Track a shipped order's delivery status. Returns carrier, tracking number, estimated delivery, and current location/events. Use when a buyer asks 'where's my order?' or 'when will it arrive?'.",
+    {
+      execution_id: z.string().describe("The execution/order ID to track (exec_...)"),
+    },
+    { readOnlyHint: true, destructiveHint: false },
+    async ({ execution_id }) => {
+      try {
+        const data = await apiRequest("GET", `/commerce/tracking/${execution_id}`);
+        if (!data.tracking_number) {
+          return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — No tracking info yet. The seller may not have shipped it yet, or tracking hasn't been added.` }] };
+        }
+        let text = `**Order ${execution_id} — Shipping**\n`;
+        text += `Carrier: ${data.carrier || "Unknown"}\n`;
+        text += `Tracking: ${data.tracking_number}\n`;
+        if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
+        if (data.estimated_delivery) text += `Estimated delivery: ${data.estimated_delivery}\n`;
+        text += `Status: ${data.status || "in_transit"}\n`;
+        if (data.events?.length > 0) {
+          text += `\n**Recent events:**\n`;
+          for (const e of data.events.slice(-5)) {
+            text += `  ${e.datetime || e.date}: ${e.description || e.message}\n`;
+          }
+        }
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error tracking: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_return
+  server.tool(
+    "firestarter_return",
+    "Initiate a return for a purchased order. Creates a return shipping label and processes the refund. Use when a buyer wants to return an item, get a refund, or reports a problem with their purchase.",
+    {
+      execution_id: z.string().describe("The execution/order ID to return (exec_...)"),
+      reason: z.string().optional().describe("Reason for the return (e.g. 'wrong size', 'damaged', 'not as described')"),
+    },
+    { destructiveHint: true, idempotentHint: false },
+    async ({ execution_id, reason }) => {
+      try {
+        const data = await apiRequest("POST", `/v1/executions/${execution_id}/return`, { reason });
+        let text = `**Return initiated for order ${execution_id}**\n`;
+        if (data.return_label_url) text += `Return label: ${data.return_label_url}\n`;
+        if (data.amount_refunded_cents) text += `Refund: $${(data.amount_refunded_cents / 100).toFixed(2)}\n`;
+        text += `Status: ${data.status || "return_initiated"}\n`;
+        if (data.return_label_url) {
+          text += `\nPrint the return label, pack the item, and drop it off with the carrier. The refund processes once the return is received.`;
+        } else {
+          text += `\nThe refund has been processed. No return shipping needed.`;
+        }
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error initiating return: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_receipt
+  server.tool(
+    "firestarter_receipt",
+    "Get a payment receipt for a completed purchase. Shows itemized breakdown, payment method, and transaction details. Use when a buyer asks for a receipt, invoice, or expense documentation.",
+    {
+      execution_id: z.string().describe("The execution/order ID to get a receipt for (exec_...)"),
+    },
+    { readOnlyHint: true, destructiveHint: false },
+    async ({ execution_id }) => {
+      try {
+        const data = await apiRequest("GET", `/commerce/receipt/${execution_id}`);
+        let text = `**Receipt — Order ${execution_id}**\n`;
+        text += `Date: ${data.paid_at || data.created_at || "N/A"}\n`;
+        if (data.product_title) text += `Item: ${data.product_title}\n`;
+        if (data.subtotal_cents != null) text += `Subtotal: $${(data.subtotal_cents / 100).toFixed(2)}\n`;
+        if (data.shipping_cents != null && data.shipping_cents > 0) text += `Shipping: $${(data.shipping_cents / 100).toFixed(2)}\n`;
+        if (data.tax_cents != null && data.tax_cents > 0) text += `Tax: $${(data.tax_cents / 100).toFixed(2)}\n`;
+        if (data.total_cents != null) text += `**Total: $${(data.total_cents / 100).toFixed(2)}**\n`;
+        if (data.payment_method) text += `Paid with: ${data.payment_method}\n`;
+        if (data.stripe_charge_id) text += `Transaction: ${data.stripe_charge_id}\n`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error fetching receipt: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );

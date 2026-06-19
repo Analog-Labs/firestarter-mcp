@@ -7,7 +7,9 @@
 import { Hono } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { registerTools } from "./tools.js";
+import { registerTools, makeApiRequest } from "./tools.js";
+import { registerResources } from "./resources.js";
+import { registerPrompts } from "./prompts.js";
 
 const app = new Hono();
 
@@ -21,6 +23,10 @@ function createTransport(apiKey: string, apiBase: string): WebStandardStreamable
   });
 
   registerTools(server, apiKey, apiBase);
+
+  const apiReq = makeApiRequest(apiKey, apiBase);
+  registerResources(server, apiReq);
+  registerPrompts(server);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),

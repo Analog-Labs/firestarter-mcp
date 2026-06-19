@@ -5,7 +5,9 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { registerTools } from "./tools.js";
+import { registerTools, makeApiRequest } from "./tools.js";
+import { registerResources } from "./resources.js";
+import { registerPrompts } from "./prompts.js";
 
 const API_KEY = process.env.FIRESTARTER_API_KEY;
 const API_BASE = process.env.FIRESTARTER_API_URL || "https://api.firestarter.network";
@@ -21,6 +23,10 @@ const server = new McpServer({
 });
 
 registerTools(server, API_KEY, API_BASE);
+
+const apiRequest = makeApiRequest(API_KEY, API_BASE);
+registerResources(server, apiRequest);
+registerPrompts(server);
 
 async function main() {
   const transport = new StdioServerTransport();
