@@ -90,6 +90,28 @@ export async function storeDataUri(dataUri: unknown): Promise<string | null> {
 }
 
 /**
+ * Store arbitrary bytes (e.g. a DHL shipping-label or commercial-invoice PDF) in
+ * the blob store and return its hosted URL (served by GET /v1/img/:id).
+ * Content-addressed + idempotent, like storeDataUri but for non-image payloads.
+ * Returns null on empty/oversized input or a write failure.
+ */
+export async function storeBlob(bytes: Buffer, contentType: string): Promise<string | null> {
+  if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) return null;
+  const id = crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+  try {
+    await pool.query(
+      `INSERT INTO listing_image_blobs (id, content_type, bytes, byte_size)
+       VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING`,
+      [id, contentType, bytes, bytes.length]
+    );
+  } catch (err) {
+    logger.error("image-store: failed to persist blob", { error: (err as Error).message });
+    return null;
+  }
+  return blobUrl(id);
+}
+
+/**
  * Normalize a listing's images array: convert base64 data-URIs to hosted blob
  * URLs, pass http(s) URLs through unchanged, and drop anything else. Preserves
  * order. Non-array input → [].
