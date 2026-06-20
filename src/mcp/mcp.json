@@ -2,19 +2,22 @@
   "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
-  "version": "1.0.0",
-  "description": "Execute commerce transactions and monitor prices from natural language. Find products, verify suppliers, handle payments, and set up persistent price/stock watches with intelligent change detection.",
-  "homepage": "https://api.firestarter.network",
+  "version": "2.0.0",
+  "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify, monitor prices. 32 tools, 7 resources, 9 prompts.",
+  "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
-  "args": ["tsx", "firestarter-mcp"],
+  "args": [
+    "tsx",
+    "src/mcp/server.ts"
+  ],
   "env": {
     "FIRESTARTER_API_KEY": {
-      "description": "API key for the Firestarter Commerce Execution API. Required — the server exits on startup if unset.",
+      "description": "API key for the Firestarter Commerce API (fs_live_... or fs_test_...). Required.",
       "required": true
     },
     "FIRESTARTER_API_URL": {
-      "description": "Base URL for the Firestarter API. Optional — defaults to https://api.firestarter.network.",
+      "description": "Base URL for the Firestarter API. Defaults to https://api.firestarter.network.",
       "required": false,
       "default": "https://api.firestarter.network"
     }
@@ -22,33 +25,41 @@
   "tools": [
     {
       "name": "firestarter_execute",
-      "description": "Execute a commerce transaction. Find products matching a natural language request, verify suppliers, get pricing, and optionally handle payment and delivery. Returns product options for approval.",
+      "description": "Execute a commerce transaction. Find products matching a natural language request, verify suppliers, get pricing, and optionally handle payment and delivery. Returns product options for approval. When",
       "inputSchema": {
         "type": "object",
         "properties": {
           "request": {
-            "type": "string",
-            "description": "Natural language description of what to buy (e.g. 'specialty coffee beans under $30')"
+            "type": "string"
+          },
+          "listing_id": {
+            "type": "string"
           },
           "budget_max": {
-            "type": "number",
-            "description": "Maximum budget in USD"
+            "type": "number"
           },
           "delivery_address": {
-            "type": "string",
-            "description": "Delivery address as a string"
+            "type": "string"
           },
           "priority": {
-            "type": "string",
-            "enum": ["cost", "speed", "quality"],
-            "description": "Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated)"
+            "type": "string"
           },
           "auto_pay": {
-            "type": "boolean",
-            "description": "If true, automatically pay for the best option within budget. If false (default), present options for approval."
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
           }
         },
-        "required": ["request"]
+        "required": [
+          "request"
+        ]
       }
     },
     {
@@ -58,12 +69,10 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string",
-            "description": "Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."
+            "type": "string"
           },
           "status_filter": {
-            "type": "string",
-            "description": "Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"
+            "type": "string"
           }
         },
         "required": []
@@ -71,20 +80,30 @@
     },
     {
       "name": "firestarter_approve",
-      "description": "Approve an execution that is awaiting approval. This selects the best option and proceeds with payment.",
+      "description": "Approve an execution that is awaiting approval. By default this approves the pre-selected option. When the user just says approve without naming an order, omit execution_id.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string",
-            "description": "The execution ID to approve (e.g. 'exec_abc123')"
+            "type": "string"
           },
           "selected_option": {
-            "type": "number",
-            "description": "Index of the option to select (0-based). Defaults to 0 (best option)."
+            "type": "number"
+          },
+          "option_id": {
+            "type": "string"
           }
         },
-        "required": ["execution_id"]
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_payment_method",
+      "description": "Check the buyer's payment method status and get a link to add or update their card. Use this when a buyer asks about payment, wants to add a card before purchasing, or when an order is stuck at awaiti",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
       }
     },
     {
@@ -94,15 +113,63 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string",
-            "description": "The execution ID to cancel"
+            "type": "string"
           },
           "reason": {
-            "type": "string",
-            "description": "Reason for cancellation"
+            "type": "string"
           }
         },
-        "required": ["execution_id"]
+        "required": [
+          "execution_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_track_order",
+      "description": "Track a shipped order's delivery status. Returns carrier, tracking number, estimated delivery, and current location/events. Use when a buyer asks 'where's my order?' or 'when will it arrive?'.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_return",
+      "description": "Initiate a return for a purchased order. Creates a return shipping label and processes the refund. Use when a buyer wants to return an item, get a refund, or reports a problem with their purchase.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_receipt",
+      "description": "Get a payment receipt for a completed purchase. Shows itemized breakdown, payment method, and transaction details. Use when a buyer asks for a receipt, invoice, or expense documentation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_id"
+        ]
       }
     },
     {
@@ -112,15 +179,16 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string",
-            "description": "The execution ID to message"
+            "type": "string"
           },
           "message": {
-            "type": "string",
-            "description": "Follow-up message (e.g. 'I prefer organic options' or 'Can you find something cheaper?')"
+            "type": "string"
           }
         },
-        "required": ["execution_id", "message"]
+        "required": [
+          "execution_id",
+          "message"
+        ]
       }
     },
     {
@@ -129,143 +197,324 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "name": { "type": "string", "description": "Name for this monitor" },
-          "query": { "type": "string", "description": "What to watch — natural language" },
-          "schedule": { "type": "string", "description": "How often to check (e.g. 'daily', 'every 6 hours')" },
-          "price_drop_pct": { "type": "number", "description": "Minimum price drop % to notify" },
-          "goal": { "type": "string", "description": "Goal for AI-powered meaningful change detection" },
-          "webhook_url": { "type": "string", "description": "Webhook URL for notifications" }
+          "name": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "schedule": {
+            "type": "string"
+          },
+          "price_drop_pct": {
+            "type": "number"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "webhook_url": {
+            "type": "string"
+          }
         },
-        "required": ["name", "query"]
+        "required": [
+          "name",
+          "query"
+        ]
       }
     },
     {
       "name": "firestarter_watches",
-      "description": "List active monitors and their recent check results.",
+      "description": "List active monitors and their recent check results. Shows what you're watching, last check status, and any recent price changes or alerts.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "monitor_id": { "type": "string", "description": "Get details for a specific monitor" },
-          "include_checks": { "type": "boolean", "description": "Include recent check history" }
+          "monitor_id": {
+            "type": "string"
+          },
+          "include_checks": {
+            "type": "boolean"
+          }
         },
         "required": []
       }
     },
     {
       "name": "firestarter_unwatch",
-      "description": "Pause, resume, or delete a monitor.",
+      "description": "Pause or delete a monitor. Paused monitors can be resumed later; deleted monitors are permanent.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "monitor_id": { "type": "string", "description": "The monitor ID" },
-          "action": { "type": "string", "enum": ["pause", "resume", "delete"], "description": "Action to take" }
+          "monitor_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          }
         },
-        "required": ["monitor_id", "action"]
+        "required": [
+          "monitor_id",
+          "action"
+        ]
       }
     },
     {
       "name": "firestarter_check",
-      "description": "Trigger an immediate check on a monitor instead of waiting for the next scheduled run.",
+      "description": "Trigger an immediate check on a monitor. Runs the product search and diff right now instead of waiting for the next scheduled check.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "monitor_id": { "type": "string", "description": "The monitor ID to check now" }
+          "monitor_id": {
+            "type": "string"
+          }
         },
-        "required": ["monitor_id"]
+        "required": [
+          "monitor_id"
+        ]
       }
     },
     {
       "name": "firestarter_list",
-      "description": "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. The seller must already be registered — if you get a NO_SELLER_PROFILE error, register first via POST /v1/sellers. To VIEW listings you already have, use firestarter_listings instead.",
+      "description": "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. When the seller sent a photo, pass its URL in image_urls so the listing has a product image. To VIEW listings ",
       "inputSchema": {
         "type": "object",
         "properties": {
           "product_name": {
-            "type": "string",
-            "description": "Product name"
+            "type": "string"
           },
           "base_price": {
-            "type": "number",
-            "description": "Base price in USD"
+            "type": "number"
           },
           "category": {
-            "type": "string",
-            "description": "Product category (e.g. 'electronics/audio/earbuds')"
+            "type": "string"
           },
           "floor_price": {
-            "type": "number",
-            "description": "Never sell below this price"
+            "type": "number"
           },
           "ceiling_price": {
-            "type": "number",
-            "description": "Never surge above this price"
+            "type": "number"
           },
           "dynamic_pricing": {
-            "type": "boolean",
-            "description": "Enable demand-based pricing"
+            "type": "boolean"
           },
           "inventory_qty": {
-            "type": "number",
-            "description": "Available quantity"
+            "type": "number"
+          },
+          "image_urls": {
+            "type": "array"
+          },
+          "shipping": {
+            "type": "number"
+          },
+          "street1": {
+            "type": "string"
+          },
+          "street2": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
           }
         },
-        "required": ["product_name", "base_price"]
+        "required": [
+          "product_name",
+          "base_price",
+          "image_urls",
+          "street1",
+          "city",
+          "state",
+          "zip"
+        ]
       }
     },
     {
       "name": "firestarter_import",
-      "description": "Import a seller's EXISTING listing from another marketplace (Craigslist, Gumtree, their own site) into Firestarter. Give it the listing URL, or pasted listing text plus photo URLs, and it creates a DRAFT listing for the seller to review - not live, not buyable, no share link yet. eBay, Etsy, Facebook Marketplace, OfferUp and Mercari block server fetches: for those, do NOT send the URL - ask the seller to copy-paste the listing text and photo URLs instead. Activation (firestarter_update_listing, status 'active') requires a positive price (firestarter_reprice if the import found none) and the seller's Stripe payouts connected (firestarter_payouts).",
+      "description": "Import a seller's EXISTING listing from another marketplace (Craigslist, Gumtree, their own site) into Firestarter. Give it the listing URL, or pasted listing text plus photo URLs, and it creates a DR",
       "inputSchema": {
         "type": "object",
         "properties": {
           "source_url": {
-            "type": "string",
-            "description": "URL of the seller's existing listing (e.g. a Craigslist post). Omit for blocked platforms - paste text instead."
+            "type": "string"
           },
           "raw_text": {
-            "type": "string",
-            "description": "Pasted listing text (title, price, description - at least 10 characters). Required when source_url is omitted or blocked; also fills gaps URL extraction missed."
+            "type": "string"
           },
           "photo_urls": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "Photo URLs for the listing, e.g. image links the seller pasted in chat. Seller photos lead the images array."
+            "type": "array"
           }
-        }
+        },
+        "required": [
+          "photo_urls"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_request_escrow",
+      "description": "BUYER-side tool: the user found a listing on another site (Craigslist, Facebook Marketplace, Gumtree, ...) and wants to pay through Firestarter escrow instead of cash/wire. Creates an escrow invite wi",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source_url": {
+            "type": "string"
+          },
+          "buyer_email": {
+            "type": "string"
+          },
+          "buyer_name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "price": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "source_url",
+          "buyer_email"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_assist_quote",
+      "description": "Get pickup+delivery quotes for a PHYSICAL item, including loading/unloading help (a courier crew) for bulky or heavy things - weight racks, sofas, appliances. Use when a buyer or seller asks how to mo",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pickup_address": {
+            "type": "string"
+          },
+          "dropoff_address": {
+            "type": "string"
+          },
+          "pickup_lat": {
+            "type": "number"
+          },
+          "pickup_lng": {
+            "type": "number"
+          },
+          "dropoff_lat": {
+            "type": "number"
+          },
+          "dropoff_lng": {
+            "type": "number"
+          },
+          "weight_kg": {
+            "type": "number"
+          },
+          "bulky": {
+            "type": "boolean"
+          },
+          "two_person": {
+            "type": "boolean"
+          },
+          "needs_disassembly": {
+            "type": "boolean"
+          },
+          "declared_value_cents": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "pickup_address",
+          "dropoff_address"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_assist_book",
+      "description": "Book a courier from a firestarter_assist_quote result. ONLY call after the human has explicitly confirmed the exact price - this dispatches a real crew and the fee is charged to the buyer's order. Lin",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "quote_ref": {
+            "type": "string"
+          },
+          "pickup_address": {
+            "type": "string"
+          },
+          "dropoff_address": {
+            "type": "string"
+          },
+          "pickup_contact_name": {
+            "type": "string"
+          },
+          "pickup_contact_phone": {
+            "type": "string"
+          },
+          "dropoff_contact_name": {
+            "type": "string"
+          },
+          "dropoff_contact_phone": {
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "listing_id": {
+            "type": "string"
+          },
+          "fee_cents": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "provider",
+          "quote_ref",
+          "pickup_address",
+          "dropoff_address"
+        ]
       }
     },
     {
       "name": "firestarter_payouts",
-      "description": "Check whether the seller's Stripe payouts are connected - required before an imported draft can be activated, and before the seller can be paid at all. If payouts are not connected, this also returns a Stripe onboarding link to send to the seller. Use it before activating imported drafts, or whenever a seller asks about getting paid.",
+      "description": "Check whether the seller's Stripe payouts are connected - required before an imported draft can be activated, and before the seller can be paid at all. If payouts are not connected, this also returns ",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "country": {
+            "type": "string"
+          }
+        },
+        "required": []
       }
     },
     {
       "name": "firestarter_connect_shopify",
-      "description": "Connect a seller's Shopify store to Firestarter. Reports an existing connection's status, or returns a one-click install link (bound to this seller's account) the merchant opens in a browser to approve access; once approved, their catalog syncs into their own Firestarter account and paid orders flow back to their store to fulfill.",
+      "description": "Connect a seller's Shopify store to Firestarter. If the seller already has a Shopify connection, returns its status and sync info. If not, takes their Shopify store handle and returns a one-click inst",
       "inputSchema": {
         "type": "object",
         "properties": {
           "shop_handle": {
-            "type": "string",
-            "description": "The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit to check existing connection status."
+            "type": "string"
           }
-        }
+        },
+        "required": []
       }
     },
     {
       "name": "firestarter_listings",
-      "description": "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — every listing has a public share link (https://firestarter.network/l/<id>) that unfurls into a product card and hands purchase instructions to any AI agent that opens it.",
+      "description": "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use t",
       "inputSchema": {
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string",
-            "description": "Specific listing ID (lst_...) for full detail. Omit to list all active listings."
+            "type": "string"
           }
-        }
+        },
+        "required": []
       }
     },
     {
@@ -275,12 +524,10 @@
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string",
-            "description": "Specific listing ID to check demand for"
+            "type": "string"
           },
           "category": {
-            "type": "string",
-            "description": "Check demand for a category (e.g. 'electronics/audio')"
+            "type": "string"
           }
         },
         "required": []
@@ -288,94 +535,198 @@
     },
     {
       "name": "firestarter_reprice",
-      "description": "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules.",
+      "description": "Adjust pricing, shipping, or rules for an existing listing. Update base price, floor/ceiling limits, shipping fee, dynamic pricing settings, or pricing rules.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string",
-            "description": "The listing ID to reprice"
+            "type": "string"
           },
           "base_price": {
-            "type": "number",
-            "description": "New base price in USD"
+            "type": "number"
           },
           "floor_price": {
-            "type": "number",
-            "description": "New floor price"
+            "type": "number"
           },
           "ceiling_price": {
-            "type": "number",
-            "description": "New ceiling price"
+            "type": "number"
           },
           "dynamic_pricing": {
-            "type": "boolean",
-            "description": "Enable/disable dynamic pricing"
+            "type": "boolean"
           },
-          "pricing_rules": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "name": { "type": "string", "description": "Rule name (e.g. 'demand_surge')" },
-                "type": { "type": "string", "enum": ["demand", "inventory", "competitive", "schedule", "geographic"], "description": "Rule type" },
-                "config": { "type": "object", "description": "Rule config (e.g. { demand_threshold: 60, max_surge: 1.4 })" }
-              },
-              "required": ["name", "type", "config"]
-            },
-            "description": "Dynamic pricing rules"
+          "shipping": {
+            "type": "number"
           }
         },
-        "required": ["listing_id"]
+        "required": [
+          "listing_id"
+        ]
       }
     },
     {
       "name": "firestarter_update_listing",
-      "description": "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also activates imported drafts (status 'active') - drafts need a positive price and the seller's Stripe payouts connected first (see firestarter_import / firestarter_payouts). For pricing changes, use firestarter_reprice instead.",
+      "description": "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also a",
       "inputSchema": {
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string",
-            "description": "The listing ID to update"
+            "type": "string"
           },
           "product_name": {
-            "type": "string",
-            "description": "New product name/title"
+            "type": "string"
           },
           "description": {
-            "type": "string",
-            "description": "New product description"
+            "type": "string"
           },
           "category": {
-            "type": "string",
-            "description": "New category (e.g. 'sports/tennis')"
+            "type": "string"
           },
           "inventory_qty": {
-            "type": "number",
-            "description": "Updated inventory quantity"
+            "type": "number"
           },
           "status": {
-            "type": "string",
-            "enum": ["active", "paused", "out_of_stock"],
-            "description": "New listing status"
+            "type": "string"
+          },
+          "image_urls": {
+            "type": "array"
           }
         },
-        "required": ["listing_id"]
+        "required": [
+          "listing_id",
+          "image_urls"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_set_shipping_policy",
+      "description": "Set where a seller is willing to ship a listing. Use this when a buyer wants delivery to a country the listing does not yet cover (a checkout came back 'seller not shipping to that destination') and t",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listing_id": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "countries": {
+            "type": "array"
+          },
+          "exclude": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "listing_id",
+          "mode",
+          "countries",
+          "exclude"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_verify",
+      "description": "Submit a possession-verification photo for a listing whose activation asked for one (high-value >= $500, luxury category, or a source-URL conflict). The seller writes the FS-XXXX code by hand, photogr",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listing_id": {
+            "type": "string"
+          },
+          "photo_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "listing_id",
+          "photo_url"
+        ]
       }
     },
     {
       "name": "firestarter_delist",
-      "description": "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting — this takes the product off the market immediately.",
+      "description": "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting — this takes the pr",
       "inputSchema": {
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string",
-            "description": "The listing ID (lst_...) to delist"
+            "type": "string"
           }
         },
-        "required": ["listing_id"]
+        "required": [
+          "listing_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_seller_orders",
+      "description": "View the seller's incoming orders - shows product, amount, payout status, and order status. Use when a seller asks about their orders, sales, or recent activity.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_confirm_order",
+      "description": "Confirm a pending order. Use when a seller wants to accept/confirm an incoming order. The order ID comes from firestarter_seller_orders.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "order_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_ship_order",
+      "description": "Mark an order as shipped by adding the carrier and tracking number. Use after the seller has shipped the item. The buyer gets tracking info automatically.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "order_id": {
+            "type": "string"
+          },
+          "tracking_number": {
+            "type": "string"
+          },
+          "carrier": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id",
+          "tracking_number"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_seller_analytics",
+      "description": "View seller revenue and order analytics - total revenue, order count, average order value, and 30-day daily breakdown. Use when a seller asks about their performance, earnings, or sales trends.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_seller_disputes",
+      "description": "View and manage disputes on the seller's orders. Lists open disputes with reasons. Use when a seller mentions a dispute, complaint, or return issue.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "resolve_id": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          }
+        },
+        "required": []
       }
     }
   ]

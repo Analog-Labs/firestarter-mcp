@@ -939,7 +939,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           /no active seller profile/i.test(msg) ||
           msg.includes("NO_SELLER_PROFILE");
         const hint = noSeller
-          ? "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Call firestarter_sell_link to give them a personalized setup link, then retry this listing once they have finished - you already have the product details, so do NOT ask for them again."
+          ? "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Direct them to firestarter.network/sell to register, then retry this listing once they have finished - you already have the product details, so do NOT ask for them again."
           : "";
         return { content: [{ type: "text" as const, text: `Error creating listing: ${msg}${hint}` }], isError: true };
       }
@@ -998,7 +998,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (/blocks server-side fetches/i.test(msg)) {
           hint = "\n\nThat platform cannot be fetched. Ask the seller to copy-paste the listing text (title, price, description) and photo URLs into chat, then call firestarter_import again with raw_text + photo_urls.";
         } else if ((err instanceof ApiError && err.code === "NO_SELLER_PROFILE") || /no active seller profile/i.test(msg) || msg.includes("NO_SELLER_PROFILE")) {
-          hint = "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Call firestarter_sell_link to give them a personalized setup link, then retry the import once they have finished.";
+          hint = "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Direct them to firestarter.network/sell to register, then retry the import once they have finished.";
         } else if (/could not fetch/i.test(msg)) {
           hint = "\n\nAsk the seller to paste the listing text directly into chat and retry with raw_text.";
         }
