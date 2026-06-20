@@ -428,8 +428,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
       option_id: z.string().optional().describe("Exact option id (e.g. 'opt_abc123') to approve, as returned in API errors or the execution resource. Takes precedence over selected_option."),
+      delivery_address: z.object({
+        name: z.string().optional(),
+        street1: z.string().describe("Street address"),
+        street2: z.string().optional(),
+        city: z.string(),
+        state: z.string().optional(),
+        zip: z.string().optional(),
+        country: z.string().optional().describe("ISO country code, e.g. US, TH. Defaults to US."),
+        phone: z.string().optional(),
+      }).optional().describe("Buyer's shipping address (required for physical marketplace goods). street1 + city are always required; state + zip are also required for US/CA/AU. Collect this from the buyer before approving - approving without it is rejected."),
+      shipping_option_index: z.number().int().min(0).optional().describe("0-based index of the shipping method to use, from the selected option's shipping_options list (shown by firestarter_status). Omit to use the default rate; the order total is recalculated server-side for the chosen rate."),
     },
-    async ({ execution_id, selected_option, option_id }) => {
+    async ({ execution_id, selected_option, option_id, delivery_address, shipping_option_index }) => {
       try {
         // Bare "approve" (no execution_id): resolve the pending purchase so a
         // user replying just "approve" in chat doesn't dead-end with "nothing
@@ -484,6 +495,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
 
         const body: any = {};
+        if (delivery_address) body.delivery_address = delivery_address;
+        if (shipping_option_index != null) body.shipping_option_index = shipping_option_index;
         if (option_id) {
           body.option_id = option_id;
         } else if (selected_option !== undefined) {
