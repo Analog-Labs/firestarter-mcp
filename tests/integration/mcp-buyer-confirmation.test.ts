@@ -103,6 +103,33 @@ const EXTERNAL_OPT = {
   product_url: "https://ebay.com/itm/123456",
 };
 
+// A Firestarter store that simply hasn't enabled checkout yet (seeded/unclaimed
+// catalog or a seller without Stripe). browse-only, but NOT external - it's in
+// our catalog with an owner we can activate. source = firestarter_seller and the
+// product_url is a real /l/ share link.
+const UNCONNECTED_STORE_OPT = {
+  product_title: "Anker 7-in-1 USB-C Hub",
+  supplier: "Gadget Town",
+  total: "41.00",
+  purchasable: false,
+  match_score: 82,
+  product_url: SHARE_URL,
+  metadata: { source: "firestarter_seller", seller_stripe_connected: false },
+};
+
+// The buyer's own listing (#334): surfaced so they see how it appears, but never
+// offered for purchase and never labeled "external".
+const OWN_OPT = {
+  product_title: "My Listed USB-C Hub",
+  supplier: "Your Store",
+  total: "40.00",
+  purchasable: false,
+  own_listing: true,
+  match_score: 90,
+  product_url: SHARE_URL,
+  metadata: { source: "firestarter_seller" },
+};
+
 const approvalExec = (options: any[]) => ({
   id: "exec_conf1",
   status: "awaiting_approval",
@@ -190,6 +217,40 @@ describe("#256 buyer confirmation - rendering (firestarter_status)", () => {
     expect(text).toContain("Firestarter cannot purchase it");
     expect(text).toContain("share the link");
     expect(text).not.toContain("Total with app margin");
+    // A genuine external result must NOT be dressed up as a Firestarter store.
+    expect(text).not.toContain("Firestarter store");
+  });
+
+  it("browse-only Firestarter store (not Stripe-connected): honest 'checkout not enabled', NOT 'external'", async () => {
+    installStatusFetch(approvalExec([UNCONNECTED_STORE_OPT]));
+    const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
+    expect(text).toContain("Firestarter store (checkout not enabled yet)");
+    expect(text).toContain("hasn't enabled checkout yet");
+    expect(text).toContain(`View on Firestarter: ${SHARE_URL}`);
+    // It is browse-only but it is NOT external, and we don't tell the buyer to
+    // "buy it directly elsewhere" - there is no elsewhere, it's our seller.
+    expect(text).not.toContain("external");
+    expect(text).not.toContain("Firestarter cannot purchase it");
+    expect(text).not.toContain("purchase directly");
+    expect(text).not.toContain("Total with app margin");
+  });
+
+  it("the buyer's own listing (#334): labeled 'your listing', never 'external'", async () => {
+    installStatusFetch(approvalExec([OWN_OPT]));
+    const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
+    expect(text).toContain("- your listing");
+    expect(text).toContain("This is your own listing");
+    expect(text).toContain(`View your listing: ${SHARE_URL}`);
+    expect(text).not.toContain("external");
+    expect(text).not.toContain("Firestarter store (checkout not enabled yet)");
+    expect(text).not.toContain("Firestarter cannot purchase it");
+  });
+
+  it("all-browse-only aggregate note: Firestarter stores read as 'haven't enabled checkout', not 'external marketplace'", async () => {
+    installExecuteFetch(approvalExec([UNCONNECTED_STORE_OPT, { ...UNCONNECTED_STORE_OPT, supplier: "Cable Hut" }]));
+    const text = textOf(await captureTools().firestarter_execute({ request: "usb-c hub under $50" }));
+    expect(text).toContain("Firestarter stores that haven't enabled checkout yet");
+    expect(text).not.toContain("external marketplace listing");
   });
 
   it("R2: a non-approval status (paid) keeps the Execution/Status header, even with options", async () => {
