@@ -211,14 +211,33 @@ async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Prom
 
     for (let i = 0; i < exec.options.length; i++) {
       const opt = exec.options[i];
-      // #107: external marketplace results are browse-only — label them so no
-      // agent walks a buyer into approving one (the API rejects it anyway).
+      // #107: browse-only options can't be checked out — label them so no agent
+      // walks a buyer into approving one (the API rejects it anyway). But say
+      // WHY honestly: a Firestarter store that hasn't enabled checkout yet is
+      // NOT an "external" listing (it's in our catalog, with an owner we can
+      // activate), and the buyer's own listing is neither. Only genuine web
+      // results (SerpAPI/eBay/Etsy/...) are "external".
       const browseOnly = opt.purchasable === false;
+      const isOwnListing = opt.own_listing === true;
+      // metadata.source is set by the find step: "firestarter_seller" for any
+      // catalog listing (including seeded stores not yet claimed / without
+      // Stripe), vs "google_shopping"/"serpapi"/"shopify" for off-platform web
+      // results. A browse-only firestarter_seller = a store that simply hasn't
+      // turned on instant checkout yet.
+      const unconnectedStore = browseOnly && !isOwnListing && opt.metadata?.source === "firestarter_seller";
+      const externalResult = browseOnly && !isOwnListing && !unconnectedStore;
       const optLines: string[] = [];
       // #256: lead with the product name AND condition (new/used/refurbished —
       // often the deciding factor), then what's included/missing, from metadata.
       const condition = typeof opt.metadata?.condition === "string" && opt.metadata.condition.trim() ? ` (${opt.metadata.condition.trim()})` : "";
-      optLines.push(`\n**${i + 1}. ${opt.product_title}${condition}** from ${opt.supplier || opt.store || "Unknown"}${browseOnly ? " - browse-only (external)" : ""}`);
+      const browseLabel = isOwnListing
+        ? " - your listing"
+        : unconnectedStore
+          ? " - Firestarter store (checkout not enabled yet)"
+          : externalResult
+            ? " - browse-only (external)"
+            : "";
+      optLines.push(`\n**${i + 1}. ${opt.product_title}${condition}** from ${opt.supplier || opt.store || "Unknown"}${browseLabel}`);
       const included = typeof opt.metadata?.included === "string" ? opt.metadata.included.trim() : "";
       const missing = typeof opt.metadata?.missing === "string" ? opt.metadata.missing.trim() : "";
       if (included) optLines.push(`  Includes: ${included}`);
@@ -269,9 +288,22 @@ async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Prom
       // link). Keep it a BARE url, not a markdown link, so it stays tappable and
       // unfurls in Slack/WhatsApp/Telegram (#272).
       if (opt.product_url) {
-        optLines.push(browseOnly ? `  View on ${opt.supplier || opt.store || "site"}: ${opt.product_url}` : `  View listing: ${opt.product_url}`);
+        const linkLabel = isOwnListing
+          ? "View your listing"
+          : unconnectedStore
+            ? "View on Firestarter"
+            : externalResult
+              ? `View on ${opt.supplier || opt.store || "site"}`
+              : "View listing";
+        optLines.push(`  ${linkLabel}: ${opt.product_url}`);
       }
-      if (browseOnly) optLines.push(`  External marketplace result - Firestarter cannot purchase it. Do not approve this option; share the link so the buyer can purchase directly.`);
+      if (isOwnListing) {
+        optLines.push(`  This is your own listing - shown so you can see how it appears to buyers. It is not offered for purchase.`);
+      } else if (unconnectedStore) {
+        optLines.push(`  This is a Firestarter store that hasn't enabled checkout yet, so it can't be purchased here yet. Share the link so the buyer can view it, or use \`firestarter_message\` to refine toward checkout-ready listings. Do not approve this option.`);
+      } else if (externalResult) {
+        optLines.push(`  External marketplace result - Firestarter cannot purchase it. Do not approve this option; share the link so the buyer can purchase directly.`);
+      }
       if (opt.agent_reasoning) optLines.push(`  ${opt.agent_reasoning}`);
       blocks.push({ type: "text", text: optLines.join("\n") });
     }
@@ -372,13 +404,20 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // when nothing is a confident match - an irrelevant top result must
           // not be pitched as buyable.
           const hasRelevantMatch = isRelevantMatch(opts.map((o: any) => o.match_score));
+          // Honest browse-only framing: a Firestarter store that hasn't enabled
+          // checkout yet is NOT "external" (it's in our catalog, with an owner we
+          // can activate). Only call the set "external" when it really is.
+          const browseOpts = opts.filter((o: any) => o.purchasable === false && o.own_listing !== true);
+          const allFsStores = browseOpts.length > 0 && browseOpts.every((o: any) => o.metadata?.source === "firestarter_seller");
           blocks.push({
             type: "text",
             text: opts.length > 0 && !hasRelevantMatch
               ? "\n\n**No confident match.** None of these results closely matches the request, so do not suggest buying any of them or name a \"best option\". Use `firestarter_message` to refine the search (add brand, model, size, or a price range), or share the result links so the buyer can browse. `firestarter_cancel` to stop."
               : purchasableCount === 0 && opts.length > 0
-              ? "\n\n**Note:** every result is an external marketplace listing - browse-only. Firestarter cannot purchase them: share the URLs so the buyer can purchase directly, use `firestarter_message` to refine the search toward Firestarter marketplace listings, or `firestarter_cancel`."
-              : `\n\n**Action needed:** the user can reply "confirm" to place the order for the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only (external) options cannot be purchased - share their links instead." : ""}`,
+              ? (allFsStores
+                  ? "\n\n**Note:** these are Firestarter stores that haven't enabled checkout yet - none can be bought here yet. Share the listing links so the buyer can view them, or use `firestarter_message` to refine toward checkout-ready listings. `firestarter_cancel` to stop."
+                  : "\n\n**Note:** none of these can be purchased through Firestarter - they're external results and/or stores that haven't enabled checkout yet. You can share the URLs so the buyer can view them, refine the search with `firestarter_message`, or `firestarter_cancel`.")
+              : `\n\n**Action needed:** the user can reply "confirm" to place the order for the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only options can't be purchased here - share their links instead." : ""}`,
           });
         }
         return { content: blocks };
@@ -423,7 +462,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Approve an execution that is awaiting approval. By default this approves the pre-selected (best purchasable) option and proceeds with payment; pass selected_option or option_id to approve a different option. Only Firestarter-purchasable options can be approved — external browse-only results are rejected with their direct purchase link instead. When the user just says \"approve\" without naming an order, omit execution_id: the tool resolves the pending purchase automatically (and asks which one only if several are pending).",
+    "Approve an execution that is awaiting approval. By default this approves the pre-selected (best purchasable) option and proceeds with payment; pass selected_option or option_id to approve a different option. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout yet) are rejected with a view link instead. When the user just says \"approve\" without naming an order, omit execution_id: the tool resolves the pending purchase automatically (and asks which one only if several are pending).",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
