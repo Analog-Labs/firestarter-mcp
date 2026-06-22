@@ -977,9 +977,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           (err instanceof ApiError && err.code === "NO_SELLER_PROFILE") ||
           /no active seller profile/i.test(msg) ||
           msg.includes("NO_SELLER_PROFILE");
-        const hint = noSeller
-          ? "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Direct them to firestarter.network/sell to register, then retry this listing once they have finished - you already have the product details, so do NOT ask for them again."
-          : "";
+        const code = err instanceof ApiError ? err.code : undefined;
+        // #489: give the agent a concrete next step per error code instead of a
+        // bare "Error creating listing" it relays as "I ran into an issue" (which
+        // makes it loop or re-ask for product details it already has).
+        let hint = "";
+        if (noSeller) {
+          hint = "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Direct them to firestarter.network/sell to register, then retry this listing once they have finished - you already have the product details, so do NOT ask for them again.";
+        } else if (code === "DUPLICATE_LISTING" || /duplicate listing/i.test(msg)) {
+          hint = "\n\nDUPLICATE_LISTING: this seller already has a listing with that name. Do NOT re-ask for details - either update the existing one (find it with firestarter_listings) or, if they genuinely want a second listing, retry with allow_duplicate: true.";
+        } else if (code === "PROHIBITED_ITEM" || /prohibited/i.test(msg)) {
+          hint = "\n\nPROHIBITED_ITEM: this item can't be listed on Firestarter. Relay the reason above to the seller plainly and do NOT retry.";
+        }
         return { content: [{ type: "text" as const, text: `Error creating listing: ${msg}${hint}` }], isError: true };
       }
     }
