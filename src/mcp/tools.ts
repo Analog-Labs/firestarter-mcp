@@ -1760,4 +1760,88 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     }
   );
+
+  // ── Community attribution / self-serve "markets" (agentic spin-up) ──
+  // Gated behind ATTRIBUTION_SELF_SERVE_ENABLED so these only appear once
+  // self-serve is opened. They let ANY agent (Cole, Claude, Cursor, a community's
+  // own bot) stand up an attribution program, mint a share code, and read
+  // earnings — no dashboard required. Programs are owned by the calling org.
+  // Inert until ATTRIBUTION_PROGRAMS_ENABLED turns payouts on; creating a program
+  // early just stages it.
+  if (process.env.ATTRIBUTION_SELF_SERVE_ENABLED === "true") {
+    server.tool(
+      "firestarter_create_market",
+      "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use when a user wants to monetize an audience by letting members buy & sell through Firestarter (e.g. 'set up a store for my Discord/Telegram/X following'). Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Then call firestarter_market_link to get a share code for the community.",
+      {
+        share_bps: z.number().int().min(0).max(10000).describe("Cut of Firestarter's platform fee in basis points (1000 = 10%). Capped at the platform self-serve max; the response returns the effective value."),
+        type: z.enum(["community", "developer"]).optional().describe("Program type. Default 'community'."),
+      },
+      async ({ share_bps, type }) => {
+        try {
+          const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps });
+          const p = res.program ?? {};
+          let text = `**Market created.** Program id: \`${p.id}\`. Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee`;
+          if (res.override_bps_capped) text += ` (capped from your request to the platform max of ${(Number(res.max_self_serve_bps ?? 0) / 100).toFixed(2)}%)`;
+          text += `.\n\nNext: firestarter_market_link with program_id \`${p.id}\` to get a share code. Members who join through it have their purchases (and, when enabled, their sales) attributed to you. Earnings: firestarter_market_earnings.`;
+          return { content: [{ type: "text" as const, text }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Error creating market: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_market_link",
+      "Mint a shareable join code for a market you own (from firestarter_create_market). Give the code to your community — when a member redeems it (firestarter_join_market) they are attributed to your program (first-touch, ~90-day lock) so you earn on their activity. Optionally tag a channel/campaign for tracking.",
+      {
+        program_id: z.string().describe("The market/program id from firestarter_create_market."),
+        channel: z.string().optional().describe("Optional channel tag, e.g. 'discord', 'x', 'telegram'."),
+        campaign: z.string().optional().describe("Optional campaign tag for tracking."),
+      },
+      async ({ program_id, channel, campaign }) => {
+        try {
+          const res = await apiRequest("POST", "/v1/attribution/links", { program_id, channel, campaign });
+          const code = res.link?.code;
+          if (!code) return { content: [{ type: "text" as const, text: "Link created but no code was returned." }], isError: true };
+          return { content: [{ type: "text" as const, text: `**Share code:** \`${code}\`\n\nGive this to your community. Each member redeems it once (first-touch, locks ~90 days). They can paste it to their Firestarter agent (firestarter_join_market) to join your market.` }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Error creating share link: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_market_earnings",
+      "Show the earnings of the markets you own: override earnings pending vs paid out, and transaction counts. Use when a community owner asks how much they have earned or wants their attribution dashboard.",
+      {},
+      async () => {
+        try {
+          const res = await apiRequest("GET", "/v1/attribution/earnings");
+          return { content: [{ type: "text" as const, text: "```json\n" + JSON.stringify(res, null, 2) + "\n```" }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Error fetching earnings: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_join_market",
+      "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. First-touch: the first market joined locks for ~90 days. Use when a user pastes a Firestarter join/market code or asks to join a community's market.",
+      {
+        code: z.string().describe("The market share code the community gave you."),
+      },
+      async ({ code }) => {
+        try {
+          const res = await apiRequest("POST", "/v1/attribution/redeem", { code });
+          if (res.idempotent) return { content: [{ type: "text" as const, text: "You're already in this market — nothing changed." }] };
+          if (res.replaced) return { content: [{ type: "text" as const, text: "Joined — your attribution moved to this market (the previous lock had expired)." }] };
+          return { content: [{ type: "text" as const, text: "**Joined the market.** Your future buys (and sells, when that's enabled) credit this community." }] };
+        } catch (err: any) {
+          const msg = toErrorMessage(err);
+          if (/locked/i.test(msg)) return { content: [{ type: "text" as const, text: "You're locked to another market right now and can't switch yet (first-touch lock). Try again after the lock window." }] };
+          return { content: [{ type: "text" as const, text: `Couldn't join: ${msg}` }], isError: true };
+        }
+      }
+    );
+  }
 }
