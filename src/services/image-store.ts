@@ -21,6 +21,34 @@ export function blobUrl(id: string): string {
   return `${API_URL}/v1/img/${id}`;
 }
 
+const BLOB_PATH_RE = /^\/v1\/img\/[a-f0-9]{32}$/;
+
+/**
+ * True iff `url` is a hosted blob URL this server minted (our API host +
+ * /v1/img/<32-hex-id>). Buyer-supplied reference images (#348) are gated
+ * through this: the only URL we accept is one our own upload endpoint
+ * produced, which guarantees the bytes exist in our store AND removes the
+ * SSRF surface of letting a caller point the vision model at an arbitrary
+ * host. Compared against the same API_URL used to mint the URL, so the two
+ * always agree by construction.
+ */
+export function isOwnBlobUrl(url: unknown): boolean {
+  if (typeof url !== "string" || url.length > 256) return false;
+  let parsed: URL;
+  let base: URL;
+  try {
+    parsed = new URL(url);
+    base = new URL(API_URL);
+  } catch {
+    return false;
+  }
+  return (
+    parsed.protocol === base.protocol &&
+    parsed.host === base.host &&
+    BLOB_PATH_RE.test(parsed.pathname)
+  );
+}
+
 /** Deterministic, hex-safe id for a blob's thumbnail variant. */
 export function thumbBlobId(id: string): string {
   return crypto.createHash("sha256").update(id + ":thumb").digest("hex").slice(0, 32);
