@@ -22,6 +22,18 @@ const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.netw
 
 function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
+  // Authentication/credential failures (401/403) must not be relayed as a generic
+  // "shopping service" outage. The upstream agent (e.g. the WhatsApp/Cole bridge)
+  // otherwise tells the buyer the search failed — and may fabricate that a search
+  // ran. Nothing is searched on these: auth runs before any provider/execution
+  // call, so the right action is to re-provision the key, not to retry.
+  if (err instanceof ApiError) {
+    const isAuthCode =
+      err.code === "INVALID_KEY" || err.code === "INVALID_KEY_FORMAT" || err.code === "MISSING_AUTH";
+    if (err.status === 401 || err.status === 403 || isAuthCode) {
+      return "Authentication failed: the Firestarter API key is invalid or revoked. This is a credential/configuration problem, not a product-search outage — no search was performed. Do not retry; the integration's API key must be re-provisioned.";
+    }
+  }
   if (msg.includes("timed out") || msg.includes("aborted")) {
     return "Firestarter API timed out. Please retry in a few seconds.";
   }
@@ -414,10 +426,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             text: opts.length > 0 && !hasRelevantMatch
               ? "\n\n**No confident match.** None of these results closely matches the request, so do not suggest buying any of them or name a \"best option\". Use `firestarter_message` to refine the search (add brand, model, size, or a price range), or share the result links so the buyer can browse. `firestarter_cancel` to stop."
               : purchasableCount === 0 && opts.length > 0
-              ? (allFsStores
+                ? (allFsStores
                   ? "\n\n**Note:** these are Firestarter stores that haven't enabled checkout yet - none can be bought here yet. Share the listing links so the buyer can view them, or use `firestarter_message` to refine toward checkout-ready listings. `firestarter_cancel` to stop."
                   : "\n\n**Note:** none of these can be purchased through Firestarter - they're external results and/or stores that haven't enabled checkout yet. You can share the URLs so the buyer can view them, refine the search with `firestarter_message`, or `firestarter_cancel`.")
-              : `\n\n**Action needed:** the user can reply "confirm" to place the order for the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only options can't be purchased here - share their links instead." : ""}`,
+                : `\n\n**Action needed:** the user can reply "confirm" to place the order for the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only options can't be purchased here - share their links instead." : ""}`,
           });
         }
         return { content: blocks };
@@ -493,8 +505,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const all: any[] = Array.isArray(list?.executions)
             ? list.executions
             : Array.isArray(list)
-            ? list
-            : [];
+              ? list
+              : [];
           const approvable = all.filter((e) => e.status === "awaiting_approval");
           if (approvable.length === 1) {
             execution_id = approvable[0].id;
