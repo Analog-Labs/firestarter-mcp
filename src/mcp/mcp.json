@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify, monitor prices. 32 tools, 7 resources, 9 prompts.",
+  "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify, monitor prices. 33 tools, 7 resources, 9 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -499,6 +499,34 @@
         "properties": {
           "shop_handle": {
             "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_catalog_search",
+      "description": "Search the Firestarter NETWORK catalog (products from ALL sellers) without starting a purchase. Buyer-facing browse: compare prices, check availability. Each result has a listing id (lst_...) for firestarter_execute, a share link, and a buyable flag (buyable now vs browse-only).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "min_price": {
+            "type": "number"
+          },
+          "max_price": {
+            "type": "number"
+          },
+          "buyable_only": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
           }
         },
         "required": []

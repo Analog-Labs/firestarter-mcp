@@ -1331,6 +1331,60 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_catalog_search
+  server.tool(
+    "firestarter_catalog_search",
+    "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. test/live follows the API key's environment.",
+    {
+      query: z.string().optional().describe("Free-text product search, e.g. 'leather conditioner', 'wireless earbuds under 50'. Matches product name, description, and category. Use real product nouns; omit filler words."),
+      category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
+      min_price: z.number().optional().describe("Minimum price in the listing currency."),
+      max_price: z.number().optional().describe("Maximum price in the listing currency."),
+      buyable_only: z.boolean().optional().describe("If true, return only listings that can be purchased now (seller checkout enabled). Default false (includes browse-only listings)."),
+      limit: z.number().optional().describe("Max results to return, 1-50. Default 20."),
+    },
+    async ({ query, category, min_price, max_price, buyable_only, limit }) => {
+      try {
+        const params = new URLSearchParams();
+        if (query) params.set("q", query);
+        if (category) params.set("category", category);
+        if (typeof min_price === "number") params.set("min_price", String(min_price));
+        if (typeof max_price === "number") params.set("max_price", String(max_price));
+        if (buyable_only) params.set("buyable_only", "true");
+        if (typeof limit === "number") params.set("limit", String(limit));
+
+        const data = await apiRequest("GET", `/v1/listings/catalog?${params.toString()}`);
+        const listings: any[] = data.listings || [];
+        if (listings.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "No catalog listings matched. Try a broader search term (a single product noun), remove price/category filters, or drop `buyable_only`.",
+            }],
+          };
+        }
+
+        const buyableCount = listings.filter((l) => l.buyable).length;
+        const lines = [
+          `**Firestarter catalog** — ${listings.length} result${listings.length === 1 ? "" : "s"} (${data.query?.environment || "live"} mode, ${buyableCount} buyable now)${data.has_more ? " · more available, narrow the search or raise `limit`" : ""}\n`,
+        ];
+        for (const l of listings) {
+          const price = `${l.currency || "USD"} ${Number(l.current_price).toFixed(2)}`;
+          const tag = l.buyable ? "✅ buyable" : "👁 browse-only";
+          lines.push(
+            `- **${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}\n  id: \`${l.id}\` · ${l.share_url}`,
+          );
+        }
+        lines.push(
+          "\nTo buy a **buyable** item, call `firestarter_execute` with `listing_id` set to its id. **Browse-only** items can't be checked out here — share the link so the buyer can view them, and suggest the seller finish Stripe Connect to enable checkout.",
+        );
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error searching catalog: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_listings
   server.tool(
     "firestarter_listings",
