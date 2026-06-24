@@ -442,12 +442,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_status
   server.tool(
     "firestarter_status",
-    "Check the status of a Firestarter execution or list recent executions. Use this to check on orders, see what options were found, or get tracking updates.",
+    "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live). Use this to check on orders, see what options were found, get tracking updates, or confirm whether you are in test/sandbox mode. Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
     {
       execution_id: z.string().optional().describe("Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."),
       status_filter: z.string().optional().describe("Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"),
     },
     async ({ execution_id, status_filter }) => {
+      // Environment is determined by the API key prefix (auth.ts): fs_test_* ->
+      // sandbox, anything else -> live. Surfaced so the agent can correctly
+      // answer "are we in test mode?" instead of assuming there is none.
+      const environment = apiKey.startsWith("fs_test_")
+        ? "TEST (sandbox — simulated payment/shipping/tracking, no real money, no real seller contacted)"
+        : "LIVE (real orders, real charges)";
       try {
         if (execution_id) {
           const exec = await apiRequest("GET", `/v1/executions/${execution_id}`);
@@ -458,9 +464,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const data = await apiRequest("GET", path);
         const executions = data.executions || data;
         if (!Array.isArray(executions) || executions.length === 0) {
-          return { content: [{ type: "text" as const, text: "No executions found." }] };
+          return { content: [{ type: "text" as const, text: `Environment: ${environment}\n\nNo executions found.` }] };
         }
-        const lines = [`**Recent Executions** (${data.total || executions.length} total)\n`];
+        const lines = [`Environment: ${environment}\n`, `**Recent Executions** (${data.total || executions.length} total)\n`];
         for (const e of executions.slice(0, 10)) {
           lines.push(`- **${e.id}** [${e.status}] ${e.request_text?.slice(0, 60) || ""}${e.request_text?.length > 60 ? "..." : ""}`);
         }

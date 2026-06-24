@@ -64,7 +64,7 @@
     },
     {
       "name": "firestarter_status",
-      "description": "Check the status of a Firestarter execution or list recent executions. Use this to check on orders, see what options were found, or get tracking updates.",
+      "description": "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live). Use this to check on orders, see what options were found, get tracking updates, or confirm whether you are in test/sandbox mode. Firestarter DOES have a test mode: an fs_test_ API key runs every purchase through a fully simulated sandbox (mock payment, shipping, tracking — no real money, no real seller contacted); an fs_live_ key is real. The mode is fixed by the configured API key, not a per-call option.",
       "inputSchema": {
         "type": "object",
         "properties": {
