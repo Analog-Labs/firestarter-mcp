@@ -30,7 +30,7 @@ function toErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     const isAuthCode =
       err.code === "INVALID_KEY" || err.code === "INVALID_KEY_FORMAT" || err.code === "MISSING_AUTH";
-    if (err.status === 401 || err.status === 403 || isAuthCode) {
+    if (err.status === 401 || isAuthCode) {
       return "Authentication failed: the Firestarter API key is invalid or revoked. This is a credential/configuration problem, not a product-search outage — no search was performed. Do not retry; the integration's API key must be re-provisioned.";
     }
   }
@@ -43,6 +43,22 @@ function toErrorMessage(err: unknown): string {
 /** Strip backslashes LLMs sometimes inject when markdown-escaping underscores/hyphens in IDs. */
 function cleanListingId(id: string): string {
   return id.replace(/\\/g, "");
+}
+
+/**
+ * Keep external links readable in chat: suppress noisy query strings (notably
+ * Google Shopping tracking params) while preserving a clickable URL.
+ */
+function tidyProductUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (/google\./i.test(u.hostname) && /\/shopping\//i.test(u.pathname)) {
+      return `${u.origin}${u.pathname}`;
+    }
+    return url;
+  } catch {
+    return url;
+  }
 }
 
 /**
@@ -307,7 +323,7 @@ async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Prom
             : externalResult
               ? `View on ${opt.supplier || opt.store || "site"}`
               : "View listing";
-        optLines.push(`  ${linkLabel}: ${opt.product_url}`);
+        optLines.push(`  ${linkLabel}: ${tidyProductUrl(opt.product_url)}`);
       }
       if (isOwnListing) {
         optLines.push(`  This is your own listing - shown so you can see how it appears to buyers. It is not offered for purchase.`);
@@ -434,6 +450,30 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         return { content: blocks };
       } catch (err: any) {
+        if (err instanceof ApiError && err.code === "PAYMENT_REQUIRED") {
+          // #502: include the actual Firestarter-org balance snapshot so channel
+          // users don't get a vague token error when a workspace-level credit
+          // dashboard shows healthy balance in a different system/account.
+          try {
+            const bal = await apiRequest("GET", "/v1/billing/balance");
+            return {
+              content: [{
+                type: "text" as const,
+                text:
+                  `Error: ${toErrorMessage(err)}\n\n` +
+                  `Firestarter org billing snapshot:\n` +
+                  `- org_id: ${bal.org_id}\n` +
+                  `- plan: ${bal.plan}\n` +
+                  `- token_balance: ${bal.token_balance}\n` +
+                  `- trial_active: ${bal.trial_active ? "yes" : "no"}\n\n` +
+                  `If this differs from the workspace credit view, the channel may be linked to a different Firestarter org/API key. Re-provision or relink the integration key for this workspace.`,
+              }],
+              isError: true,
+            };
+          } catch {
+            // Fall back to the base error when balance lookup itself fails.
+          }
+        }
         return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
     }
@@ -995,7 +1035,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // makes it loop or re-ask for product details it already has).
         let hint = "";
         if (noSeller) {
-          hint = "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Direct them to firestarter.network/sell to register, then retry this listing once they have finished - you already have the product details, so do NOT ask for them again.";
+          hint = "\n\nNO_SELLER_PROFILE: no seller profile exists on this Firestarter org. If they are truly new, direct them to firestarter.network/sell to register, then retry this listing once they have finished - do NOT ask for them again. If they already have an active web seller account, ask them to open the seller dashboard, generate a Link Code, and paste it to Cole to relink this chat identity to their existing seller org.";
         } else if (code === "DUPLICATE_LISTING" || /duplicate listing/i.test(msg)) {
           hint = "\n\nDUPLICATE_LISTING: this seller already has a listing with that name. Do NOT re-ask for details - either update the existing one (find it with firestarter_listings) or, if they genuinely want a second listing, retry with allow_duplicate: true.";
         } else if (code === "PROHIBITED_ITEM" || /prohibited/i.test(msg)) {
@@ -1058,7 +1098,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (/blocks server-side fetches/i.test(msg)) {
           hint = "\n\nThat platform cannot be fetched. Ask the seller to copy-paste the listing text (title, price, description) and photo URLs into chat, then call firestarter_import again with raw_text + photo_urls.";
         } else if ((err instanceof ApiError && err.code === "NO_SELLER_PROFILE") || /no active seller profile/i.test(msg) || msg.includes("NO_SELLER_PROFILE")) {
-          hint = "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Direct them to firestarter.network/sell to register, then retry the import once they have finished.";
+          hint = "\n\nNO_SELLER_PROFILE: no seller profile exists on this Firestarter org. If they are new, direct them to firestarter.network/sell to register, then retry the import. If they already have an active web seller account, have them generate a Link Code in the seller dashboard and paste it to Cole to relink this chat identity.";
         } else if (/could not fetch/i.test(msg)) {
           hint = "\n\nAsk the seller to paste the listing text directly into chat and retry with raw_text.";
         }
@@ -1374,10 +1414,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listings.length === 0) {
           return { content: [{ type: "text" as const, text: "You have no active listings. Use `firestarter_list` to create one." }] };
         }
+        const utcToday = new Date().toISOString().slice(0, 10);
+        const listedTodayUtc = listings.filter((l: any) => {
+          const ts = typeof l?.created_at === "string" ? l.created_at : "";
+          return ts.slice(0, 10) === utcToday;
+        }).length;
+
         let text = `**Your listings (${listings.length})**\n`;
+        text += `Listed today (UTC): ${listedTodayUtc}\n`;
         for (const l of listings) {
           text += `- **${l.product_name}** [${l.status}] — $${Number(l.current_price).toFixed(2)}`;
           if (l.inventory_qty != null) text += `, qty ${l.inventory_qty}`;
+          if (l.created_at) text += `, listed ${String(l.created_at).slice(0, 10)}`;
           text += ` — ID \`${l.id}\`\n`;
         }
         text += `\nPass a listing ID for full detail. Each listing has a share link (${SHARE_LINK_BASE}/<id>) that unfurls into a product card and hands purchase instructions to any agent that opens it.`;
