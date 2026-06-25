@@ -749,7 +749,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     { readOnlyHint: true, destructiveHint: false },
     async ({ execution_id }) => {
       try {
-        const data = await apiRequest("GET", `/commerce/receipt/${execution_id}`);
+        const data = await apiRequest("GET", `/v1/executions/${execution_id}/receipt`);
         let text = `**Receipt — Order ${execution_id}**\n`;
         text += `Date: ${data.paid_at || data.created_at || "N/A"}\n`;
         if (data.product_title) text += `Item: ${data.product_title}\n`;
