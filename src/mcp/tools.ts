@@ -397,14 +397,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Execute a commerce transaction. Find products matching a natural language request, verify suppliers, get pricing, and optionally handle payment and delivery. Returns product options for approval. When you have an exact Firestarter listing id (lst_..., e.g. from a firestarter.network/l/<id> share link), pass listing_id — the purchase pins to that exact listing instead of searching.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay, needs a delivery address) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this — start with just the request and collect the address later, at approval. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
-      request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30')"),
+      request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
-      budget_max: z.number().optional().describe("Maximum budget in USD"),
-      delivery_address: z.string().optional().describe("Delivery address as a string"),
-      priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated)"),
-      auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget. If false (default), present options for approval."),
+      budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
+      delivery_address: z.string().optional().describe("Optional at this step — the address is required at firestarter_approve, not here. Pass it only if the buyer already gave it."),
+      priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated). Default quality."),
+      auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget WITHOUT a confirmation step — only when the buyer explicitly pre-authorized it. If false (default), options are returned for approval."),
       requested_by: z
         .object({
           name: z.string().optional().describe("Requester's display name, e.g. 'Durga'"),
@@ -507,7 +507,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Approve an execution that is awaiting approval. By default this approves the pre-selected (best purchasable) option and proceeds with payment; pass selected_option or option_id to approve a different option. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout yet) are rejected with a view link instead. When the user just says \"approve\" without naming an order, omit execution_id: the tool resolves the pending purchase automatically (and asks which one only if several are pending).",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you collect the buyer's delivery_address → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). Always have a delivery address before calling for physical goods — approving without one is rejected.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
@@ -742,7 +742,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_receipt
   server.tool(
     "firestarter_receipt",
-    "Get a payment receipt for a completed purchase. Shows itemized breakdown, payment method, and transaction details. Use when a buyer asks for a receipt, invoice, or expense documentation.",
+    "Get the payment receipt for an order the buyer has already paid for (after firestarter_approve completed). Returns an itemized breakdown — item, subtotal, shipping, tax, total — plus payment method and date, suitable for expense or invoice records. Use whenever the buyer asks for a receipt, invoice, proof of payment, or expense documentation. If the order hasn't been paid yet, there's no receipt: check firestarter_status instead. For delivery progress use firestarter_track_order; to send the item back use firestarter_return.",
     {
       execution_id: z.string().describe("The execution/order ID to get a receipt for (exec_...)"),
     },
@@ -941,15 +941,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
-    "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. When the seller sent a photo, pass its URL in image_urls so the listing has a product image. To VIEW listings you already have, use firestarter_listings instead.",
+    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults — do NOT interrogate the seller for category, inventory, shipping, or ship-from. Create the listing immediately with what you have, then tell them what defaulted and how to refine it. Defaults when omitted: inventory unlimited, shipping = network default ($9.99, free over $50), ship-from = account default address, ships domestic only. If the seller already sent a photo in the conversation, reuse that URL in image_urls — never ask them to re-send it. The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
     {
-      product_name: z.string().describe("Product name"),
-      base_price: z.number().describe("Base price in USD"),
-      category: z.string().optional().describe("Product category (e.g. 'electronics/audio/earbuds')"),
+      product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
+      base_price: z.number().describe("REQUIRED. Sale price in USD, e.g. 49.99."),
+      category: z.string().optional().describe("Optional. Product category (e.g. 'electronics/audio/earbuds'). Infer a reasonable one from the product name if obvious; otherwise omit — don't ask."),
       floor_price: z.number().optional().describe("Never sell below this price"),
       ceiling_price: z.number().optional().describe("Never surge above this price"),
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
-      inventory_qty: z.number().optional().describe("Available quantity"),
+      inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
       image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). When the seller sent a photo, pass the URL from its '[image attached: <url>]' marker here — do not ask them to re-send a photo already in the conversation."),
       shipping: z.number().optional().describe("Shipping price in USD. Omit to use the network default ($9.99, free over $50). Set to 0 for free shipping."),
       ship_from: z.object({
@@ -1367,13 +1367,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_catalog_search
   server.tool(
     "firestarter_catalog_search",
-    "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. test/live follows the API key's environment.",
+    "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
     {
-      query: z.string().optional().describe("Free-text product search, e.g. 'leather conditioner', 'wireless earbuds under 50'. Matches product name, description, and category. Use real product nouns; omit filler words."),
+      query: z.string().optional().describe("Free-text product search, e.g. 'leather conditioner', 'wireless earbuds under 50'. Matches product name, description, and category. Use real product nouns; omit filler words like 'cheap' or 'best'."),
       category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
-      min_price: z.number().optional().describe("Minimum price in the listing currency."),
-      max_price: z.number().optional().describe("Maximum price in the listing currency."),
-      buyable_only: z.boolean().optional().describe("If true, return only listings that can be purchased now (seller checkout enabled). Default false (includes browse-only listings)."),
+      min_price: z.number().optional().describe("Minimum price in the listing currency (inclusive)."),
+      max_price: z.number().optional().describe("Maximum price in the listing currency (inclusive)."),
+      buyable_only: z.boolean().optional().describe("If true, return only listings that can be purchased now (seller checkout enabled). Default false (includes browse-only listings, which are clearly tagged)."),
       limit: z.number().optional().describe("Max results to return, 1-50. Default 20."),
     },
     async ({ query, category, min_price, max_price, buyable_only, limit }) => {
