@@ -145,8 +145,30 @@ type ContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string };
 
-/** Fetch an image URL and return base64 for MCP image blocks. */
-async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
+// MIME types an MCP image block may carry. Anything else (svg, avif,
+// octet-stream, or an HTML error page returned with a 200) makes the model
+// reject the WHOLE tool response with "unsupported image format" — which is
+// what broke firestarter_approve / firestarter_status. Keep this in sync with
+// what the consuming models accept (Claude/GPT image inputs).
+const SUPPORTED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+/** Sniff a supported image MIME from magic bytes when the content-type header
+ *  is missing or untrustworthy. Returns null if the bytes aren't a supported
+ *  image (so we skip it rather than emit a block the model can't render). */
+function sniffImageMime(buf: Uint8Array): string | null {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png";
+  if (buf.length >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return "image/gif";
+  // WEBP: "RIFF"...."WEBP"
+  if (buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
+  return null;
+}
+
+/** Fetch an image URL and return base64 for MCP image blocks. Only supported
+ *  formats are returned; anything else yields null so the caller silently skips
+ *  the image instead of poisoning the tool response. */
+export async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
     if (!res.ok) return null;
@@ -154,7 +176,12 @@ async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType
     if (contentLength > MAX_IMAGE_BYTES) return null;
     const buf = await res.arrayBuffer();
     if (buf.byteLength > MAX_IMAGE_BYTES) return null;
-    const mimeType = (res.headers.get("content-type") || "image/jpeg").split(";")[0];
+    const bytes = new Uint8Array(buf);
+    const headerMime = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    // Trust the header only if it's a supported image type; otherwise sniff the
+    // bytes. If neither yields a supported format, skip the image entirely.
+    const mimeType = SUPPORTED_IMAGE_MIME.has(headerMime) ? headerMime : sniffImageMime(bytes);
+    if (!mimeType) return null;
     return { data: Buffer.from(buf).toString("base64"), mimeType };
   } catch {
     return null;
