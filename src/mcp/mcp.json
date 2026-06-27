@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify, monitor prices. 33 tools, 7 resources, 9 prompts.",
+  "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify, monitor prices. 34 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -498,6 +498,19 @@
         "type": "object",
         "properties": {
           "shop_handle": {
+            "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_sync_shopify",
+      "description": "Re-sync a connected store's catalog into Firestarter — pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
             "type": "string"
           }
         },

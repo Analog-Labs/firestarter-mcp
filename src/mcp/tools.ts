@@ -1288,9 +1288,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_connect_shopify
   server.tool(
     "firestarter_connect_shopify",
-    "Connect a seller's Shopify store to Firestarter. If the seller already has a Shopify connection, returns its status and sync info. If not, takes their Shopify store handle and returns a one-click install link. The seller clicks it, approves on Shopify, and their catalog syncs automatically. Use this when a seller mentions Shopify, wants to connect their store, or asks about syncing products. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain).",
+    "Connect a seller's Shopify store to Firestarter — step 1 of the Shopify flow: connect_shopify → (catalog syncs automatically) → firestarter_listings to see imported products → firestarter_sync_shopify to refresh after store edits → orders arrive via firestarter_seller_orders → firestarter_ship_order. Call with NO arguments first: if a store is already connected it returns the connection status, store name, and last sync time (and you're done); if not, it tells you to ask for the store handle. Once you have the handle, call again with shop_handle to mint a one-click install link — the seller clicks it, approves on Shopify, and their whole catalog syncs into Firestarter automatically (no tokens to paste). Use this whenever a seller mentions Shopify, wants to connect/link their store, or asks why their products aren't showing up. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain). To force a fresh catalog pull on an already-connected store, use firestarter_sync_shopify instead.",
     {
-      shop_handle: z.string().optional().describe("The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit to check existing connection status. If the seller doesn't know their handle, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."),
+      shop_handle: z.string().optional().describe("Optional. The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit on the first call to check existing connection status — only needed when no store is connected yet. Accepts the bare handle or the full myshopify.com domain (it's normalized). If the seller doesn't know it, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."),
     },
     async ({ shop_handle }) => {
       try {
@@ -1303,8 +1303,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           text += `Status: ${shopifyConn.status}\n`;
           if (shopifyConn.last_synced_at) text += `Last catalog sync: ${shopifyConn.last_synced_at}\n`;
           if (shopifyConn.error_message) text += `Error: ${shopifyConn.error_message}\n`;
-          text += `\nProducts from this store are already listed on Firestarter and discoverable by buyers' agents.`;
-          if (shop_handle) text += `\n\n(A new store handle was provided but a connection already exists. To connect a different store, disconnect the current one first from the dashboard.)`;
+          text += `\nProducts from this store are already listed on Firestarter and discoverable by buyers' agents. View them with firestarter_listings.`;
+          // #556: point the agent at the right next action instead of leaving it stuck.
+          if (shopifyConn.status === "error") {
+            text += `\n\nThis connection is in an error state — run firestarter_sync_shopify to retry the catalog sync. If it keeps failing, the seller may need to reconnect from the Firestarter dashboard.`;
+          } else {
+            text += `\nIf the seller has added or edited products in Shopify since the last sync, run firestarter_sync_shopify to pull the changes now.`;
+          }
+          if (shop_handle) text += `\n\n(A new store handle was provided but a store is already connected. To switch stores, the seller disconnects the current one from the Firestarter dashboard first, then call this tool again with the new handle.)`;
           return { content: [{ type: "text" as const, text }] };
         }
 
@@ -1360,6 +1366,80 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           ? "\n\nThe seller is not registered yet - they need to sign up at firestarter.network/sell first, then connect Shopify."
           : "";
         return { content: [{ type: "text" as const, text: `Error checking Shopify connection: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_sync_shopify
+  // #556: the manual re-sync step the lifecycle was missing. connect_shopify only
+  // re-checks status; this actually re-pulls the catalog (POST /v1/connections/:id/sync)
+  // so store edits made after the initial connect show up on Firestarter.
+  server.tool(
+    "firestarter_sync_shopify",
+    "Re-sync a connected store's catalog into Firestarter — pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter. Use this AFTER firestarter_connect_shopify, whenever the seller says they added/edited/removed products, prices look stale, a previous sync errored, or items aren't appearing. The store must already be connected (run firestarter_connect_shopify first if not). Syncing runs in the background and returns immediately — tell the seller it may take a moment, then confirm results with firestarter_listings. Read-mostly: it imports/updates Firestarter listings from the store but never changes the seller's Shopify store. By default it syncs the seller's connected Shopify store; pass connection_id to target a specific connection when several platforms are linked.",
+    {
+      connection_id: z.string().optional().describe("Optional. The platform connection id (conn_...) to re-sync. Omit to sync the seller's Shopify store automatically — only needed to disambiguate when the seller has connected more than one platform."),
+    },
+    async ({ connection_id }) => {
+      try {
+        const conns = await apiRequest("GET", "/v1/connections");
+        const list: any[] = conns.connections || [];
+        if (list.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "**No store connected.** There's nothing to sync yet. Connect the seller's Shopify store first with firestarter_connect_shopify, and the catalog syncs automatically on connect.",
+            }],
+            isError: true,
+          };
+        }
+
+        // Resolve which connection to sync: explicit id, else the Shopify one,
+        // else the single connection, else ask which.
+        let conn: any;
+        if (connection_id) {
+          conn = list.find((c) => c.id === connection_id);
+          if (!conn) {
+            const known = list.map((c) => `${c.id} (${c.platform})`).join(", ");
+            return {
+              content: [{ type: "text" as const, text: `No connection with id ${connection_id}. Connected: ${known || "none"}.` }],
+              isError: true,
+            };
+          }
+        } else {
+          const shopify = list.filter((c) => c.platform === "shopify");
+          if (shopify.length === 1) {
+            conn = shopify[0];
+          } else if (shopify.length === 0 && list.length === 1) {
+            conn = list[0];
+          } else if (shopify.length > 1 || (shopify.length === 0 && list.length > 1)) {
+            const known = list.map((c) => `${c.id} — ${c.shop_name || c.shop_domain} (${c.platform})`).join("\n");
+            return {
+              content: [{ type: "text" as const, text: `Several stores are connected — say which one to sync by passing its connection_id:\n${known}` }],
+              isError: true,
+            };
+          } else {
+            conn = shopify[0];
+          }
+        }
+
+        await apiRequest("POST", `/v1/connections/${conn.id}/sync`);
+        const where = conn.shop_name || conn.shop_domain || conn.platform;
+        const text = [
+          `**Catalog sync started for ${where}.**`,
+          `Firestarter is re-pulling products, prices, and inventory from the store in the background — this can take a moment for large catalogs.`,
+          `Check the results with firestarter_listings once it finishes. If products still look wrong after a sync, the seller may need to reconnect the store from the Firestarter dashboard.`,
+        ].join("\n");
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (/no active seller profile/i.test(msg)) {
+          hint = "\n\nThe seller is not registered yet — point them to firestarter.network/sell, then connect Shopify with firestarter_connect_shopify.";
+        } else if (err instanceof ApiError && (err.code === "NOT_FOUND" || err.status === 404)) {
+          hint = "\n\nThat store connection no longer exists. Reconnect with firestarter_connect_shopify.";
+        }
+        return { content: [{ type: "text" as const, text: `Error syncing catalog: ${msg}${hint}` }], isError: true };
       }
     }
   );
@@ -1746,7 +1826,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_seller_orders
   server.tool(
     "firestarter_seller_orders",
-    "View the seller's incoming orders - shows product, amount, payout status, and order status. Use when a seller asks about their orders, sales, or recent activity.",
+    "View the seller's incoming orders — product, quantity, amount, net payout, order status, and payout status. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
     {},
     async () => {
       try {
@@ -1756,10 +1836,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           return { content: [{ type: "text" as const, text: "No orders yet. Once a buyer purchases one of your listings, orders will appear here." }] };
         }
         const lines = [`**Your Orders** (${orders.length})\n`];
+        let anyPending = false;
         for (const o of orders) {
           const amount = o.amount_cents ? `$${(o.amount_cents / 100).toFixed(2)}` : "pending";
           const payout = o.net_payout_cents ? `$${(o.net_payout_cents / 100).toFixed(2)} net` : "";
-          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}`);
+          if (o.status === "pending" || o.status === "confirmed") anyPending = true;
+          // #556: surface the order_id so the agent can chain straight into
+          // firestarter_confirm_order / firestarter_ship_order without re-asking.
+          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status} - order_id \`${o.id}\``);
+        }
+        if (anyPending) {
+          lines.push(`\nAccept a pending order with firestarter_confirm_order (its order_id), then add tracking with firestarter_ship_order once it's on its way.`);
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
@@ -1771,16 +1858,23 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_confirm_order
   server.tool(
     "firestarter_confirm_order",
-    "Confirm a pending order. Use when a seller wants to accept/confirm an incoming order. The order ID comes from firestarter_seller_orders.",
+    "Accept a pending incoming order — step 2 of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). Use when a seller wants to accept/confirm an order a buyer placed. Confirming notifies the buyer that the order is accepted and is the gate before shipping. Pass the order_id exactly as shown by firestarter_seller_orders (the order_id field, NOT the exec_... execution id). Only orders still in 'pending' can be confirmed — an order that's already confirmed or shipped doesn't need this; go straight to firestarter_ship_order.",
     {
-      order_id: z.string().describe("The seller_earnings ID from firestarter_seller_orders (not the execution ID)"),
+      order_id: z.string().describe("REQUIRED. The order_id from firestarter_seller_orders (the seller_earnings id, not the exec_... execution id)."),
     },
     async ({ order_id }) => {
       try {
         await apiRequest("PUT", `/v1/sellers/orders/${order_id}/confirm`);
-        return { content: [{ type: "text" as const, text: `**Order confirmed.** The buyer has been notified. Next step: ship the item and add tracking with firestarter_ship_order.` }] };
+        return { content: [{ type: "text" as const, text: `**Order confirmed.** The buyer has been notified. Next step: ship the item and add tracking with firestarter_ship_order (same order_id).` }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error confirming order: ${toErrorMessage(err)}` }], isError: true };
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (err instanceof ApiError && (err.code === "NOT_FOUND" || err.status === 404)) {
+          hint = "\n\nNo pending order matched that id. It may already be confirmed (go straight to firestarter_ship_order) or the id was wrong — run firestarter_seller_orders to get the exact order_id.";
+        } else if (err instanceof ApiError && err.code === "NO_SELLER") {
+          hint = "\n\nThe seller has no active seller profile yet — point them to firestarter.network/sell.";
+        }
+        return { content: [{ type: "text" as const, text: `Error confirming order: ${msg}${hint}` }], isError: true };
       }
     }
   );
@@ -1788,20 +1882,27 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_ship_order
   server.tool(
     "firestarter_ship_order",
-    "Mark an order as shipped by adding the carrier and tracking number. Use after the seller has shipped the item. The buyer gets tracking info automatically.",
+    "Mark an order shipped by attaching a carrier and tracking number — the final step of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required; carrier is optional and defaults to USPS. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
     {
-      order_id: z.string().describe("The seller_earnings ID from firestarter_seller_orders"),
-      tracking_number: z.string().describe("Carrier tracking number"),
-      carrier: z.string().optional().describe("Carrier name (e.g. 'USPS', 'UPS', 'FedEx'). Defaults to USPS."),
+      order_id: z.string().describe("REQUIRED. The order_id from firestarter_seller_orders (the seller_earnings id, not the exec_... execution id)."),
+      tracking_number: z.string().describe("REQUIRED. The carrier's tracking number for the shipment."),
+      carrier: z.string().optional().describe("Optional. Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL'). Defaults to USPS when omitted — don't ask the seller unless they used a non-USPS carrier."),
     },
     async ({ order_id, tracking_number, carrier }) => {
       try {
         const body: any = { tracking_number };
         if (carrier) body.carrier = carrier;
         await apiRequest("POST", `/v1/sellers/orders/${order_id}/ship`, body);
-        return { content: [{ type: "text" as const, text: `**Order shipped.** Tracking: ${carrier || "USPS"} ${tracking_number}. The buyer can now track their delivery.` }] };
+        return { content: [{ type: "text" as const, text: `**Order shipped.** Tracking: ${carrier || "USPS"} ${tracking_number}. The buyer has been notified and can now track their delivery.` }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error marking shipped: ${toErrorMessage(err)}` }], isError: true };
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (err instanceof ApiError && (err.code === "NOT_FOUND" || err.status === 404)) {
+          hint = "\n\nNo order matched that id. Run firestarter_seller_orders to get the exact order_id (use the order_id field, not the exec_... id).";
+        } else if (err instanceof ApiError && err.code === "NO_SELLER") {
+          hint = "\n\nThe seller has no active seller profile yet — point them to firestarter.network/sell.";
+        }
+        return { content: [{ type: "text" as const, text: `Error marking shipped: ${msg}${hint}` }], isError: true };
       }
     }
   );
