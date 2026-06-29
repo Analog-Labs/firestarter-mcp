@@ -1370,6 +1370,99 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_connect_tiktok
+  server.tool(
+    "firestarter_connect_tiktok",
+    "Connect a seller's TikTok Shop to Firestarter so their catalog syncs and orders flow back. If a TikTok Shop is already connected, returns its status. TikTok Shop currently connects by ACCESS TOKEN (not one-click OAuth yet): the seller authorizes Firestarter in TikTok Shop Partner Center and provides their shop access token + shop id/region. Call with no arguments to check status or get setup instructions; call with access_token AND shop_domain to create the connection. Use this whenever a seller mentions TikTok Shop or wants to sync their TikTok products. NEVER display the access token back to the seller or in chat.",
+    {
+      access_token: z.string().optional().describe("The seller's TikTok Shop access token (from TikTok Shop Partner Center authorization). Omit to check status or get instructions. This is a secret — never echo it back."),
+      shop_domain: z.string().optional().describe("The seller's TikTok Shop identifier (shop id, shop cipher, or region/store name). Required together with access_token to create the connection."),
+    },
+    async ({ access_token, shop_domain }) => {
+      try {
+        // Check existing connection first.
+        const conns = await apiRequest("GET", "/v1/connections");
+        const tiktokConn = (conns.connections || []).find((c: any) => c.platform === "tiktok_shop");
+
+        if (tiktokConn) {
+          let text = `**TikTok Shop connected:** ${tiktokConn.shop_name || tiktokConn.shop_domain}\n`;
+          text += `Status: ${tiktokConn.status}\n`;
+          if (tiktokConn.last_synced_at) text += `Last catalog sync: ${tiktokConn.last_synced_at}\n`;
+          if (tiktokConn.error_message) text += `Error: ${tiktokConn.error_message}\n`;
+          text += `\nProducts from this shop are listed on Firestarter and discoverable by buyers' agents.`;
+          if (access_token) text += `\n\n(A new token was provided but a connection already exists. Disconnect the current TikTok Shop from the dashboard first to reconnect.)`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+
+        // Have both credentials → create the connection.
+        if (access_token && shop_domain) {
+          await apiRequest("POST", "/v1/connections", {
+            platform: "tiktok_shop",
+            access_token,
+            shop_domain,
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: "**TikTok Shop connected.** Initial catalog sync started — products will appear on Firestarter shortly. Call firestarter_connect_tiktok again to check sync status. (For security, the access token is stored encrypted and never shown again.)",
+            }],
+          };
+        }
+
+        // Have a token but no shop id.
+        if (access_token && !shop_domain) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "I have the access token but still need the seller's **TikTok Shop id** (shop id / shop cipher / region) to finish connecting. Ask the seller for it and call firestarter_connect_tiktok again with both access_token and shop_domain.",
+            }],
+          };
+        }
+
+        // No credentials — explain the token-paste setup.
+        return {
+          content: [{
+            type: "text" as const,
+            text: [
+              "**No TikTok Shop connected.** TikTok Shop connects by access token (one-click OAuth is coming soon).",
+              "",
+              "To connect now, the seller needs to:",
+              "1. Authorize Firestarter in TikTok Shop **Partner Center** (Apps > Authorization).",
+              "2. Copy their **shop access token** and **shop id** (shop cipher / region).",
+              "3. Give you both, then I'll connect it.",
+              "",
+              "Once you have them, call firestarter_connect_tiktok with `access_token` and `shop_domain`. The seller must already be registered on Firestarter (firestarter.network/sell).",
+            ].join("\n"),
+          }],
+        };
+      } catch (err: any) {
+        // The connections route returns 403 NO_SELLER_PROFILE / 409
+        // ALREADY_CONNECTED as business errors. toErrorMessage() masks every 403
+        // as a generic "auth failed" string, so branch on the error CODE first
+        // to give the seller an accurate, actionable message.
+        if (err?.code === "NO_SELLER_PROFILE") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "The seller isn't registered on Firestarter yet — they need to sign up at firestarter.network/sell first, then connect TikTok Shop.",
+            }],
+            isError: true,
+          };
+        }
+        if (err?.code === "ALREADY_CONNECTED") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "A TikTok Shop is already connected for this seller. Disconnect it from the dashboard before reconnecting.",
+            }],
+            isError: true,
+          };
+        }
+        return { content: [{ type: "text" as const, text: `Error connecting TikTok Shop: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_sync_shopify
   // #556: the manual re-sync step the lifecycle was missing. connect_shopify only
   // re-checks status; this actually re-pulls the catalog (POST /v1/connections/:id/sync)

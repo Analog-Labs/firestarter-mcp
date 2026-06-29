@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify, monitor prices. 34 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 35 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -500,6 +500,18 @@
           "shop_handle": {
             "type": "string"
           }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_connect_tiktok",
+      "description": "Connect a seller's TikTok Shop to Firestarter (token-paste; one-click OAuth coming soon). Call with no args to check status or get setup instructions; call with access_token + shop_domain to create the connection. Never echo the access token.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "access_token": { "type": "string" },
+          "shop_domain": { "type": "string" }
         },
         "required": []
       }
