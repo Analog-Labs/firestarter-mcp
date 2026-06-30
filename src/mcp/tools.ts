@@ -440,7 +440,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           blocks.push({
             type: "text",
             text: opts.length > 0 && !hasRelevantMatch
-              ? "\n\n**No confident match.** None of these results closely matches the request, so do not suggest buying any of them or name a \"best option\". Use `firestarter_message` to refine the search (add brand, model, size, or a price range), or share the result links so the buyer can browse. `firestarter_cancel` to stop."
+              ? "\n\n**No exact match - present these as the closest options to browse.** None is a confident match, so do NOT pre-select one, name a single \"best option\", or tell the buyer to approve a purchase. DO surface them as the closest near-matches: share their links so the buyer can look, and offer to refine (add brand, model, size, or a price range) for a tighter match. Don't just decline. `firestarter_cancel` to stop."
               : purchasableCount === 0 && opts.length > 0
                 ? (allFsStores
                   ? "\n\n**Note:** these are Firestarter stores that haven't enabled checkout yet - none can be bought here yet. Share the listing links so the buyer can view them, or use `firestarter_message` to refine toward checkout-ready listings. `firestarter_cancel` to stop."
@@ -1425,6 +1425,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         for (const l of listings) {
           text += `- **${l.product_name}** [${l.status}] — $${Number(l.current_price).toFixed(2)}`;
           if (l.inventory_qty != null) text += `, qty ${l.inventory_qty}`;
+          // #527: include the listing date so the agent can answer "what did I list today?"
+          // (the list view previously dropped it, so the model confabulated "no new listings").
           if (l.created_at) text += `, listed ${String(l.created_at).slice(0, 10)}`;
           text += ` — ID \`${l.id}\`\n`;
         }

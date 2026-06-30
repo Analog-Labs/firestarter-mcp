@@ -285,7 +285,10 @@ describe("#256 buyer confirmation - action prompt (firestarter_execute)", () => 
       { ...EXTERNAL_OPT, match_score: 5 },
     ]));
     const text = textOf(await captureTools().firestarter_execute({ request: "usb-c hub under $50" }));
-    expect(text).toContain("No confident match");
+    // #525: a no-confident-match now surfaces the closest options to browse
+    // instead of flatly declining - but still must NOT invite a confirm/approve.
+    expect(text).toContain("No exact match");
+    expect(text).toContain("closest");
     expect(text).not.toContain('reply "confirm"');
   });
 });
