@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify, monitor prices. 32 tools, 7 resources, 9 prompts.",
+  "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 35 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -64,7 +64,7 @@
     },
     {
       "name": "firestarter_status",
-      "description": "Check the status of a Firestarter execution or list recent executions. Use this to check on orders, see what options were found, or get tracking updates.",
+      "description": "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live). Use this to check on orders, see what options were found, get tracking updates, or confirm whether you are in test/sandbox mode. Firestarter DOES have a test mode: an fs_test_ API key runs every purchase through a fully simulated sandbox (mock payment, shipping, tracking — no real money, no real seller contacted); an fs_live_ key is real. The mode is fixed by the configured API key, not a per-call option.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -499,6 +499,59 @@
         "properties": {
           "shop_handle": {
             "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_connect_tiktok",
+      "description": "Connect a seller's TikTok Shop to Firestarter (token-paste; one-click OAuth coming soon). Call with no args to check status or get setup instructions; call with access_token + shop_domain to create the connection. Never echo the access token.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "access_token": { "type": "string" },
+          "shop_domain": { "type": "string" }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_sync_shopify",
+      "description": "Re-sync a connected store's catalog into Firestarter — pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_catalog_search",
+      "description": "Search the Firestarter NETWORK catalog (products from ALL sellers) without starting a purchase. Buyer-facing browse: compare prices, check availability. Each result has a listing id (lst_...) for firestarter_execute, a share link, and a buyable flag (buyable now vs browse-only).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "min_price": {
+            "type": "number"
+          },
+          "max_price": {
+            "type": "number"
+          },
+          "buyable_only": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
           }
         },
         "required": []

@@ -161,8 +161,30 @@ type ContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string };
 
-/** Fetch an image URL and return base64 for MCP image blocks. */
-async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
+// MIME types an MCP image block may carry. Anything else (svg, avif,
+// octet-stream, or an HTML error page returned with a 200) makes the model
+// reject the WHOLE tool response with "unsupported image format" — which is
+// what broke firestarter_approve / firestarter_status. Keep this in sync with
+// what the consuming models accept (Claude/GPT image inputs).
+const SUPPORTED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+/** Sniff a supported image MIME from magic bytes when the content-type header
+ *  is missing or untrustworthy. Returns null if the bytes aren't a supported
+ *  image (so we skip it rather than emit a block the model can't render). */
+function sniffImageMime(buf: Uint8Array): string | null {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png";
+  if (buf.length >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return "image/gif";
+  // WEBP: "RIFF"...."WEBP"
+  if (buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
+  return null;
+}
+
+/** Fetch an image URL and return base64 for MCP image blocks. Only supported
+ *  formats are returned; anything else yields null so the caller silently skips
+ *  the image instead of poisoning the tool response. */
+export async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
     if (!res.ok) return null;
@@ -170,7 +192,12 @@ async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType
     if (contentLength > MAX_IMAGE_BYTES) return null;
     const buf = await res.arrayBuffer();
     if (buf.byteLength > MAX_IMAGE_BYTES) return null;
-    const mimeType = (res.headers.get("content-type") || "image/jpeg").split(";")[0];
+    const bytes = new Uint8Array(buf);
+    const headerMime = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    // Trust the header only if it's a supported image type; otherwise sniff the
+    // bytes. If neither yields a supported format, skip the image entirely.
+    const mimeType = SUPPORTED_IMAGE_MIME.has(headerMime) ? headerMime : sniffImageMime(bytes);
+    if (!mimeType) return null;
     return { data: Buffer.from(buf).toString("base64"), mimeType };
   } catch {
     return null;
@@ -386,14 +413,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Execute a commerce transaction. Find products matching a natural language request, verify suppliers, get pricing, and optionally handle payment and delivery. Returns product options for approval. When you have an exact Firestarter listing id (lst_..., e.g. from a firestarter.network/l/<id> share link), pass listing_id — the purchase pins to that exact listing instead of searching.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay, needs a delivery address) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this — start with just the request and collect the address later, at approval. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
-      request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30')"),
+      request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
-      budget_max: z.number().optional().describe("Maximum budget in USD"),
-      delivery_address: z.string().optional().describe("Delivery address as a string"),
-      priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated)"),
-      auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget. If false (default), present options for approval."),
+      budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
+      delivery_address: z.string().optional().describe("Optional at this step — the address is required at firestarter_approve, not here. Pass it only if the buyer already gave it."),
+      priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated). Default quality."),
+      auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget WITHOUT a confirmation step — only when the buyer explicitly pre-authorized it. If false (default), options are returned for approval."),
       requested_by: z
         .object({
           name: z.string().optional().describe("Requester's display name, e.g. 'Durga'"),
@@ -482,12 +509,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_status
   server.tool(
     "firestarter_status",
-    "Check the status of a Firestarter execution or list recent executions. Use this to check on orders, see what options were found, or get tracking updates.",
+    "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live). Use this to check on orders, see what options were found, get tracking updates, or confirm whether you are in test/sandbox mode. Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
     {
       execution_id: z.string().optional().describe("Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."),
       status_filter: z.string().optional().describe("Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"),
     },
     async ({ execution_id, status_filter }) => {
+      // Environment is determined by the API key prefix (auth.ts): fs_test_* ->
+      // sandbox, anything else -> live. Surfaced so the agent can correctly
+      // answer "are we in test mode?" instead of assuming there is none.
+      const environment = apiKey.startsWith("fs_test_")
+        ? "TEST (sandbox — simulated payment/shipping/tracking, no real money, no real seller contacted)"
+        : "LIVE (real orders, real charges)";
       try {
         if (execution_id) {
           const exec = await apiRequest("GET", `/v1/executions/${execution_id}`);
@@ -498,9 +531,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const data = await apiRequest("GET", path);
         const executions = data.executions || data;
         if (!Array.isArray(executions) || executions.length === 0) {
-          return { content: [{ type: "text" as const, text: "No executions found." }] };
+          return { content: [{ type: "text" as const, text: `Environment: ${environment}\n\nNo executions found.` }] };
         }
-        const lines = [`**Recent Executions** (${data.total || executions.length} total)\n`];
+        const lines = [`Environment: ${environment}\n`, `**Recent Executions** (${data.total || executions.length} total)\n`];
         for (const e of executions.slice(0, 10)) {
           lines.push(`- **${e.id}** [${e.status}] ${e.request_text?.slice(0, 60) || ""}${e.request_text?.length > 60 ? "..." : ""}`);
         }
@@ -514,7 +547,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Approve an execution that is awaiting approval. By default this approves the pre-selected (best purchasable) option and proceeds with payment; pass selected_option or option_id to approve a different option. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout yet) are rejected with a view link instead. When the user just says \"approve\" without naming an order, omit execution_id: the tool resolves the pending purchase automatically (and asks which one only if several are pending).",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you collect the buyer's delivery_address → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). Always have a delivery address before calling for physical goods — approving without one is rejected.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
@@ -749,14 +782,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_receipt
   server.tool(
     "firestarter_receipt",
-    "Get a payment receipt for a completed purchase. Shows itemized breakdown, payment method, and transaction details. Use when a buyer asks for a receipt, invoice, or expense documentation.",
+    "Get the payment receipt for an order the buyer has already paid for (after firestarter_approve completed). Returns an itemized breakdown — item, subtotal, shipping, tax, total — plus payment method and date, suitable for expense or invoice records. Use whenever the buyer asks for a receipt, invoice, proof of payment, or expense documentation. If the order hasn't been paid yet, there's no receipt: check firestarter_status instead. For delivery progress use firestarter_track_order; to send the item back use firestarter_return.",
     {
       execution_id: z.string().describe("The execution/order ID to get a receipt for (exec_...)"),
     },
     { readOnlyHint: true, destructiveHint: false },
     async ({ execution_id }) => {
       try {
-        const data = await apiRequest("GET", `/commerce/receipt/${execution_id}`);
+        const data = await apiRequest("GET", `/v1/executions/${execution_id}/receipt`);
         let text = `**Receipt — Order ${execution_id}**\n`;
         text += `Date: ${data.paid_at || data.created_at || "N/A"}\n`;
         if (data.product_title) text += `Item: ${data.product_title}\n`;
@@ -948,15 +981,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
-    "List a product for sale on Firestarter. Creates a new listing with pricing and inventory. When the seller sent a photo, pass its URL in image_urls so the listing has a product image. To VIEW listings you already have, use firestarter_listings instead.",
+    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults — do NOT interrogate the seller for category, inventory, shipping, or ship-from. Create the listing immediately with what you have, then tell them what defaulted and how to refine it. Defaults when omitted: inventory unlimited, shipping = network default ($9.99, free over $50), ship-from = account default address, ships domestic only. If the seller already sent a photo in the conversation, reuse that URL in image_urls — never ask them to re-send it. The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
     {
-      product_name: z.string().describe("Product name"),
-      base_price: z.number().describe("Base price in USD"),
-      category: z.string().optional().describe("Product category (e.g. 'electronics/audio/earbuds')"),
+      product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
+      base_price: z.number().describe("REQUIRED. Sale price in USD, e.g. 49.99."),
+      category: z.string().optional().describe("Optional. Product category (e.g. 'electronics/audio/earbuds'). Infer a reasonable one from the product name if obvious; otherwise omit — don't ask."),
       floor_price: z.number().optional().describe("Never sell below this price"),
       ceiling_price: z.number().optional().describe("Never surge above this price"),
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
-      inventory_qty: z.number().optional().describe("Available quantity"),
+      inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
       image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). When the seller sent a photo, pass the URL from its '[image attached: <url>]' marker here — do not ask them to re-send a photo already in the conversation."),
       shipping: z.number().optional().describe("Shipping price in USD. Omit to use the network default ($9.99, free over $50). Set to 0 for free shipping."),
       ship_from: z.object({
@@ -1295,9 +1328,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_connect_shopify
   server.tool(
     "firestarter_connect_shopify",
-    "Connect a seller's Shopify store to Firestarter. If the seller already has a Shopify connection, returns its status and sync info. If not, takes their Shopify store handle and returns a one-click install link. The seller clicks it, approves on Shopify, and their catalog syncs automatically. Use this when a seller mentions Shopify, wants to connect their store, or asks about syncing products. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain).",
+    "Connect a seller's Shopify store to Firestarter — step 1 of the Shopify flow: connect_shopify → (catalog syncs automatically) → firestarter_listings to see imported products → firestarter_sync_shopify to refresh after store edits → orders arrive via firestarter_seller_orders → firestarter_ship_order. Call with NO arguments first: if a store is already connected it returns the connection status, store name, and last sync time (and you're done); if not, it tells you to ask for the store handle. Once you have the handle, call again with shop_handle to mint a one-click install link — the seller clicks it, approves on Shopify, and their whole catalog syncs into Firestarter automatically (no tokens to paste). Use this whenever a seller mentions Shopify, wants to connect/link their store, or asks why their products aren't showing up. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain). To force a fresh catalog pull on an already-connected store, use firestarter_sync_shopify instead.",
     {
-      shop_handle: z.string().optional().describe("The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit to check existing connection status. If the seller doesn't know their handle, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."),
+      shop_handle: z.string().optional().describe("Optional. The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit on the first call to check existing connection status — only needed when no store is connected yet. Accepts the bare handle or the full myshopify.com domain (it's normalized). If the seller doesn't know it, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."),
     },
     async ({ shop_handle }) => {
       try {
@@ -1310,8 +1343,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           text += `Status: ${shopifyConn.status}\n`;
           if (shopifyConn.last_synced_at) text += `Last catalog sync: ${shopifyConn.last_synced_at}\n`;
           if (shopifyConn.error_message) text += `Error: ${shopifyConn.error_message}\n`;
-          text += `\nProducts from this store are already listed on Firestarter and discoverable by buyers' agents.`;
-          if (shop_handle) text += `\n\n(A new store handle was provided but a connection already exists. To connect a different store, disconnect the current one first from the dashboard.)`;
+          text += `\nProducts from this store are already listed on Firestarter and discoverable by buyers' agents. View them with firestarter_listings.`;
+          // #556: point the agent at the right next action instead of leaving it stuck.
+          if (shopifyConn.status === "error") {
+            text += `\n\nThis connection is in an error state — run firestarter_sync_shopify to retry the catalog sync. If it keeps failing, the seller may need to reconnect from the Firestarter dashboard.`;
+          } else {
+            text += `\nIf the seller has added or edited products in Shopify since the last sync, run firestarter_sync_shopify to pull the changes now.`;
+          }
+          if (shop_handle) text += `\n\n(A new store handle was provided but a store is already connected. To switch stores, the seller disconnects the current one from the Firestarter dashboard first, then call this tool again with the new handle.)`;
           return { content: [{ type: "text" as const, text }] };
         }
 
@@ -1367,6 +1406,227 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           ? "\n\nThe seller is not registered yet - they need to sign up at firestarter.network/sell first, then connect Shopify."
           : "";
         return { content: [{ type: "text" as const, text: `Error checking Shopify connection: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_connect_tiktok
+  server.tool(
+    "firestarter_connect_tiktok",
+    "Connect a seller's TikTok Shop to Firestarter so their catalog syncs and orders flow back. If a TikTok Shop is already connected, returns its status. TikTok Shop currently connects by ACCESS TOKEN (not one-click OAuth yet): the seller authorizes Firestarter in TikTok Shop Partner Center and provides their shop access token + shop id/region. Call with no arguments to check status or get setup instructions; call with access_token AND shop_domain to create the connection. Use this whenever a seller mentions TikTok Shop or wants to sync their TikTok products. NEVER display the access token back to the seller or in chat.",
+    {
+      access_token: z.string().optional().describe("The seller's TikTok Shop access token (from TikTok Shop Partner Center authorization). Omit to check status or get instructions. This is a secret — never echo it back."),
+      shop_domain: z.string().optional().describe("The seller's TikTok Shop identifier (shop id, shop cipher, or region/store name). Required together with access_token to create the connection."),
+    },
+    async ({ access_token, shop_domain }) => {
+      try {
+        // Check existing connection first.
+        const conns = await apiRequest("GET", "/v1/connections");
+        const tiktokConn = (conns.connections || []).find((c: any) => c.platform === "tiktok_shop");
+
+        if (tiktokConn) {
+          let text = `**TikTok Shop connected:** ${tiktokConn.shop_name || tiktokConn.shop_domain}\n`;
+          text += `Status: ${tiktokConn.status}\n`;
+          if (tiktokConn.last_synced_at) text += `Last catalog sync: ${tiktokConn.last_synced_at}\n`;
+          if (tiktokConn.error_message) text += `Error: ${tiktokConn.error_message}\n`;
+          text += `\nProducts from this shop are listed on Firestarter and discoverable by buyers' agents.`;
+          if (access_token) text += `\n\n(A new token was provided but a connection already exists. Disconnect the current TikTok Shop from the dashboard first to reconnect.)`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+
+        // Have both credentials → create the connection.
+        if (access_token && shop_domain) {
+          await apiRequest("POST", "/v1/connections", {
+            platform: "tiktok_shop",
+            access_token,
+            shop_domain,
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: "**TikTok Shop connected.** Initial catalog sync started — products will appear on Firestarter shortly. Call firestarter_connect_tiktok again to check sync status. (For security, the access token is stored encrypted and never shown again.)",
+            }],
+          };
+        }
+
+        // Have a token but no shop id.
+        if (access_token && !shop_domain) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "I have the access token but still need the seller's **TikTok Shop id** (shop id / shop cipher / region) to finish connecting. Ask the seller for it and call firestarter_connect_tiktok again with both access_token and shop_domain.",
+            }],
+          };
+        }
+
+        // No credentials — explain the token-paste setup.
+        return {
+          content: [{
+            type: "text" as const,
+            text: [
+              "**No TikTok Shop connected.** TikTok Shop connects by access token (one-click OAuth is coming soon).",
+              "",
+              "To connect now, the seller needs to:",
+              "1. Authorize Firestarter in TikTok Shop **Partner Center** (Apps > Authorization).",
+              "2. Copy their **shop access token** and **shop id** (shop cipher / region).",
+              "3. Give you both, then I'll connect it.",
+              "",
+              "Once you have them, call firestarter_connect_tiktok with `access_token` and `shop_domain`. The seller must already be registered on Firestarter (firestarter.network/sell).",
+            ].join("\n"),
+          }],
+        };
+      } catch (err: any) {
+        // The connections route returns 403 NO_SELLER_PROFILE / 409
+        // ALREADY_CONNECTED as business errors. toErrorMessage() masks every 403
+        // as a generic "auth failed" string, so branch on the error CODE first
+        // to give the seller an accurate, actionable message.
+        if (err?.code === "NO_SELLER_PROFILE") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "The seller isn't registered on Firestarter yet — they need to sign up at firestarter.network/sell first, then connect TikTok Shop.",
+            }],
+            isError: true,
+          };
+        }
+        if (err?.code === "ALREADY_CONNECTED") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "A TikTok Shop is already connected for this seller. Disconnect it from the dashboard before reconnecting.",
+            }],
+            isError: true,
+          };
+        }
+        return { content: [{ type: "text" as const, text: `Error connecting TikTok Shop: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_sync_shopify
+  // #556: the manual re-sync step the lifecycle was missing. connect_shopify only
+  // re-checks status; this actually re-pulls the catalog (POST /v1/connections/:id/sync)
+  // so store edits made after the initial connect show up on Firestarter.
+  server.tool(
+    "firestarter_sync_shopify",
+    "Re-sync a connected store's catalog into Firestarter — pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter. Use this AFTER firestarter_connect_shopify, whenever the seller says they added/edited/removed products, prices look stale, a previous sync errored, or items aren't appearing. The store must already be connected (run firestarter_connect_shopify first if not). Syncing runs in the background and returns immediately — tell the seller it may take a moment, then confirm results with firestarter_listings. Read-mostly: it imports/updates Firestarter listings from the store but never changes the seller's Shopify store. By default it syncs the seller's connected Shopify store; pass connection_id to target a specific connection when several platforms are linked.",
+    {
+      connection_id: z.string().optional().describe("Optional. The platform connection id (conn_...) to re-sync. Omit to sync the seller's Shopify store automatically — only needed to disambiguate when the seller has connected more than one platform."),
+    },
+    async ({ connection_id }) => {
+      try {
+        const conns = await apiRequest("GET", "/v1/connections");
+        const list: any[] = conns.connections || [];
+        if (list.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "**No store connected.** There's nothing to sync yet. Connect the seller's Shopify store first with firestarter_connect_shopify, and the catalog syncs automatically on connect.",
+            }],
+            isError: true,
+          };
+        }
+
+        // Resolve which connection to sync: explicit id, else the Shopify one,
+        // else the single connection, else ask which.
+        let conn: any;
+        if (connection_id) {
+          conn = list.find((c) => c.id === connection_id);
+          if (!conn) {
+            const known = list.map((c) => `${c.id} (${c.platform})`).join(", ");
+            return {
+              content: [{ type: "text" as const, text: `No connection with id ${connection_id}. Connected: ${known || "none"}.` }],
+              isError: true,
+            };
+          }
+        } else {
+          const shopify = list.filter((c) => c.platform === "shopify");
+          if (shopify.length === 1) {
+            conn = shopify[0];
+          } else if (shopify.length === 0 && list.length === 1) {
+            conn = list[0];
+          } else if (shopify.length > 1 || (shopify.length === 0 && list.length > 1)) {
+            const known = list.map((c) => `${c.id} — ${c.shop_name || c.shop_domain} (${c.platform})`).join("\n");
+            return {
+              content: [{ type: "text" as const, text: `Several stores are connected — say which one to sync by passing its connection_id:\n${known}` }],
+              isError: true,
+            };
+          } else {
+            conn = shopify[0];
+          }
+        }
+
+        await apiRequest("POST", `/v1/connections/${conn.id}/sync`);
+        const where = conn.shop_name || conn.shop_domain || conn.platform;
+        const text = [
+          `**Catalog sync started for ${where}.**`,
+          `Firestarter is re-pulling products, prices, and inventory from the store in the background — this can take a moment for large catalogs.`,
+          `Check the results with firestarter_listings once it finishes. If products still look wrong after a sync, the seller may need to reconnect the store from the Firestarter dashboard.`,
+        ].join("\n");
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (/no active seller profile/i.test(msg)) {
+          hint = "\n\nThe seller is not registered yet — point them to firestarter.network/sell, then connect Shopify with firestarter_connect_shopify.";
+        } else if (err instanceof ApiError && (err.code === "NOT_FOUND" || err.status === 404)) {
+          hint = "\n\nThat store connection no longer exists. Reconnect with firestarter_connect_shopify.";
+        }
+        return { content: [{ type: "text" as const, text: `Error syncing catalog: ${msg}${hint}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_catalog_search
+  server.tool(
+    "firestarter_catalog_search",
+    "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
+    {
+      query: z.string().optional().describe("Free-text product search, e.g. 'leather conditioner', 'wireless earbuds under 50'. Matches product name, description, and category. Use real product nouns; omit filler words like 'cheap' or 'best'."),
+      category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
+      min_price: z.number().optional().describe("Minimum price in the listing currency (inclusive)."),
+      max_price: z.number().optional().describe("Maximum price in the listing currency (inclusive)."),
+      buyable_only: z.boolean().optional().describe("If true, return only listings that can be purchased now (seller checkout enabled). Default false (includes browse-only listings, which are clearly tagged)."),
+      limit: z.number().optional().describe("Max results to return, 1-50. Default 20."),
+    },
+    async ({ query, category, min_price, max_price, buyable_only, limit }) => {
+      try {
+        const params = new URLSearchParams();
+        if (query) params.set("q", query);
+        if (category) params.set("category", category);
+        if (typeof min_price === "number") params.set("min_price", String(min_price));
+        if (typeof max_price === "number") params.set("max_price", String(max_price));
+        if (buyable_only) params.set("buyable_only", "true");
+        if (typeof limit === "number") params.set("limit", String(limit));
+
+        const data = await apiRequest("GET", `/v1/listings/catalog?${params.toString()}`);
+        const listings: any[] = data.listings || [];
+        if (listings.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "No catalog listings matched. Try a broader search term (a single product noun), remove price/category filters, or drop `buyable_only`.",
+            }],
+          };
+        }
+
+        const buyableCount = listings.filter((l) => l.buyable).length;
+        const lines = [
+          `**Firestarter catalog** — ${listings.length} result${listings.length === 1 ? "" : "s"} (${data.query?.environment || "live"} mode, ${buyableCount} buyable now)${data.has_more ? " · more available, narrow the search or raise `limit`" : ""}\n`,
+        ];
+        for (const l of listings) {
+          const price = `${l.currency || "USD"} ${Number(l.current_price).toFixed(2)}`;
+          const tag = l.buyable ? "✅ buyable" : "👁 browse-only";
+          lines.push(
+            `- **${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}\n  id: \`${l.id}\` · ${l.share_url}`,
+          );
+        }
+        lines.push(
+          "\nTo buy a **buyable** item, call `firestarter_execute` with `listing_id` set to its id. **Browse-only** items can't be checked out here — share the link so the buyer can view them, and suggest the seller finish Stripe Connect to enable checkout.",
+        );
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error searching catalog: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -1706,7 +1966,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_seller_orders
   server.tool(
     "firestarter_seller_orders",
-    "View the seller's incoming orders - shows product, amount, payout status, and order status. Use when a seller asks about their orders, sales, or recent activity.",
+    "View the seller's incoming orders — product, quantity, amount, net payout, order status, and payout status. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
     {},
     async () => {
       try {
@@ -1716,10 +1976,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           return { content: [{ type: "text" as const, text: "No orders yet. Once a buyer purchases one of your listings, orders will appear here." }] };
         }
         const lines = [`**Your Orders** (${orders.length})\n`];
+        let anyPending = false;
         for (const o of orders) {
           const amount = o.amount_cents ? `$${(o.amount_cents / 100).toFixed(2)}` : "pending";
           const payout = o.net_payout_cents ? `$${(o.net_payout_cents / 100).toFixed(2)} net` : "";
-          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}`);
+          if (o.status === "pending" || o.status === "confirmed") anyPending = true;
+          // #556: surface the order_id so the agent can chain straight into
+          // firestarter_confirm_order / firestarter_ship_order without re-asking.
+          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status} - order_id \`${o.id}\``);
+        }
+        if (anyPending) {
+          lines.push(`\nAccept a pending order with firestarter_confirm_order (its order_id), then add tracking with firestarter_ship_order once it's on its way.`);
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
@@ -1731,16 +1998,23 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_confirm_order
   server.tool(
     "firestarter_confirm_order",
-    "Confirm a pending order. Use when a seller wants to accept/confirm an incoming order. The order ID comes from firestarter_seller_orders.",
+    "Accept a pending incoming order — step 2 of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). Use when a seller wants to accept/confirm an order a buyer placed. Confirming notifies the buyer that the order is accepted and is the gate before shipping. Pass the order_id exactly as shown by firestarter_seller_orders (the order_id field, NOT the exec_... execution id). Only orders still in 'pending' can be confirmed — an order that's already confirmed or shipped doesn't need this; go straight to firestarter_ship_order.",
     {
-      order_id: z.string().describe("The seller_earnings ID from firestarter_seller_orders (not the execution ID)"),
+      order_id: z.string().describe("REQUIRED. The order_id from firestarter_seller_orders (the seller_earnings id, not the exec_... execution id)."),
     },
     async ({ order_id }) => {
       try {
         await apiRequest("PUT", `/v1/sellers/orders/${order_id}/confirm`);
-        return { content: [{ type: "text" as const, text: `**Order confirmed.** The buyer has been notified. Next step: ship the item and add tracking with firestarter_ship_order.` }] };
+        return { content: [{ type: "text" as const, text: `**Order confirmed.** The buyer has been notified. Next step: ship the item and add tracking with firestarter_ship_order (same order_id).` }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error confirming order: ${toErrorMessage(err)}` }], isError: true };
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (err instanceof ApiError && (err.code === "NOT_FOUND" || err.status === 404)) {
+          hint = "\n\nNo pending order matched that id. It may already be confirmed (go straight to firestarter_ship_order) or the id was wrong — run firestarter_seller_orders to get the exact order_id.";
+        } else if (err instanceof ApiError && err.code === "NO_SELLER") {
+          hint = "\n\nThe seller has no active seller profile yet — point them to firestarter.network/sell.";
+        }
+        return { content: [{ type: "text" as const, text: `Error confirming order: ${msg}${hint}` }], isError: true };
       }
     }
   );
@@ -1748,20 +2022,27 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_ship_order
   server.tool(
     "firestarter_ship_order",
-    "Mark an order as shipped by adding the carrier and tracking number. Use after the seller has shipped the item. The buyer gets tracking info automatically.",
+    "Mark an order shipped by attaching a carrier and tracking number — the final step of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required; carrier is optional and defaults to USPS. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
     {
-      order_id: z.string().describe("The seller_earnings ID from firestarter_seller_orders"),
-      tracking_number: z.string().describe("Carrier tracking number"),
-      carrier: z.string().optional().describe("Carrier name (e.g. 'USPS', 'UPS', 'FedEx'). Defaults to USPS."),
+      order_id: z.string().describe("REQUIRED. The order_id from firestarter_seller_orders (the seller_earnings id, not the exec_... execution id)."),
+      tracking_number: z.string().describe("REQUIRED. The carrier's tracking number for the shipment."),
+      carrier: z.string().optional().describe("Optional. Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL'). Defaults to USPS when omitted — don't ask the seller unless they used a non-USPS carrier."),
     },
     async ({ order_id, tracking_number, carrier }) => {
       try {
         const body: any = { tracking_number };
         if (carrier) body.carrier = carrier;
         await apiRequest("POST", `/v1/sellers/orders/${order_id}/ship`, body);
-        return { content: [{ type: "text" as const, text: `**Order shipped.** Tracking: ${carrier || "USPS"} ${tracking_number}. The buyer can now track their delivery.` }] };
+        return { content: [{ type: "text" as const, text: `**Order shipped.** Tracking: ${carrier || "USPS"} ${tracking_number}. The buyer has been notified and can now track their delivery.` }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error marking shipped: ${toErrorMessage(err)}` }], isError: true };
+        const msg = toErrorMessage(err);
+        let hint = "";
+        if (err instanceof ApiError && (err.code === "NOT_FOUND" || err.status === 404)) {
+          hint = "\n\nNo order matched that id. Run firestarter_seller_orders to get the exact order_id (use the order_id field, not the exec_... id).";
+        } else if (err instanceof ApiError && err.code === "NO_SELLER") {
+          hint = "\n\nThe seller has no active seller profile yet — point them to firestarter.network/sell.";
+        }
+        return { content: [{ type: "text" as const, text: `Error marking shipped: ${msg}${hint}` }], isError: true };
       }
     }
   );

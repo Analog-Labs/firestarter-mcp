@@ -130,6 +130,18 @@ export function registerPrompts(server: McpServer) {
   );
 
   server.prompt(
+    "sync-shopify",
+    "Re-sync my store catalog into Firestarter",
+    {},
+    () => ({
+      messages: [{
+        role: "user" as const,
+        content: { type: "text" as const, text: `I updated products in my Shopify store. Re-sync my catalog into Firestarter so the changes show up.` },
+      }],
+    })
+  );
+
+  server.prompt(
     "setup-payouts",
     "Connect Stripe to receive earnings",
     {},
