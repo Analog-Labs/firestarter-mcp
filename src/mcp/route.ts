@@ -10,8 +10,20 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { registerTools, makeApiRequest } from "./tools.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 const app = new Hono();
+
+// Candidate locations for the prebuilt Desktop Extension (.mcpb), in priority
+// order: bundled next to the compiled server (Docker runtime), then the repo's
+// build output (local dev via `npm run build:mcpb`).
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const MCPB_PATHS = [
+  join(__dirname, "firestarter.mcpb"), // dist/mcp/firestarter.mcpb (Docker)
+  join(__dirname, "..", "..", "mcpb", "dist", "firestarter.mcpb"), // local dev
+];
 
 // Map of session ID → transport (for stateful sessions)
 const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
@@ -85,6 +97,31 @@ app.all("/", async (c) => {
 
   // GET/DELETE without session ID
   return c.json({ error: "Session ID required for GET/DELETE" }, 400);
+});
+
+// One-click Desktop Extension download. Public (no auth) — the user enters
+// their API key in the install prompt; the key is stored in their OS keychain.
+// Served at GET /mcp/download.
+app.get("/download", async (c) => {
+  for (const path of MCPB_PATHS) {
+    try {
+      const file = await readFile(path);
+      return new Response(file, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Disposition": 'attachment; filename="firestarter.mcpb"',
+          "Cache-Control": "public, max-age=3600",
+        },
+      });
+    } catch (err) {
+      // Missing file at this candidate path is expected — try the next one.
+      // Anything else (permissions, corruption) is a real problem; rethrow so
+      // the global error handler / Sentry can capture it.
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+    }
+  }
+  return c.json({ error: "Desktop Extension not available" }, 404);
 });
 
 export default app;
