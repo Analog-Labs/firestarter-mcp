@@ -72,6 +72,8 @@ describe("firestarter_list NO_SELLER_PROFILE (issue #213)", () => {
     expect(text).not.toContain("POST /v1/sellers");
     // Tells the agent it already has the details (kills the re-ask loop).
     expect(text.toLowerCase()).toContain("do not ask for them again");
+    expect(text).toContain("Link Code");
+    expect(text).toContain("relink this chat identity");
   });
 
   it("does NOT add the seller hint on unrelated create errors", async () => {
@@ -97,5 +99,7 @@ describe("firestarter_list NO_SELLER_PROFILE (issue #213)", () => {
     expect(res.isError).toBe(true);
     expect(text).toContain("NO_SELLER_PROFILE");
     expect(text).toContain("firestarter.network/sell");
+    expect(text).toContain("Link Code");
+    expect(text).toContain("relink this chat identity");
   });
 });

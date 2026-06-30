@@ -48,6 +48,15 @@ function textOf(res: any): string {
 }
 
 const INVALID_KEY_BODY = { error: "Invalid API key", code: "INVALID_KEY", status: 401 };
+const PAYMENT_REQUIRED_BODY = {
+    error: "Insufficient token balance",
+    code: "PAYMENT_REQUIRED",
+    status: 402,
+    required_tokens: 1200,
+    token_balance: 300,
+    plan: "free",
+    trial_active: false,
+};
 
 describe("MCP auth-error surfacing (issue #514)", () => {
     it("firestarter_execute reframes a 401 INVALID_KEY as a credential problem, not a search outage", async () => {
@@ -90,5 +99,38 @@ describe("MCP auth-error surfacing (issue #514)", () => {
         expect(res.isError).toBe(true);
         expect(text).toContain("request is required");
         expect(text.toLowerCase()).not.toContain("authentication failed");
+    });
+
+    it("firestarter_execute adds billing snapshot guidance on 402 PAYMENT_REQUIRED", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async (url: any, init?: any) => {
+                const method = init?.method || "GET";
+                if (method === "POST" && String(url).endsWith("/v1/executions")) {
+                    return new Response(JSON.stringify(PAYMENT_REQUIRED_BODY), {
+                        status: 402,
+                        headers: { "Content-Type": "application/json" },
+                    });
+                }
+                if (method === "GET" && String(url).endsWith("/v1/billing/balance")) {
+                    return new Response(
+                        JSON.stringify({ org_id: "org_abc", plan: "free", token_balance: 300, trial_active: false }),
+                        { status: 200, headers: { "Content-Type": "application/json" } }
+                    );
+                }
+                throw new Error(`unexpected fetch: ${method} ${url}`);
+            })
+        );
+        const tools = captureTools();
+
+        const res = await tools.firestarter_execute({ request: "buy lipstick" });
+        const text = textOf(res);
+
+        expect(res.isError).toBe(true);
+        expect(text).toContain("Error: Insufficient token balance");
+        expect(text).toContain("Firestarter org billing snapshot:");
+        expect(text).toContain("- org_id: org_abc");
+        expect(text).toContain("- token_balance: 300");
+        expect(text).toContain("different Firestarter org/API key");
     });
 });
