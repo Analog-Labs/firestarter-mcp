@@ -30,7 +30,7 @@ function toErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     const isAuthCode =
       err.code === "INVALID_KEY" || err.code === "INVALID_KEY_FORMAT" || err.code === "MISSING_AUTH";
-    if (err.status === 401 || err.status === 403 || isAuthCode) {
+    if (err.status === 401 || isAuthCode) {
       return "Authentication failed: the Firestarter API key is invalid or revoked. This is a credential/configuration problem, not a product-search outage — no search was performed. Do not retry; the integration's API key must be re-provisioned.";
     }
   }
@@ -43,6 +43,22 @@ function toErrorMessage(err: unknown): string {
 /** Strip backslashes LLMs sometimes inject when markdown-escaping underscores/hyphens in IDs. */
 function cleanListingId(id: string): string {
   return id.replace(/\\/g, "");
+}
+
+/**
+ * Keep external links readable in chat: suppress noisy query strings (notably
+ * Google Shopping tracking params) while preserving a clickable URL.
+ */
+function tidyProductUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (/google\./i.test(u.hostname) && /\/shopping\//i.test(u.pathname)) {
+      return `${u.origin}${u.pathname}`;
+    }
+    return url;
+  } catch {
+    return url;
+  }
 }
 
 /**
@@ -334,7 +350,7 @@ async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Prom
             : externalResult
               ? `View on ${opt.supplier || opt.store || "site"}`
               : "View listing";
-        optLines.push(`  ${linkLabel}: ${opt.product_url}`);
+        optLines.push(`  ${linkLabel}: ${tidyProductUrl(opt.product_url)}`);
       }
       if (isOwnListing) {
         optLines.push(`  This is your own listing - shown so you can see how it appears to buyers. It is not offered for purchase.`);
@@ -460,6 +476,108 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           });
         }
         return { content: blocks };
+      } catch (err: any) {
+        if (err instanceof ApiError && err.code === "PAYMENT_REQUIRED") {
+          // #502: include the actual Firestarter-org balance snapshot so channel
+          // users don't get a vague token error when a workspace-level credit
+          // dashboard shows healthy balance in a different system/account.
+          try {
+            const bal = await apiRequest("GET", "/v1/billing/balance");
+            return {
+              content: [{
+                type: "text" as const,
+                text:
+                  `Error: ${toErrorMessage(err)}\n\n` +
+                  `Firestarter org billing snapshot:\n` +
+                  `- org_id: ${bal.org_id}\n` +
+                  `- plan: ${bal.plan}\n` +
+                  `- token_balance: ${bal.token_balance}\n` +
+                  `- trial_active: ${bal.trial_active ? "yes" : "no"}\n\n` +
+                  `If this differs from the workspace credit view, the channel may be linked to a different Firestarter org/API key. Re-provision or relink the integration key for this workspace.`,
+              }],
+              isError: true,
+            };
+          } catch {
+            // Fall back to the base error when balance lookup itself fails.
+          }
+        }
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_preview
+  // Phase A: keyless commerce preview surfaced as a read-only tool. Shows real
+  // options + prices + buyability + per-option eligibility WITHOUT creating an
+  // execution, so an agent can answer "what can you get me?" before committing.
+  server.tool(
+    "firestarter_preview",
+    "Preview real products for a natural-language request WITHOUT starting a purchase. Returns live options with prices, whether each can be bought through Firestarter (vs browse-only), shipping, and per-option eligibility — in budget, can arrive by the deadline, and ships to the destination. Use it to show the buyer what's available and answer \"what can you get me?\" before committing to firestarter_execute. Read-only: nothing is bought and no approval is created.",
+    {
+      query: z.string().describe("What to look for, e.g. 'polo t-shirt' or 'wireless earbuds under $50'"),
+      country: z.string().optional().describe("Destination country (ISO alpha-2 or common name) — enables shipping/serviceability checks"),
+      city: z.string().optional().describe("Destination city"),
+      deadline: z.string().optional().describe("Delivery deadline, e.g. 'Friday', 'in 3 days', '2026-07-03'"),
+      min_price: z.number().optional().describe("Price floor in USD"),
+      max_price: z.number().optional().describe("Budget ceiling in USD"),
+      quantity: z.number().int().optional().describe("How many units"),
+    },
+    async ({ query, country, city, deadline, min_price, max_price, quantity }) => {
+      try {
+        const params = new URLSearchParams({ q: query });
+        if (country) params.set("country", country);
+        if (city) params.set("city", city);
+        if (deadline) params.set("deadline", deadline);
+        if (min_price != null) params.set("min", String(min_price));
+        if (max_price != null) params.set("max", String(max_price));
+        if (quantity != null) params.set("qty", String(quantity));
+
+        const data = await apiRequest("GET", `/commerce/preview?${params.toString()}`);
+
+        if (data.blocked) {
+          return { content: [{ type: "text" as const, text: `Can't preview that: ${data.reason || "the item isn't supported on Firestarter."}` }] };
+        }
+        const options: any[] = Array.isArray(data.options) ? data.options : [];
+        if (options.length === 0) {
+          return { content: [{ type: "text" as const, text: `No matching products found for "${data.query || query}". Try a broader query, or drop the price/deadline filters.` }] };
+        }
+
+        // Human-readable reason copy for the non-blocking + blocking codes.
+        const reasonText: Record<string, string> = {
+          NOT_CHECKOUT_CAPABLE: "browse-only (can't check out here)",
+          BUDGET_EXCEEDED: "over budget",
+          BELOW_MIN_BUDGET: "below your price floor",
+          OUT_OF_STOCK: "out of stock",
+          RELEVANCE_BELOW_FLOOR: "weak match",
+          DEADLINE_INFEASIBLE: "can't arrive by the deadline",
+          DEADLINE_UNKNOWN: "delivery time unknown",
+          DESTINATION_UNSERVICEABLE: "doesn't ship to that destination",
+        };
+
+        let text = `**Preview for "${data.query || query}"** (${options.length} option${options.length === 1 ? "" : "s"})\n`;
+        const buyableEligible = options.filter((o) => o.purchasable && o.eligible).length;
+        options.forEach((o, i) => {
+          const price = Number.isFinite(o.price) ? `$${Number(o.price).toFixed(2)}` : "price n/a";
+          const ship = o.shipping?.known
+            ? (o.shipping.amount_usd === 0 ? " + free shipping" : ` + $${Number(o.shipping.amount_usd).toFixed(2)} shipping`)
+            : " (shipping at checkout)";
+          text += `\n${i + 1}. **${o.title}** — ${price}${ship}`;
+          if (o.seller) text += ` · ${o.seller}`;
+          text += `\n   ${o.purchasable ? "✓ buyable through Firestarter" : `browse-only${o.url ? ` — view: ${tidyProductUrl(o.url)}` : ""}`}`;
+          if (o.purchasable) {
+            if (o.eligible) {
+              text += `\n   ✓ eligible to buy now`;
+            } else {
+              const blockers = (o.reasons || []).map((r: string) => reasonText[r] || r);
+              text += `\n   ⚠ not eligible: ${blockers.join("; ") || "see details"}`;
+            }
+          }
+        });
+        text += buyableEligible > 0
+          ? `\n\n${buyableEligible} option${buyableEligible === 1 ? " is" : "s are"} buyable now — call firestarter_execute (or pass a listing_id) to purchase, after confirming with the buyer.`
+          : `\n\nNone of these can be purchased through Firestarter right now — share the browse links, or refine the query toward checkout-ready listings.`;
+
+        return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
@@ -1028,7 +1146,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // makes it loop or re-ask for product details it already has).
         let hint = "";
         if (noSeller) {
-          hint = "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Direct them to firestarter.network/sell to register, then retry this listing once they have finished - you already have the product details, so do NOT ask for them again.";
+          hint = "\n\nNO_SELLER_PROFILE: no seller profile exists on this Firestarter org. If they are truly new, direct them to firestarter.network/sell to register, then retry this listing once they have finished - do NOT ask for them again. If they already have an active web seller account, ask them to open the seller dashboard, generate a Link Code, and paste it to Cole to relink this chat identity to their existing seller org.";
         } else if (code === "DUPLICATE_LISTING" || /duplicate listing/i.test(msg)) {
           hint = "\n\nDUPLICATE_LISTING: this seller already has a listing with that name. Do NOT re-ask for details - either update the existing one (find it with firestarter_listings) or, if they genuinely want a second listing, retry with allow_duplicate: true.";
         } else if (code === "PROHIBITED_ITEM" || /prohibited/i.test(msg)) {
@@ -1091,7 +1209,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (/blocks server-side fetches/i.test(msg)) {
           hint = "\n\nThat platform cannot be fetched. Ask the seller to copy-paste the listing text (title, price, description) and photo URLs into chat, then call firestarter_import again with raw_text + photo_urls.";
         } else if ((err instanceof ApiError && err.code === "NO_SELLER_PROFILE") || /no active seller profile/i.test(msg) || msg.includes("NO_SELLER_PROFILE")) {
-          hint = "\n\nNO_SELLER_PROFILE: the seller has no Firestarter seller profile yet. Direct them to firestarter.network/sell to register, then retry the import once they have finished.";
+          hint = "\n\nNO_SELLER_PROFILE: no seller profile exists on this Firestarter org. If they are new, direct them to firestarter.network/sell to register, then retry the import. If they already have an active web seller account, have them generate a Link Code in the seller dashboard and paste it to Cole to relink this chat identity.";
         } else if (/could not fetch/i.test(msg)) {
           hint = "\n\nAsk the seller to paste the listing text directly into chat and retry with raw_text.";
         }
@@ -1634,13 +1752,20 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listings.length === 0) {
           return { content: [{ type: "text" as const, text: "You have no active listings. Use `firestarter_list` to create one." }] };
         }
+        const utcToday = new Date().toISOString().slice(0, 10);
+        const listedTodayUtc = listings.filter((l: any) => {
+          const ts = typeof l?.created_at === "string" ? l.created_at : "";
+          return ts.slice(0, 10) === utcToday;
+        }).length;
+
         let text = `**Your listings (${listings.length})**\n`;
+        text += `Listed today (UTC): ${listedTodayUtc}\n`;
         for (const l of listings) {
           text += `- **${l.product_name}** [${l.status}] — $${Number(l.current_price).toFixed(2)}`;
           if (l.inventory_qty != null) text += `, qty ${l.inventory_qty}`;
           // #527: include the listing date so the agent can answer "what did I list today?"
           // (the list view previously dropped it, so the model confabulated "no new listings").
-          if (l.created_at) text += `, listed ${new Date(l.created_at).toISOString().slice(0, 10)}`;
+          if (l.created_at) text += `, listed ${String(l.created_at).slice(0, 10)}`;
           text += ` — ID \`${l.id}\`\n`;
         }
         text += `\nPass a listing ID for full detail. Each listing has a share link (${SHARE_LINK_BASE}/<id>) that unfurls into a product card and hands purchase instructions to any agent that opens it.`;

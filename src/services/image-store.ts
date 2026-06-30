@@ -21,6 +21,24 @@ export function blobUrl(id: string): string {
   return `${API_URL}/v1/img/${id}`;
 }
 
+/**
+ * #434/#436: normalize a stored attachment URL to a host-relative blob path.
+ *
+ * The support-attachment feeds are consumed by frontends that prepend their own
+ * API base to the returned `url`. blobUrl() mints an ABSOLUTE URL (correct for
+ * listing images, which are embedded in payloads consumed by clients that do
+ * NOT prepend), so returning it verbatim makes those frontends build a
+ * double-host URL (`https://hosthttps://host/v1/img/...`) and the image never
+ * loads. Stripping back to `/v1/img/<id>` lets each frontend resolve it against
+ * its own host. Idempotent: tolerates already-relative and legacy
+ * double-prefixed values, and passes non-blob URLs through untouched.
+ */
+export function toBlobPath<T extends string | null | undefined>(url: T): T {
+  if (!url) return url;
+  const i = url.indexOf("/v1/img/");
+  return (i >= 0 ? url.slice(i) : url) as T;
+}
+
 const BLOB_PATH_RE = /^\/v1\/img\/[a-f0-9]{32}$/;
 
 /**

@@ -3,7 +3,11 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
+<<<<<<< HEAD
   "description": "AI-native commerce execution. Search products, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 35 tools, 7 resources, 10 prompts.",
+=======
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 36 tools, 7 resources, 10 prompts.",
+>>>>>>> staging
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -59,6 +63,39 @@
         },
         "required": [
           "request"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_preview",
+      "description": "Preview real products for a natural-language request WITHOUT starting a purchase. Returns live options with prices, whether each can be bought through Firestarter, shipping, and per-option eligibility (in budget, can arrive by the deadline, ships to the destination). Read-only: nothing is bought.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "deadline": {
+            "type": "string"
+          },
+          "min_price": {
+            "type": "number"
+          },
+          "max_price": {
+            "type": "number"
+          },
+          "quantity": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "query"
         ]
       }
     },
