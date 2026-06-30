@@ -506,6 +506,84 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_preview
+  // Phase A: keyless commerce preview surfaced as a read-only tool. Shows real
+  // options + prices + buyability + per-option eligibility WITHOUT creating an
+  // execution, so an agent can answer "what can you get me?" before committing.
+  server.tool(
+    "firestarter_preview",
+    "Preview real products for a natural-language request WITHOUT starting a purchase. Returns live options with prices, whether each can be bought through Firestarter (vs browse-only), shipping, and per-option eligibility — in budget, can arrive by the deadline, and ships to the destination. Use it to show the buyer what's available and answer \"what can you get me?\" before committing to firestarter_execute. Read-only: nothing is bought and no approval is created.",
+    {
+      query: z.string().describe("What to look for, e.g. 'polo t-shirt' or 'wireless earbuds under $50'"),
+      country: z.string().optional().describe("Destination country (ISO alpha-2 or common name) — enables shipping/serviceability checks"),
+      city: z.string().optional().describe("Destination city"),
+      deadline: z.string().optional().describe("Delivery deadline, e.g. 'Friday', 'in 3 days', '2026-07-03'"),
+      min_price: z.number().optional().describe("Price floor in USD"),
+      max_price: z.number().optional().describe("Budget ceiling in USD"),
+      quantity: z.number().int().optional().describe("How many units"),
+    },
+    async ({ query, country, city, deadline, min_price, max_price, quantity }) => {
+      try {
+        const params = new URLSearchParams({ q: query });
+        if (country) params.set("country", country);
+        if (city) params.set("city", city);
+        if (deadline) params.set("deadline", deadline);
+        if (min_price != null) params.set("min", String(min_price));
+        if (max_price != null) params.set("max", String(max_price));
+        if (quantity != null) params.set("qty", String(quantity));
+
+        const data = await apiRequest("GET", `/commerce/preview?${params.toString()}`);
+
+        if (data.blocked) {
+          return { content: [{ type: "text" as const, text: `Can't preview that: ${data.reason || "the item isn't supported on Firestarter."}` }] };
+        }
+        const options: any[] = Array.isArray(data.options) ? data.options : [];
+        if (options.length === 0) {
+          return { content: [{ type: "text" as const, text: `No matching products found for "${data.query || query}". Try a broader query, or drop the price/deadline filters.` }] };
+        }
+
+        // Human-readable reason copy for the non-blocking + blocking codes.
+        const reasonText: Record<string, string> = {
+          NOT_CHECKOUT_CAPABLE: "browse-only (can't check out here)",
+          BUDGET_EXCEEDED: "over budget",
+          BELOW_MIN_BUDGET: "below your price floor",
+          OUT_OF_STOCK: "out of stock",
+          RELEVANCE_BELOW_FLOOR: "weak match",
+          DEADLINE_INFEASIBLE: "can't arrive by the deadline",
+          DEADLINE_UNKNOWN: "delivery time unknown",
+          DESTINATION_UNSERVICEABLE: "doesn't ship to that destination",
+        };
+
+        let text = `**Preview for "${data.query || query}"** (${options.length} option${options.length === 1 ? "" : "s"})\n`;
+        const buyableEligible = options.filter((o) => o.purchasable && o.eligible).length;
+        options.forEach((o, i) => {
+          const price = Number.isFinite(o.price) ? `$${Number(o.price).toFixed(2)}` : "price n/a";
+          const ship = o.shipping?.known
+            ? (o.shipping.amount_usd === 0 ? " + free shipping" : ` + $${Number(o.shipping.amount_usd).toFixed(2)} shipping`)
+            : " (shipping at checkout)";
+          text += `\n${i + 1}. **${o.title}** — ${price}${ship}`;
+          if (o.seller) text += ` · ${o.seller}`;
+          text += `\n   ${o.purchasable ? "✓ buyable through Firestarter" : `browse-only${o.url ? ` — view: ${tidyProductUrl(o.url)}` : ""}`}`;
+          if (o.purchasable) {
+            if (o.eligible) {
+              text += `\n   ✓ eligible to buy now`;
+            } else {
+              const blockers = (o.reasons || []).map((r: string) => reasonText[r] || r);
+              text += `\n   ⚠ not eligible: ${blockers.join("; ") || "see details"}`;
+            }
+          }
+        });
+        text += buyableEligible > 0
+          ? `\n\n${buyableEligible} option${buyableEligible === 1 ? " is" : "s are"} buyable now — call firestarter_execute (or pass a listing_id) to purchase, after confirming with the buyer.`
+          : `\n\nNone of these can be purchased through Firestarter right now — share the browse links, or refine the query toward checkout-ready listings.`;
+
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_status
   server.tool(
     "firestarter_status",
