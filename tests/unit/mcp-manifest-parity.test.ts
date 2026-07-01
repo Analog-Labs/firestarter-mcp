@@ -8,9 +8,16 @@
  * Attribution self-serve tools are env-gated in BOTH (registered only when
  * ATTRIBUTION_SELF_SERVE_ENABLED=true, and absent from the manifest), so we keep
  * the flag off here and they fall out of both sets symmetrically.
+ *
+ * #570 extends this to the rest of the A7 surface: exact tool COUNT parity (not
+ * just the name set), the human-facing "N tools / N prompts / N resources"
+ * counts advertised in the manifest description, and that prompts + resources
+ * register as a stable, duplicate-free, non-empty set.
  */
 import { describe, it, expect } from "vitest";
 import { registerTools } from "../../src/mcp/tools.js";
+import { registerPrompts } from "../../src/mcp/prompts.js";
+import { registerResources } from "../../src/mcp/resources.js";
 import manifest from "../../src/mcp/mcp.json" with { type: "json" };
 
 function registeredToolNames(): string[] {
@@ -22,7 +29,31 @@ function registeredToolNames(): string[] {
   return names.sort();
 }
 
+function registeredPromptNames(): string[] {
+  const names: string[] = [];
+  // registerPrompts only calls server.prompt(name, ...).
+  const stub = { prompt: (name: string) => { names.push(name); } } as any;
+  registerPrompts(stub);
+  return names.sort();
+}
+
+function registeredResourceNames(): string[] {
+  const names: string[] = [];
+  // registerResources only calls server.resource(name, ...).
+  const stub = { resource: (name: string) => { names.push(name); } } as any;
+  registerResources(stub, async () => ({}));
+  return names.sort();
+}
+
 const manifestToolNames: string[] = ((manifest as any).tools || []).map((t: any) => t.name).sort();
+
+/** Parse "36 tools, 7 resources, 10 prompts" out of the manifest description. */
+function advertisedCount(kind: "tools" | "prompts" | "resources"): number | null {
+  const desc = (manifest as any).description || "";
+  const re = kind === "tools" ? /(\d+)\s+tools/ : kind === "prompts" ? /(\d+)\s+prompts/ : /(\d+)\s+resources/;
+  const m = re.exec(desc);
+  return m ? parseInt(m[1], 10) : null;
+}
 
 describe("MCP manifest <-> runtime tool parity", () => {
   it("advertises no ghost tools (every mcp.json tool is registered)", () => {
@@ -39,5 +70,40 @@ describe("MCP manifest <-> runtime tool parity", () => {
 
   it("registers a non-trivial tool set", () => {
     expect(registeredToolNames().length).toBeGreaterThanOrEqual(15);
+  });
+
+  // #570: the tool COUNT (not just the name set) must match the manifest array,
+  // and the human-facing "N tools" claim in the description must not drift from
+  // reality — that string is what onboarding + partner docs quote.
+  it("tool count matches the manifest array and its advertised count", () => {
+    const runtime = registeredToolNames().length;
+    expect(runtime).toBe(manifestToolNames.length);
+    const advertised = advertisedCount("tools");
+    if (advertised !== null) {
+      expect(advertised, "manifest description 'N tools' is stale vs registered tools").toBe(runtime);
+    }
+  });
+});
+
+describe("MCP prompt + resource registration parity (#570)", () => {
+  it("registers a stable, non-empty set of prompts matching the advertised count", () => {
+    const prompts = registeredPromptNames();
+    expect(prompts.length).toBeGreaterThan(0);
+    // No duplicate prompt names (a dupe silently shadows a workflow starter).
+    expect(new Set(prompts).size).toBe(prompts.length);
+    const advertised = advertisedCount("prompts");
+    if (advertised !== null) {
+      expect(advertised, "manifest description 'N prompts' is stale vs registered prompts").toBe(prompts.length);
+    }
+  });
+
+  it("registers a stable, non-empty set of resources matching the advertised count", () => {
+    const resources = registeredResourceNames();
+    expect(resources.length).toBeGreaterThan(0);
+    expect(new Set(resources).size).toBe(resources.length);
+    const advertised = advertisedCount("resources");
+    if (advertised !== null) {
+      expect(advertised, "manifest description 'N resources' is stale vs registered resources").toBe(resources.length);
+    }
   });
 });
