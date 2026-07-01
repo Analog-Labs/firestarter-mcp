@@ -561,8 +561,12 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "access_token": { "type": "string" },
-          "shop_domain": { "type": "string" }
+          "access_token": {
+            "type": "string"
+          },
+          "shop_domain": {
+            "type": "string"
+          }
         },
         "required": []
       }
