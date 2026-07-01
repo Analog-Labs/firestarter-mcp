@@ -20,11 +20,10 @@ const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 
 // machine-readable purchase instructions, chat apps unfurl a preview card.
 const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.network/l";
 
-// Where a seller uploads a product photo and gets back a hosted image URL. This
-// is the only path for clients (e.g. Claude Desktop) whose locally-attached
-// images can't be forwarded into an MCP tool call — tool args are JSON only and
-// the client never uploads the attachment, so there is no URL to pass. The
-// dashboard accepts ?edit=<listingId> to jump straight to a listing's uploader.
+// Where a seller uploads a product photo and gets back a hosted image URL.
+// MCP clients (e.g. Claude Desktop) that forward user-attached images as base64
+// can use the firestarter_upload_image tool directly. The dashboard URL is kept
+// as a fallback for clients that cannot encode the image into a tool argument.
 const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firestarter.network/seller";
 
 function toErrorMessage(err: unknown): string {
@@ -1090,6 +1089,35 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_upload_image
+  // Accepts a base64-encoded image from the conversation and persists it to the
+  // Firestarter image store, returning a public URL the agent can then pass to
+  // firestarter_list / firestarter_update_listing / firestarter_import as an image_url.
+  server.tool(
+    "firestarter_upload_image",
+    "Upload a product photo the seller sent in this conversation and get back a permanent public URL. Call this FIRST when the seller provides a photo (attached image), then pass the returned URL into firestarter_list or firestarter_update_listing image_urls. Accepts a base64-encoded image (data-URI format: 'data:image/jpeg;base64,...'). Max 6 MB. Returns the hosted URL on success.",
+    {
+      image_base64: z.string().describe("The image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here."),
+      filename: z.string().optional().describe("Optional original filename (used to detect format: png, webp, gif). Defaults to jpeg if omitted."),
+    },
+    async ({ image_base64, filename }) => {
+      try {
+        const res = await apiRequest("POST", "/seller/products/upload-image", {
+          image_base64,
+          filename,
+        });
+        const url = (res as any)?.url;
+        if (!url) {
+          return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The image may be invalid or too large (max 6 MB)." }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.` }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        return { content: [{ type: "text" as const, text: `Error uploading image: ${msg}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
@@ -1102,7 +1130,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       ceiling_price: z.number().optional().describe("Never surge above this price"),
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
-      image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). When the seller sent a photo, pass the URL from its '[image attached: <url>]' marker here — do not ask them to re-send a photo already in the conversation."),
+      image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
       shipping: z.number().optional().describe("Shipping price in USD. Omit to use the network default ($9.99, free over $50). Set to 0 for free shipping."),
       ship_from: z.object({
         street1: z.string(),
@@ -1161,7 +1189,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // path still yields a valid, encoded link (never `...?a=b?edit=`).
           const uploaderUrl = new URL(SELLER_DASHBOARD_URL);
           uploaderUrl.searchParams.set("edit", String(listing.id));
-          text += `\n\n📷 **Add a photo (1 click).** Open ${uploaderUrl.toString()} — it jumps straight to this listing's photo uploader; drag your image in and it's attached. A photo you attach here in chat can't be added to the listing directly — it has to be uploaded. (Or paste any public image URL and call \`firestarter_update_listing\` with \`image_urls\`.)`;
+          text += `\n\n📷 **Add a photo.** Send a photo in this chat and I'll upload it with \`firestarter_upload_image\`, then attach the URL to your listing. Or open ${uploaderUrl.toString()} to drag-and-drop directly in the dashboard.`;
         }
         // Surface payout warnings — listing is active but seller should
         // connect Stripe to actually receive earnings.
