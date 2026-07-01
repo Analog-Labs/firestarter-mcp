@@ -184,7 +184,7 @@ function sniffImageMime(buf: Uint8Array): string | null {
   if (buf.length >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return "image/gif";
   // WEBP: "RIFF"...."WEBP"
   if (buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
-      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
   return null;
 }
 
@@ -420,12 +420,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay, needs a delivery address) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this — start with just the request and collect the address later, at approval. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay, needs a delivery address) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this — start with just the request and collect the address later, at approval. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
       budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
       delivery_address: z.string().optional().describe("Optional at this step — the address is required at firestarter_approve, not here. Pass it only if the buyer already gave it."),
+      location: z
+        .object({
+          country: z.string().optional().describe("Buyer's country — full name or ISO code (e.g. 'Kenya' or 'KE'). Drives localized, deliverable-first results."),
+          city: z.string().optional().describe("Buyer's city (e.g. 'Kitale'), when known — sharpens local ranking and delivery estimates."),
+        })
+        .optional()
+        .describe("Where the buyer is. Pass this whenever you know it (from the conversation, profile, or a prior message) even without a full delivery address — it makes search location-aware so local marketplaces are shown first."),
       priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated). Default quality."),
       auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget WITHOUT a confirmation step — only when the buyer explicitly pre-authorized it. If false (default), options are returned for approval."),
       requested_by: z
@@ -437,7 +444,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .optional()
         .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
-    async ({ request, listing_id: rawListingId, budget_max, delivery_address, priority, auto_pay, requested_by }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, location, priority, auto_pay, requested_by }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
@@ -452,6 +459,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         if (budget_max) body.budget = { max_total: budget_max, currency: "USD" };
         if (delivery_address) body.delivery_address = { address: delivery_address };
+        // Location makes the find step location-aware (local supply first) even
+        // without a full delivery address. Only forward fields the buyer gave.
+        if (location && (location.country || location.city)) {
+          body.location = {
+            ...(location.country ? { country: location.country } : {}),
+            ...(location.city ? { city: location.city } : {}),
+          };
+        }
 
         const created = await apiRequest("POST", "/v1/executions", body);
         const exec = await pollExecution(apiRequest, created.id, 45_000);
@@ -480,6 +495,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
                   ? "\n\n**Note:** these are Firestarter stores that haven't enabled checkout yet - none can be bought here yet. Share the listing links so the buyer can view them, or use `firestarter_message` to refine toward checkout-ready listings. `firestarter_cancel` to stop."
                   : "\n\n**Note:** none of these can be purchased through Firestarter - they're external results and/or stores that haven't enabled checkout yet. You can share the URLs so the buyer can view them, refine the search with `firestarter_message`, or `firestarter_cancel`.")
                 : `\n\n**Action needed:** the user can reply "confirm" to place the order for the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only options can't be purchased here - share their links instead." : ""}`,
+          });
+        } else if (exec.status === "failed" || !Array.isArray(exec.options) || exec.options.length === 0) {
+          // Location-aware empty state: the #1 cause of an empty catalog for a
+          // non-US buyer used to be an un-localized (US-only) search. If we
+          // weren't told where the buyer is, ask for it and retry — results are
+          // localized to their country (local marketplaces shown first).
+          const askedLocation = !!(location && (location.country || location.city));
+          blocks.push({
+            type: "text",
+            text: askedLocation
+              ? "\n\nNo matches yet. Try refining the request (brand, size, or a price range), or widen the budget. Local marketplaces for the buyer's country were included in the search."
+              : "\n\n**No matches — do you know where the buyer is?** Re-run `firestarter_execute` with their `location` (country, and city if known). Results are localized to their country, so a buyer outside the US sees locally-deliverable options first instead of an empty list.",
           });
         }
         return { content: blocks };
