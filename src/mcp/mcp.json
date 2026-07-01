@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 36 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 37 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -303,6 +303,24 @@
         "required": [
           "monitor_id"
         ]
+      }
+    },
+    {
+      "name": "firestarter_upload_image",
+      "description": "Upload a product photo (base64 data-URI) and get back a permanent hosted URL. Call this when the seller sends a photo in chat, then pass the URL to firestarter_list or firestarter_update_listing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "image_base64": {
+            "type": "string",
+            "description": "The image as a base64 data-URI (e.g. 'data:image/jpeg;base64,/9j/...'). Max 6 MB."
+          },
+          "filename": {
+            "type": "string",
+            "description": "Optional original filename for format detection."
+          }
+        },
+        "required": ["image_base64"]
       }
     },
     {
