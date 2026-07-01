@@ -1092,7 +1092,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_upload_image
   // Accepts a base64-encoded image from the conversation and persists it to the
   // Firestarter image store, returning a public URL the agent can then pass to
-  // firestarter_list / firestarter_update_listing / firestarter_import as an image_url.
+  // firestarter_list / firestarter_update_listing (image_urls) or firestarter_import (photo_urls).
   server.tool(
     "firestarter_upload_image",
     "Upload a product photo the seller sent in this conversation and get back a permanent public URL. Call this FIRST when the seller provides a photo (attached image), then pass the returned URL into firestarter_list or firestarter_update_listing image_urls. Accepts a base64-encoded image (data-URI format: 'data:image/jpeg;base64,...'). Max 6 MB. Returns the hosted URL on success.",
@@ -1102,6 +1102,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     },
     async ({ image_base64, filename }) => {
       try {
+        const base64Part = String(image_base64).includes(",") ? String(image_base64).split(",", 2)[1] : String(image_base64);
+        const normalized = base64Part.replace(/\s+/g, "");
+        const padding = (normalized.match(/=+$/)?.[0].length ?? 0);
+        const approxBytes = Math.floor((normalized.length * 3) / 4) - padding;
+        const MAX_BYTES = 6 * 1024 * 1024;
+        if (approxBytes > MAX_BYTES) {
+          return {
+            content: [{ type: "text" as const, text: `Error: image is too large (${(approxBytes / 1024 / 1024).toFixed(1)} MB). Max is 6 MB.` }],
+            isError: true,
+          };
+        }
+
         const res = await apiRequest("POST", "/seller/products/upload-image", {
           image_base64,
           filename,
@@ -1942,7 +1954,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       category: z.string().optional().describe("New category (e.g. 'sports/tennis')"),
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
-      image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs (e.g. from the seller's '[image attached: <url>]' marker). Use this to add a photo to a listing that has none — never ask the seller to re-send a photo already in the conversation."),
+      image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
     },
     async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls }) => {
       const listing_id = cleanListingId(rawListingId);
