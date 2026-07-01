@@ -20,6 +20,13 @@ const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 
 // machine-readable purchase instructions, chat apps unfurl a preview card.
 const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.network/l";
 
+// Where a seller uploads a product photo and gets back a hosted image URL. This
+// is the only path for clients (e.g. Claude Desktop) whose locally-attached
+// images can't be forwarded into an MCP tool call — tool args are JSON only and
+// the client never uploads the attachment, so there is no URL to pass. The
+// dashboard accepts ?edit=<listingId> to jump straight to a listing's uploader.
+const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firestarter.network/seller";
+
 function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   // Authentication/credential failures (401/403) must not be relayed as a generic
@@ -1117,6 +1124,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         } else {
           text += `Share link: ${SHARE_LINK_BASE}/${listing.id}\n`;
           text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
+        }
+        // No photo on the listing → give a concrete way to add one. A photo the
+        // seller attached in chat can't be forwarded into the listing (MCP tool
+        // args are JSON URLs only; the client never uploads the file), so deep
+        // link straight to this listing's uploader in the seller dashboard.
+        if (!(Array.isArray(listing.images) && listing.images.length)) {
+          // Build via URL so a base with an existing query string / trailing
+          // path still yields a valid, encoded link (never `...?a=b?edit=`).
+          const uploaderUrl = new URL(SELLER_DASHBOARD_URL);
+          uploaderUrl.searchParams.set("edit", String(listing.id));
+          text += `\n\n📷 **Add a photo (1 click).** Open ${uploaderUrl.toString()} — it jumps straight to this listing's photo uploader; drag your image in and it's attached. A photo you attach here in chat can't be added to the listing directly — it has to be uploaded. (Or paste any public image URL and call \`firestarter_update_listing\` with \`image_urls\`.)`;
         }
         // Surface payout warnings — listing is active but seller should
         // connect Stripe to actually receive earnings.
