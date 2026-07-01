@@ -1,0 +1,78 @@
+{
+  "manifest_version": "0.2",
+  "name": "firestarter",
+  "display_name": "Firestarter Commerce",
+  "version": "2.0.0",
+  "description": "AI-native commerce execution: search products, buy with approval, track orders, manage listings, connect Shopify, and monitor prices.",
+  "long_description": "Firestarter gives Claude the ability to find, buy, ship, and track real products, and to run a seller business end to end. After installing, paste your Firestarter API key (fs_live_... or fs_test_...) and Claude can execute purchases with your approval, watch prices, manage listings, and view payouts. The key is stored securely in your OS keychain. All requests go to https://api.firestarter.network.",
+  "author": {
+    "name": "Firestarter",
+    "url": "https://firestarter.network"
+  },
+  "homepage": "https://firestarter.network",
+  "documentation": "https://firestarter.network/mcp",
+  "support": "https://firestarter.network/docs",
+  "license": "ISC",
+  "keywords": [
+    "commerce",
+    "shopping",
+    "payments",
+    "shipping",
+    "shopify",
+    "mcp"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.mjs"
+      ],
+      "env": {
+        "FIRESTARTER_API_KEY": "${user_config.api_key}",
+        "FIRESTARTER_API_URL": "${user_config.api_url}"
+      }
+    }
+  },
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "Firestarter API Key",
+      "description": "Your fs_live_... (live) or fs_test_... (sandbox) key from firestarter.network/dashboard",
+      "sensitive": true,
+      "required": true
+    },
+    "api_url": {
+      "type": "string",
+      "title": "API Base URL (advanced)",
+      "description": "Override the Firestarter API base URL. Leave as default unless instructed.",
+      "default": "https://api.firestarter.network",
+      "required": false
+    }
+  },
+  "tools_generated": true,
+  "tools": [
+    { "name": "firestarter_execute", "description": "Submit a natural-language purchase request; searches, prices, and presents options for approval." },
+    { "name": "firestarter_status", "description": "Check the status of an execution or list recent ones." },
+    { "name": "firestarter_approve", "description": "Approve an execution and pay for the selected option." },
+    { "name": "firestarter_cancel", "description": "Cancel an execution and trigger a refund if already paid." },
+    { "name": "firestarter_message", "description": "Send a follow-up to refine an in-progress execution." },
+    { "name": "firestarter_track_order", "description": "Track delivery for a shipped order." },
+    { "name": "firestarter_return", "description": "Initiate a return for a completed order." },
+    { "name": "firestarter_watch", "description": "Create a price or stock monitor." },
+    { "name": "firestarter_list", "description": "Create a new seller listing." },
+    { "name": "firestarter_seller_orders", "description": "View incoming orders as a seller." }
+  ],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}
