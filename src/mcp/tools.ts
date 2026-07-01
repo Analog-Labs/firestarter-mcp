@@ -20,11 +20,10 @@ const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 
 // machine-readable purchase instructions, chat apps unfurl a preview card.
 const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.network/l";
 
-// Where a seller uploads a product photo and gets back a hosted image URL. This
-// is the only path for clients (e.g. Claude Desktop) whose locally-attached
-// images can't be forwarded into an MCP tool call — tool args are JSON only and
-// the client never uploads the attachment, so there is no URL to pass. The
-// dashboard accepts ?edit=<listingId> to jump straight to a listing's uploader.
+// Where a seller uploads a product photo and gets back a hosted image URL.
+// MCP clients (e.g. Claude Desktop) that forward user-attached images as base64
+// can use the firestarter_upload_image tool directly. The dashboard URL is kept
+// as a fallback for clients that cannot encode the image into a tool argument.
 const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firestarter.network/seller";
 
 function toErrorMessage(err: unknown): string {
@@ -184,7 +183,7 @@ function sniffImageMime(buf: Uint8Array): string | null {
   if (buf.length >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return "image/gif";
   // WEBP: "RIFF"...."WEBP"
   if (buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
-      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
   return null;
 }
 
@@ -420,12 +419,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay, needs a delivery address) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this — start with just the request and collect the address later, at approval. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay, needs a delivery address) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this — start with just the request and collect the address later, at approval. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
       budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
       delivery_address: z.string().optional().describe("Optional at this step — the address is required at firestarter_approve, not here. Pass it only if the buyer already gave it."),
+      location: z
+        .object({
+          country: z.string().optional().describe("Buyer's country — full name or ISO code (e.g. 'Kenya' or 'KE'). Drives localized, deliverable-first results."),
+          city: z.string().optional().describe("Buyer's city (e.g. 'Kitale'), when known — sharpens local ranking and delivery estimates."),
+        })
+        .optional()
+        .describe("Where the buyer is. Pass this whenever you know it (from the conversation, profile, or a prior message) even without a full delivery address — it makes search location-aware so local marketplaces are shown first."),
       priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated). Default quality."),
       auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget WITHOUT a confirmation step — only when the buyer explicitly pre-authorized it. If false (default), options are returned for approval."),
       requested_by: z
@@ -437,7 +443,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .optional()
         .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
-    async ({ request, listing_id: rawListingId, budget_max, delivery_address, priority, auto_pay, requested_by }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, location, priority, auto_pay, requested_by }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
@@ -452,6 +458,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         if (budget_max) body.budget = { max_total: budget_max, currency: "USD" };
         if (delivery_address) body.delivery_address = { address: delivery_address };
+        // Location makes the find step location-aware (local supply first) even
+        // without a full delivery address. Only forward fields the buyer gave.
+        if (location && (location.country || location.city)) {
+          body.location = {
+            ...(location.country ? { country: location.country } : {}),
+            ...(location.city ? { city: location.city } : {}),
+          };
+        }
 
         const created = await apiRequest("POST", "/v1/executions", body);
         const exec = await pollExecution(apiRequest, created.id, 45_000);
@@ -480,6 +494,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
                   ? "\n\n**Note:** these are Firestarter stores that haven't enabled checkout yet - none can be bought here yet. Share the listing links so the buyer can view them, or use `firestarter_message` to refine toward checkout-ready listings. `firestarter_cancel` to stop."
                   : "\n\n**Note:** none of these can be purchased through Firestarter - they're external results and/or stores that haven't enabled checkout yet. You can share the URLs so the buyer can view them, refine the search with `firestarter_message`, or `firestarter_cancel`.")
                 : `\n\n**Action needed:** the user can reply "confirm" to place the order for the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only options can't be purchased here - share their links instead." : ""}`,
+          });
+        } else if (exec.status === "failed" || !Array.isArray(exec.options) || exec.options.length === 0) {
+          // Location-aware empty state: the #1 cause of an empty catalog for a
+          // non-US buyer used to be an un-localized (US-only) search. If we
+          // weren't told where the buyer is, ask for it and retry — results are
+          // localized to their country (local marketplaces shown first).
+          const askedLocation = !!(location && (location.country || location.city));
+          blocks.push({
+            type: "text",
+            text: askedLocation
+              ? "\n\nNo matches yet. Try refining the request (brand, size, or a price range), or widen the budget. Local marketplaces for the buyer's country were included in the search."
+              : "\n\n**No matches — do you know where the buyer is?** Re-run `firestarter_execute` with their `location` (country, and city if known). Results are localized to their country, so a buyer outside the US sees locally-deliverable options first instead of an empty list.",
           });
         }
         return { content: blocks };
@@ -1063,6 +1089,47 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_upload_image
+  // Accepts a base64-encoded image from the conversation and persists it to the
+  // Firestarter image store, returning a public URL the agent can then pass to
+  // firestarter_list / firestarter_update_listing (image_urls) or firestarter_import (photo_urls).
+  server.tool(
+    "firestarter_upload_image",
+    "Upload a product photo the seller sent in this conversation and get back a permanent public URL. Call this FIRST when the seller provides a photo (attached image), then pass the returned URL into firestarter_list or firestarter_update_listing image_urls. Accepts a base64-encoded image (data-URI format: 'data:image/jpeg;base64,...'). Max 6 MB. Returns the hosted URL on success.",
+    {
+      image_base64: z.string().describe("The image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here."),
+      filename: z.string().optional().describe("Optional original filename (used to detect format: png, webp, gif). Defaults to jpeg if omitted."),
+    },
+    async ({ image_base64, filename }) => {
+      try {
+        const base64Part = String(image_base64).includes(",") ? String(image_base64).split(",", 2)[1] : String(image_base64);
+        const normalized = base64Part.replace(/\s+/g, "");
+        const padding = (normalized.match(/=+$/)?.[0].length ?? 0);
+        const approxBytes = Math.floor((normalized.length * 3) / 4) - padding;
+        const MAX_BYTES = 6 * 1024 * 1024;
+        if (approxBytes > MAX_BYTES) {
+          return {
+            content: [{ type: "text" as const, text: `Error: image is too large (${(approxBytes / 1024 / 1024).toFixed(1)} MB). Max is 6 MB.` }],
+            isError: true,
+          };
+        }
+
+        const res = await apiRequest("POST", "/seller/products/upload-image", {
+          image_base64,
+          filename,
+        });
+        const url = (res as any)?.url;
+        if (!url) {
+          return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The image may be invalid or too large (max 6 MB)." }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.` }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        return { content: [{ type: "text" as const, text: `Error uploading image: ${msg}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
@@ -1075,7 +1142,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       ceiling_price: z.number().optional().describe("Never surge above this price"),
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
-      image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). When the seller sent a photo, pass the URL from its '[image attached: <url>]' marker here — do not ask them to re-send a photo already in the conversation."),
+      image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
       shipping: z.number().optional().describe("Shipping price in USD. Omit to use the network default ($9.99, free over $50). Set to 0 for free shipping."),
       ship_from: z.object({
         street1: z.string(),
@@ -1134,7 +1201,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // path still yields a valid, encoded link (never `...?a=b?edit=`).
           const uploaderUrl = new URL(SELLER_DASHBOARD_URL);
           uploaderUrl.searchParams.set("edit", String(listing.id));
-          text += `\n\n📷 **Add a photo (1 click).** Open ${uploaderUrl.toString()} — it jumps straight to this listing's photo uploader; drag your image in and it's attached. A photo you attach here in chat can't be added to the listing directly — it has to be uploaded. (Or paste any public image URL and call \`firestarter_update_listing\` with \`image_urls\`.)`;
+          text += `\n\n📷 **Add a photo.** Send a photo in this chat and I'll upload it with \`firestarter_upload_image\`, then attach the URL to your listing. Or open ${uploaderUrl.toString()} to drag-and-drop directly in the dashboard.`;
         }
         // Surface payout warnings — listing is active but seller should
         // connect Stripe to actually receive earnings.
@@ -1887,7 +1954,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       category: z.string().optional().describe("New category (e.g. 'sports/tennis')"),
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
-      image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs (e.g. from the seller's '[image attached: <url>]' marker). Use this to add a photo to a listing that has none — never ask the seller to re-send a photo already in the conversation."),
+      image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
     },
     async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls }) => {
       const listing_id = cleanListingId(rawListingId);
