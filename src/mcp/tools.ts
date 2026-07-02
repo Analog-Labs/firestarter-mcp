@@ -1283,7 +1283,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `- Create listings with \`firestarter_list\` (just product_name + base_price)\n`;
         text += `- Import existing listings with \`firestarter_import\`\n`;
         text += `- Connect a Shopify store with \`firestarter_connect_shopify\`\n`;
-        text += `- Set up payouts with \`firestarter_payouts\` (can do later — listings work without it, earnings are just held)\n`;
+        text += `\n**Important:** Connect Stripe payouts with \`firestarter_payouts\` so buyers can actually purchase your listings. Without it, listings are visible but show as "browse-only" (checkout blocked). Takes ~2 minutes.\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -1386,7 +1386,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Array.isArray(listing.activation_warnings) && listing.activation_warnings.length > 0) {
           for (const warn of listing.activation_warnings) {
             if (warn.code === "SELLER_PAYOUTS_RECOMMENDED") {
-              text += `\n\n⚠️ **Payouts not connected.** The listing is live and buyable, but earnings will be held until Stripe payouts are set up. Call \`firestarter_payouts\` to get an onboarding link.`;
+              text += `\n\n⚠️ **Payouts not connected — buyers cannot purchase this listing yet.** The listing is visible in search, but checkout is blocked until Stripe payouts are set up. Call \`firestarter_payouts\` now to get a setup link (takes ~2 minutes).`;
             }
           }
         }
@@ -1631,7 +1631,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Check whether the seller's Stripe payouts are connected - required before an imported draft can be activated, and before the seller can be paid at all. If payouts are not connected, this also returns a Stripe onboarding link to send to the seller. Use it before activating imported drafts, or whenever a seller asks about getting paid. Pass country (ISO 3166-1 alpha-2, e.g. 'TH', 'GB', 'IN') when the seller is outside the US so Stripe onboarding uses the right country.",
+    "Check whether the seller's Stripe payouts are connected — REQUIRED for listings to be purchasable by buyers. Without Stripe, listings appear in search but show as 'browse-only' (buyers cannot checkout). If payouts are not connected, this returns a Stripe onboarding link to send to the seller (~2 min setup). Call this immediately after firestarter_register_seller or firestarter_list if the listing shows a payouts warning. Pass country (ISO 3166-1 alpha-2, e.g. 'TH', 'GB', 'IN') when the seller is outside the US so Stripe onboarding uses the right country.",
     {
       country: z.string().optional().describe("ISO 3166-1 alpha-2 country code for the seller (e.g. 'US', 'TH', 'GB', 'IN'). Only needed on first setup for non-US sellers."),
     },
@@ -1921,20 +1921,22 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_catalog_search
   server.tool(
     "firestarter_catalog_search",
-    "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
+    "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
     {
       query: z.string().optional().describe("Free-text product search, e.g. 'leather conditioner', 'wireless earbuds under 50'. Matches product name, description, and category. Use real product nouns; omit filler words like 'cheap' or 'best'."),
       category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
+      country: z.string().optional().describe("ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Filters for listings that ship to this country. Pass the buyer's country to see locally-deliverable options."),
       min_price: z.number().optional().describe("Minimum price in the listing currency (inclusive)."),
       max_price: z.number().optional().describe("Maximum price in the listing currency (inclusive)."),
       buyable_only: z.boolean().optional().describe("If true, return only listings that can be purchased now (seller checkout enabled). Default false (includes browse-only listings, which are clearly tagged)."),
       limit: z.number().optional().describe("Max results to return, 1-50. Default 20."),
     },
-    async ({ query, category, min_price, max_price, buyable_only, limit }) => {
+    async ({ query, category, country, min_price, max_price, buyable_only, limit }) => {
       try {
         const params = new URLSearchParams();
         if (query) params.set("q", query);
         if (category) params.set("category", category);
+        if (country) params.set("country", country);
         if (typeof min_price === "number") params.set("min_price", String(min_price));
         if (typeof max_price === "number") params.set("max_price", String(max_price));
         if (buyable_only) params.set("buyable_only", "true");
@@ -2466,13 +2468,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   );
 
   // ── Community attribution / self-serve "markets" (agentic spin-up) ──
-  // Gated behind ATTRIBUTION_SELF_SERVE_ENABLED so these only appear once
-  // self-serve is opened. They let ANY agent (Cole, Claude, Cursor, a community's
-  // own bot) stand up an attribution program, mint a share code, and read
-  // earnings — no dashboard required. Programs are owned by the calling org.
-  // Inert until ATTRIBUTION_PROGRAMS_ENABLED turns payouts on; creating a program
-  // early just stages it.
-  if (process.env.ATTRIBUTION_SELF_SERVE_ENABLED === "true") {
+  // These let ANY agent (Cole, Claude, Cursor, a community's own bot) stand up
+  // an attribution program, mint a share code, and read earnings — no dashboard
+  // required. Programs are owned by the calling org. Inert until
+  // ATTRIBUTION_PROGRAMS_ENABLED turns payouts on; creating a program early just
+  // stages it.
+  {
     server.tool(
       "firestarter_create_market",
       "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use when a user wants to monetize an audience by letting members buy & sell through Firestarter (e.g. 'set up a store for my Discord/Telegram/X following'). Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Then call firestarter_market_link to get a share code for the community.",
