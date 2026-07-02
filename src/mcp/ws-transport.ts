@@ -54,7 +54,14 @@ export class WebSocketMcpTransport implements Transport {
         // `ws` may deliver a Buffer, an ArrayBuffer, or an array of Buffer
         // fragments depending on how the frame arrived. Normalize to a single
         // Buffer first so the size check counts bytes (not array length) and the
-        // decode never stringifies an array.
+        // decode never stringifies an array. For fragmented frames, sum the byte
+        // lengths BEFORE concatenating so a flood of fragments can't force a large
+        // allocation ahead of the size guard.
+        if (Array.isArray(data)) {
+          let total = 0;
+          for (const part of data) total += part.length;
+          if (total > MAX_MESSAGE_BYTES) throw new Error("MCP message exceeds 1 MB");
+        }
         const buf = Array.isArray(data)
           ? Buffer.concat(data)
           : Buffer.isBuffer(data)
