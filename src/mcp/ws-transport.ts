@@ -48,11 +48,20 @@ export class WebSocketMcpTransport implements Transport {
     if (this.started) return;
     this.started = true;
 
-    this.ws.on("message", (data: Buffer, isBinary: boolean) => {
+    this.ws.on("message", (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
       try {
         if (isBinary) throw new Error("binary WebSocket frames are not supported");
-        if (data.length > MAX_MESSAGE_BYTES) throw new Error("MCP message exceeds 1 MB");
-        const msg = JSON.parse(data.toString("utf8")) as JSONRPCMessage;
+        // `ws` may deliver a Buffer, an ArrayBuffer, or an array of Buffer
+        // fragments depending on how the frame arrived. Normalize to a single
+        // Buffer first so the size check counts bytes (not array length) and the
+        // decode never stringifies an array.
+        const buf = Array.isArray(data)
+          ? Buffer.concat(data)
+          : Buffer.isBuffer(data)
+            ? data
+            : Buffer.from(data);
+        if (buf.length > MAX_MESSAGE_BYTES) throw new Error("MCP message exceeds 1 MB");
+        const msg = JSON.parse(buf.toString("utf8")) as JSONRPCMessage;
         this.onmessage?.(msg);
       } catch (err) {
         this.onerror?.(err instanceof Error ? err : new Error(String(err)));
