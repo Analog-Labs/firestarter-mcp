@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 37 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 39 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -39,6 +39,9 @@
             "type": "number"
           },
           "delivery_address": {
+            "type": "string"
+          },
+          "address_id": {
             "type": "string"
           },
           "priority": {
@@ -113,7 +116,7 @@
     },
     {
       "name": "firestarter_approve",
-      "description": "Approve an execution that is awaiting approval. By default this approves the pre-selected option. When the user just says approve without naming an order, omit execution_id.",
+      "description": "Approve an execution that is awaiting approval. By default this approves the pre-selected option. The buyer's saved default address is used automatically — pass address_id or delivery_address only to ship elsewhere. When the user just says approve without naming an order, omit execution_id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -125,6 +128,34 @@
           },
           "option_id": {
             "type": "string"
+          },
+          "address_id": {
+            "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_addresses",
+      "description": "List the buyer's saved shipping addresses (masked). Use to reuse a saved address_id at execute/approve instead of asking the buyer to re-type one. The default (auto-used at approval) is marked.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_auto_approve_limit",
+      "description": "Read or set the buyer's persistent, account-level auto-approval limit. Orders at or below the limit auto-approve and pay; anything above pauses for manual approval. Call with no arguments to read; pass set_limit_usd to change it, or disable=true to turn auto-approval off. Max $10,000. Always confirm the amount with the buyer first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "set_limit_usd": {
+            "type": "number"
+          },
+          "disable": {
+            "type": "boolean"
           }
         },
         "required": []
@@ -320,7 +351,9 @@
             "description": "Optional original filename for format detection."
           }
         },
-        "required": ["image_base64"]
+        "required": [
+          "image_base64"
+        ]
       }
     },
     {
