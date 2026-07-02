@@ -1744,7 +1744,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       } catch (err: any) {
         const msg = toErrorMessage(err);
         const hint = /no active seller profile/i.test(msg)
-          ? "\n\nThe seller is not registered yet - they need to sign up at firestarter.network/sell first, then connect Shopify."
+          ? "\n\nThe seller is not registered yet. Call `firestarter_register_seller` with their business name first, then connect Shopify."
           : "";
         return { content: [{ type: "text" as const, text: `Error checking Shopify connection: ${msg}${hint}` }], isError: true };
       }
@@ -1812,7 +1812,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               "2. Copy their **shop access token** and **shop id** (shop cipher / region).",
               "3. Give you both, then I'll connect it.",
               "",
-              "Once you have them, call firestarter_connect_tiktok with `access_token` and `shop_domain`. The seller must already be registered on Firestarter (firestarter.network/sell).",
+              "Once you have them, call firestarter_connect_tiktok with `access_token` and `shop_domain`. The seller must already be registered — call `firestarter_register_seller` first if they are not.",
             ].join("\n"),
           }],
         };
@@ -1825,7 +1825,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           return {
             content: [{
               type: "text" as const,
-              text: "The seller isn't registered on Firestarter yet — they need to sign up at firestarter.network/sell first, then connect TikTok Shop.",
+              text: "The seller isn't registered on Firestarter yet. Call `firestarter_register_seller` with their business name first, then connect TikTok Shop.",
             }],
             isError: true,
           };
@@ -2373,7 +2373,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (err instanceof ApiError && (err.code === "NOT_FOUND" || err.status === 404)) {
           hint = "\n\nNo pending order matched that id. It may already be confirmed (go straight to firestarter_ship_order) or the id was wrong — run firestarter_seller_orders to get the exact order_id.";
         } else if (err instanceof ApiError && err.code === "NO_SELLER") {
-          hint = "\n\nThe seller has no active seller profile yet — point them to firestarter.network/sell.";
+          hint = "\n\nThe seller has no active seller profile yet. Call `firestarter_register_seller` with their business name first.";
         }
         return { content: [{ type: "text" as const, text: `Error confirming order: ${msg}${hint}` }], isError: true };
       }
@@ -2401,7 +2401,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (err instanceof ApiError && (err.code === "NOT_FOUND" || err.status === 404)) {
           hint = "\n\nNo order matched that id. Run firestarter_seller_orders to get the exact order_id (use the order_id field, not the exec_... id).";
         } else if (err instanceof ApiError && err.code === "NO_SELLER") {
-          hint = "\n\nThe seller has no active seller profile yet — point them to firestarter.network/sell.";
+          hint = "\n\nThe seller has no active seller profile yet. Call `firestarter_register_seller` with their business name first.";
         }
         return { content: [{ type: "text" as const, text: `Error marking shipped: ${msg}${hint}` }], isError: true };
       }
