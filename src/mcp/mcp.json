@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 39 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 40 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -100,7 +100,7 @@
     },
     {
       "name": "firestarter_status",
-      "description": "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live). Use this to check on orders, see what options were found, get tracking updates, or confirm whether you are in test/sandbox mode. Firestarter DOES have a test mode: an fs_test_ API key runs every purchase through a fully simulated sandbox (mock payment, shipping, tracking — no real money, no real seller contacted); an fs_live_ key is real. The mode is fixed by the configured API key, not a per-call option.",
+      "description": "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live). Use this to check on orders, see what options were found, get tracking updates, or confirm whether you are in test/sandbox mode. Firestarter DOES have a test mode: an fs_test_ API key runs every purchase through a fully simulated sandbox (mock payment, shipping, tracking \u2014 no real money, no real seller contacted); an fs_live_ key is real. The mode is fixed by the configured API key, not a per-call option.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -116,7 +116,7 @@
     },
     {
       "name": "firestarter_approve",
-      "description": "Approve an execution that is awaiting approval. By default this approves the pre-selected option. The buyer's saved default address is used automatically — pass address_id or delivery_address only to ship elsewhere. When the user just says approve without naming an order, omit execution_id.",
+      "description": "Approve an execution that is awaiting approval. By default this approves the pre-selected option. The buyer's saved default address is used automatically \u2014 pass address_id or delivery_address only to ship elsewhere. When the user just says approve without naming an order, omit execution_id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -353,6 +353,32 @@
         },
         "required": [
           "image_base64"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_register_seller",
+      "description": "Register the current account as a seller on Firestarter. Required BEFORE the seller can create listings, import products, or connect a store. Only requires a business_name. Idempotent: if already registered, returns the existing profile.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "business_name": {
+            "type": "string",
+            "description": "REQUIRED. The seller's business or brand name."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "retailer",
+              "wholesaler",
+              "manufacturer",
+              "reseller"
+            ],
+            "description": "Optional. Seller type. Defaults to retailer."
+          }
+        },
+        "required": [
+          "business_name"
         ]
       }
     },
@@ -606,7 +632,7 @@
     },
     {
       "name": "firestarter_sync_shopify",
-      "description": "Re-sync a connected store's catalog into Firestarter — pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter.",
+      "description": "Re-sync a connected store's catalog into Firestarter \u2014 pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -706,7 +732,7 @@
     },
     {
       "name": "firestarter_update_listing",
-      "description": "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also a",
+      "description": "Update a listing's product details \u2014 name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also a",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -786,7 +812,7 @@
     },
     {
       "name": "firestarter_delist",
-      "description": "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting — this takes the pr",
+      "description": "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting \u2014 this takes the pr",
       "inputSchema": {
         "type": "object",
         "properties": {

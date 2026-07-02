@@ -111,6 +111,6 @@ describe("firestarter_connect_tiktok", () => {
     const tools = captureTools();
     const res = await tools.firestarter_connect_tiktok({ access_token: "t", shop_domain: "s" });
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toMatch(/firestarter\.network\/sell/i);
+    expect(textOf(res)).toMatch(/firestarter_register_seller/i);
   });
 });
