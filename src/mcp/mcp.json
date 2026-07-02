@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 44 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 47 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -898,6 +898,70 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "firestarter_confirm_delivery",
+      "description": "Confirm delivery of an order to expedite seller payout.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string",
+            "description": "The execution/order ID (exec_...)"
+          }
+        },
+        "required": [
+          "execution_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_review",
+      "description": "Submit a rating (1-5) and optional comment for a delivered order.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string",
+            "description": "The execution/order ID (exec_...)"
+          },
+          "rating": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "Rating 1-5"
+          },
+          "comment": {
+            "type": "string",
+            "description": "Optional text review (max 1000 chars)"
+          }
+        },
+        "required": [
+          "execution_id",
+          "rating"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_spend_cap",
+      "description": "Read or set the monthly spend cap and alert threshold for the buyer account.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "spend_cap_dollars": {
+            "type": "number",
+            "description": "Monthly cap in dollars (e.g. 500). Omit to read."
+          },
+          "alert_threshold_pct": {
+            "type": "integer",
+            "description": "Alert at this % of cap (default 80)."
+          },
+          "disable": {
+            "type": "boolean",
+            "description": "Set true to remove the cap entirely."
+          }
+        }
       }
     },
     {
