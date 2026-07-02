@@ -39,12 +39,15 @@ afterEach(() => {
 });
 
 describe("agentic attribution MCP tools (self-serve markets)", () => {
-  it("are NOT registered when ATTRIBUTION_SELF_SERVE_ENABLED is off (ships dark)", () => {
+  it("are registered even when ATTRIBUTION_SELF_SERVE_ENABLED is off (community markets are always on)", () => {
+    // "feat(mcp): enable community markets" un-gated these tools: they now
+    // register regardless of the flag and are advertised in the manifest.
+    // (Payouts still stage behind ATTRIBUTION_PROGRAMS_ENABLED.)
     process.env.ATTRIBUTION_SELF_SERVE_ENABLED = "false";
     const tools = captureTools();
-    expect(tools.firestarter_create_market).toBeUndefined();
-    expect(tools.firestarter_market_link).toBeUndefined();
-    expect(tools.firestarter_join_market).toBeUndefined();
+    expect(typeof tools.firestarter_create_market).toBe("function");
+    expect(typeof tools.firestarter_market_link).toBe("function");
+    expect(typeof tools.firestarter_join_market).toBe("function");
   });
 
   it("are registered when the flag is on", () => {
