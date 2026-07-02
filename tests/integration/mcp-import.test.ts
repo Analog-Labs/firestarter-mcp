@@ -164,7 +164,7 @@ describe("firestarter_import — draft import flow", () => {
     expect(text).toContain("raw_text + photo_urls");
   });
 
-  it("NO_SELLER_PROFILE routes the seller to firestarter.network/sell (issue #213)", async () => {
+  it("NO_SELLER_PROFILE routes the seller to firestarter_register_seller (issue #213)", async () => {
     installFetch(() => ({
       status: 403,
       json: {
@@ -180,7 +180,7 @@ describe("firestarter_import — draft import flow", () => {
     const text = textOf(res);
     expect(res.isError).toBe(true);
     expect(text).toContain("NO_SELLER_PROFILE");
-    expect(text).toContain("firestarter.network/sell");
+    expect(text).toContain("firestarter_register_seller");
   });
 
   it("FETCH_FAILED suggests retrying with pasted text", async () => {
@@ -311,6 +311,6 @@ describe("firestarter_payouts — Stripe Connect status + onboarding", () => {
     const res = await tools.firestarter_payouts({});
 
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toContain("firestarter.network/sell");
+    expect(textOf(res)).toContain("firestarter_register_seller");
   });
 });

@@ -6,7 +6,7 @@
  * match only the code token in the message, so it never fired its hint - the
  * agent got a bare "No active seller profile found." and looped (re-asking for
  * details / "ran into an issue"). The error must instead surface the
- * NO_SELLER_PROFILE token + route the agent to firestarter.network/sell.
+ * NO_SELLER_PROFILE token + route the agent to firestarter_register_seller.
  *
  * Same harness as mcp-import.test.ts: drive the REAL registered tool handlers
  * (captured via a fake McpServer) against a mocked global fetch.
@@ -57,7 +57,7 @@ const NO_SELLER_BODY = {
 };
 
 describe("firestarter_list NO_SELLER_PROFILE (issue #213)", () => {
-  it("surfaces the code and routes to firestarter.network/sell instead of looping", async () => {
+  it("surfaces the code and routes to firestarter_register_seller instead of looping", async () => {
     installFetch(403, NO_SELLER_BODY);
     const tools = captureTools();
 
@@ -67,11 +67,10 @@ describe("firestarter_list NO_SELLER_PROFILE (issue #213)", () => {
     expect(res.isError).toBe(true);
     // Machine-recognizable so the agent's skill can branch.
     expect(text).toContain("NO_SELLER_PROFILE");
-    // Routed to the registration page, not the old "POST /v1/sellers".
-    expect(text).toContain("firestarter.network/sell");
-    expect(text).not.toContain("POST /v1/sellers");
+    // Routed to the register_seller tool, not external web page.
+    expect(text).toContain("firestarter_register_seller");
     // Tells the agent it already has the details (kills the re-ask loop).
-    expect(text.toLowerCase()).toContain("do not ask for them again");
+    expect(text.toLowerCase()).toContain("do not ask for details again");
     expect(text).toContain("Link Code");
     expect(text).toContain("relink this chat identity");
   });
@@ -89,7 +88,7 @@ describe("firestarter_list NO_SELLER_PROFILE (issue #213)", () => {
     expect(text).not.toContain("firestarter_sell_link");
   });
 
-  it("firestarter_import also routes NO_SELLER_PROFILE to firestarter.network/sell", async () => {
+  it("firestarter_import also routes NO_SELLER_PROFILE to firestarter_register_seller", async () => {
     installFetch(403, NO_SELLER_BODY);
     const tools = captureTools();
 
@@ -98,7 +97,7 @@ describe("firestarter_list NO_SELLER_PROFILE (issue #213)", () => {
 
     expect(res.isError).toBe(true);
     expect(text).toContain("NO_SELLER_PROFILE");
-    expect(text).toContain("firestarter.network/sell");
+    expect(text).toContain("firestarter_register_seller");
     expect(text).toContain("Link Code");
     expect(text).toContain("relink this chat identity");
   });
