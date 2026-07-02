@@ -1264,9 +1264,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_register_seller
   server.tool(
     "firestarter_register_seller",
-    "Register the current account as a seller on Firestarter. This is required BEFORE the seller can create listings (firestarter_list), import products (firestarter_import), or connect a store (firestarter_connect_shopify). Only requires a business_name. If firestarter_list or firestarter_import returns NO_SELLER_PROFILE, call this first then retry the listing. Idempotent: if the account is already a seller, returns the existing profile without error. After registration the seller can immediately list products - payouts (firestarter_payouts) can be set up later.",
+    "Register the current account as a seller on Firestarter. This is required BEFORE the seller can create listings (firestarter_list), import products (firestarter_import), or connect a store (firestarter_connect_shopify). Only requires a business_name. If firestarter_list or firestarter_import returns NO_SELLER_PROFILE, call this first, then retry the original tool immediately. Idempotent: if the account is already a seller, returns the existing profile without error. After registration the seller can immediately list products - payouts (firestarter_payouts) can be set up later.",
     {
-      business_name: z.string().describe("REQUIRED. The seller's business or brand name, e.g. 'Tania's Art Studio' or 'QuickShip Electronics'."),
+      business_name: z.string().describe("REQUIRED. The seller's business or brand name, e.g. \"Tania's Art Studio\" or \"QuickShip Electronics\"."),
       type: z.enum(["retailer", "wholesaler", "manufacturer", "reseller"]).optional().describe("Optional. Seller type. Defaults to 'retailer'. Only ask if the seller mentions they're a wholesaler/manufacturer."),
     },
     async ({ business_name, type }) => {
@@ -1280,7 +1280,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `Type: ${seller.type || "retailer"}\n`;
         text += `Status: ${seller.status}\n`;
         text += `\nYou can now:\n`;
-        text += `- Create listings with \`firestarter_list\` (just product_name + price)\n`;
+        text += `- Create listings with \`firestarter_list\` (just product_name + base_price)\n`;
         text += `- Import existing listings with \`firestarter_import\`\n`;
         text += `- Connect a Shopify store with \`firestarter_connect_shopify\`\n`;
         text += `- Set up payouts with \`firestarter_payouts\` (can do later — listings work without it, earnings are just held)\n`;
@@ -1288,7 +1288,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       } catch (err: any) {
         const msg = toErrorMessage(err);
         // Already a seller → treat as success (idempotent)
-        if ((err instanceof ApiError && err.code === "SELLER_EXISTS") || /already exists/i.test(msg)) {
+        if (err instanceof ApiError && err.code === "SELLER_EXISTS") {
           // Fetch the existing profile to show it
           try {
             const existing = await apiRequest("GET", "/v1/sellers");

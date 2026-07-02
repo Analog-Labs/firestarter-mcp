@@ -164,7 +164,7 @@ describe("firestarter_import — draft import flow", () => {
     expect(text).toContain("raw_text + photo_urls");
   });
 
-  it("NO_SELLER_PROFILE routes the seller to firestarter.network/sell (issue #213)", async () => {
+  it("NO_SELLER_PROFILE routes the seller to firestarter_register_seller (issue #213)", async () => {
     installFetch(() => ({
       status: 403,
       json: {
