@@ -917,6 +917,62 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_auto_approve_limit
+  server.tool(
+    "firestarter_auto_approve_limit",
+    "Read or set the buyer's PERSISTENT, account-level auto-approval limit for purchases. This is a real stored account setting (not a chat note or session memory): orders whose total is at or below the limit are auto-approved and paid without a manual confirmation step, and anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Call with NO arguments to report the current limit. To change it, pass set_limit_usd (e.g. 50 for '$50 per order'; 0 makes every order require manual approval) OR disable=true to turn auto-approval off entirely. The maximum limit is $10,000. Always confirm the exact dollar amount with the buyer before setting it — never invent, assume, or round a value the buyer did not state. Only report success after this tool returns a confirmation.",
+    {
+      set_limit_usd: z
+        .number()
+        .min(0)
+        .max(10_000)
+        .optional()
+        .describe("New auto-approve limit in USD. Orders at or below this amount auto-approve; anything above pauses for approval. 0 = require manual approval for every order. Omit to just read the current setting."),
+      disable: z
+        .boolean()
+        .optional()
+        .describe("Set true to turn OFF auto-approval entirely (every order requires manual approval). Mutually exclusive with set_limit_usd."),
+    },
+    { destructiveHint: false, idempotentHint: true },
+    async ({ set_limit_usd, disable }) => {
+      try {
+        // No mutation requested → report the currently persisted limit.
+        if (set_limit_usd === undefined && !disable) {
+          const bal = await apiRequest("GET", "/v1/billing/balance");
+          const cents = bal.auto_approve_threshold_cents;
+          const text =
+            cents == null || cents === 0
+              ? "Auto-approval is OFF — every order requires your manual approval."
+              : `Your auto-approval limit is $${(cents / 100).toFixed(2)} per order. Orders at or below this auto-approve; anything above pauses for your approval.`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+
+        if (set_limit_usd !== undefined && disable) {
+          return {
+            content: [{ type: "text" as const, text: "Pass either set_limit_usd or disable, not both." }],
+            isError: true,
+          };
+        }
+
+        const auto_approve_threshold_cents = disable ? null : Math.round((set_limit_usd as number) * 100);
+        await apiRequest("PATCH", "/v1/billing/settings", { auto_approve_threshold_cents });
+
+        const text =
+          auto_approve_threshold_cents == null
+            ? "Auto-approval is now OFF. Every order will pause for your manual approval."
+            : auto_approve_threshold_cents === 0
+              ? "Auto-approval limit set to $0 — every order will require your manual approval."
+              : `Auto-approval limit saved: $${(auto_approve_threshold_cents / 100).toFixed(2)} per order. Orders at or below this go through automatically; anything above pauses for your approval. This applies to all future orders until you change it.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `Error updating auto-approval limit: ${toErrorMessage(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
   // Tool: firestarter_message
   server.tool(
     "firestarter_message",
