@@ -419,12 +419,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay, needs a delivery address) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this — start with just the request and collect the address later, at approval. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
       budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
-      delivery_address: z.string().optional().describe("Optional at this step — the address is required at firestarter_approve, not here. Pass it only if the buyer already gave it."),
+      delivery_address: z.string().optional().describe("Optional. The buyer's saved default address is used automatically at approval — only pass a new address here if they have none saved or want to ship elsewhere. Prefer address_id for a saved address."),
+      address_id: z.string().optional().describe("A saved address id (addr_...) to ship to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Localizes search + shipping to that destination."),
       location: z
         .object({
           country: z.string().optional().describe("Buyer's country — full name or ISO code (e.g. 'Kenya' or 'KE'). Drives localized, deliverable-first results."),
@@ -443,7 +444,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .optional()
         .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
-    async ({ request, listing_id: rawListingId, budget_max, delivery_address, location, priority, auto_pay, requested_by }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
@@ -458,6 +459,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         if (budget_max) body.budget = { max_total: budget_max, currency: "USD" };
         if (delivery_address) body.delivery_address = { address: delivery_address };
+        if (address_id) body.address_id = address_id;
         // Location makes the find step location-aware (local supply first) even
         // without a full delivery address. Only forward fields the buyer gave.
         if (location && (location.country || location.city)) {
@@ -468,6 +470,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
 
         const created = await apiRequest("POST", "/v1/executions", body);
+        const defaultDelivery = created?.default_delivery?.masked || null;
         const exec = await pollExecution(apiRequest, created.id, 45_000);
         // Skip images on execute (already used 45s polling; images on status check)
         const blocks = await formatExecution(exec, { skipImages: true });
@@ -506,6 +509,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             text: askedLocation
               ? "\n\nNo matches yet. Try refining the request (brand, size, or a price range), or widen the budget. Local marketplaces for the buyer's country were included in the search."
               : "\n\n**No matches — do you know where the buyer is?** Re-run `firestarter_execute` with their `location` (country, and city if known). Results are localized to their country, so a buyer outside the US sees locally-deliverable options first instead of an empty list.",
+          });
+        }
+        // Saved-default confirm hint: when the buyer has a default ship-to on
+        // file and passed no address this call, tell the agent to CONFIRM it
+        // rather than re-collect street/zip/phone. Masked (no zip/phone).
+        if (exec.status === "awaiting_approval" && defaultDelivery && !delivery_address && !address_id) {
+          blocks.push({
+            type: "text",
+            text: `\n\n**Shipping to the buyer's saved address:** ${defaultDelivery}. Confirm with them ("ship here?") \u2014 no need to ask for street, zip, or phone. To ship elsewhere, pass a different \`address_id\` or \`delivery_address\` at approval.`,
           });
         }
         return { content: blocks };
@@ -658,11 +670,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you collect the buyer's delivery_address → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). Always have a delivery address before calling for physical goods — approving without one is rejected.",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
       option_id: z.string().optional().describe("Exact option id (e.g. 'opt_abc123') to approve, as returned in API errors or the execution resource. Takes precedence over selected_option."),
+      address_id: z.string().optional().describe("A saved address id (addr_...) to ship this order to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Pass only to ship somewhere other than their default."),
       delivery_address: z.object({
         name: z.string().optional(),
         street1: z.string().describe("Street address"),
@@ -672,10 +685,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         zip: z.string().optional(),
         country: z.string().optional().describe("ISO country code, e.g. US, TH. Defaults to US."),
         phone: z.string().optional(),
-      }).optional().describe("Buyer's shipping address (required for physical marketplace goods). street1 + city are always required; state + zip are also required for US/CA/AU. Collect this from the buyer before approving - approving without it is rejected."),
+      }).optional().describe("Optional. The buyer's saved default address is used automatically — only pass a NEW address here to ship this order elsewhere, or when the buyer has no saved address. street1 + city are always required; state + zip are also required for US/CA/AU. On a first order with no saved address, the address you pass is saved as their default for next time."),
       shipping_option_index: z.number().int().min(0).optional().describe("0-based index of the shipping method to use, from the selected option's shipping_options list (shown by firestarter_status). Omit to use the default rate; the order total is recalculated server-side for the chosen rate."),
     },
-    async ({ execution_id, selected_option, option_id, delivery_address, shipping_option_index }) => {
+    async ({ execution_id, selected_option, option_id, delivery_address, address_id, shipping_option_index }) => {
       try {
         // Bare "approve" (no execution_id): resolve the pending purchase so a
         // user replying just "approve" in chat doesn't dead-end with "nothing
@@ -731,6 +744,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
         const body: any = {};
         if (delivery_address) body.delivery_address = delivery_address;
+        if (address_id) body.address_id = address_id;
         if (shipping_option_index != null) body.shipping_option_index = shipping_option_index;
         if (option_id) {
           body.option_id = option_id;
@@ -776,6 +790,47 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: blocks };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error approving: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_addresses
+  // Lets the agent see the buyer's saved shipping addresses (masked) so it can
+  // pass a saved address_id to firestarter_execute/approve instead of asking
+  // the buyer to re-type a street/zip/phone it already has on file. Deliberately
+  // MASKED: partial street only, never zip or phone — the agent doesn't need PII
+  // to reference an address, and the raw values stay server-side.
+  server.tool(
+    "firestarter_addresses",
+    "List the buyer's saved shipping addresses (masked). Use this to see if they already have an address on file BEFORE asking them to type one — then pass the matching `address_id` to firestarter_execute or firestarter_approve. The default address (used automatically at approval) is marked. Values are masked (partial street, no zip/phone); you don't need the full address to reference it by id.",
+    {},
+    async () => {
+      try {
+        const data = await apiRequest("GET", "/v1/addresses");
+        const rows: any[] = Array.isArray(data?.addresses) ? data.addresses : [];
+        if (rows.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "No saved addresses yet. When the buyer gives one at their first order it's saved as their default automatically for next time.",
+            }],
+          };
+        }
+        const lines = rows.map((a) => {
+          const label = a.label || a.name || "Address";
+          const place = [a.city, a.country].filter(Boolean).join(", ");
+          const street = a.street1 ? `${String(a.street1).slice(0, 6)}\u2026` : "";
+          const parts = [label, place, street].filter(Boolean).join(" \u00b7 ");
+          return `- \`${a.id}\`${a.is_default ? " (default)" : ""} \u2014 ${parts}`;
+        });
+        return {
+          content: [{
+            type: "text" as const,
+            text: `**Saved addresses** (pass the id as \`address_id\` to ship there):\n${lines.join("\n")}`,
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
