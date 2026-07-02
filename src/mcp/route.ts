@@ -28,7 +28,17 @@ const MCPB_PATHS = [
 // Map of session ID → transport (for stateful sessions)
 const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
 
-function createTransport(apiKey: string, apiBase: string): WebStandardStreamableHTTPServerTransport {
+/** Default upstream API base the MCP tools proxy to. */
+export function mcpApiBase(): string {
+  return process.env.FIRESTARTER_API_URL || "https://api.firestarter.network";
+}
+
+/**
+ * Build an McpServer with the full Firestarter tool/resource/prompt surface,
+ * bound to a caller's API key. Shared by every transport (Streamable HTTP,
+ * stdio, WebSocket) so they expose an identical toolset.
+ */
+export function buildMcpServer(apiKey: string, apiBase: string): McpServer {
   const server = new McpServer({
     name: "firestarter",
     version: "1.0.0",
@@ -39,6 +49,12 @@ function createTransport(apiKey: string, apiBase: string): WebStandardStreamable
   const apiReq = makeApiRequest(apiKey, apiBase);
   registerResources(server, apiReq);
   registerPrompts(server);
+
+  return server;
+}
+
+function createTransport(apiKey: string, apiBase: string): WebStandardStreamableHTTPServerTransport {
+  const server = buildMcpServer(apiKey, apiBase);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
