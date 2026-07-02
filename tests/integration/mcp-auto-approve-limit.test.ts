@@ -67,6 +67,17 @@ describe("firestarter_auto_approve_limit MCP tool", () => {
     expect(text).toContain("OFF");
   });
 
+  it("distinguishes a configured $0 limit from OFF on read", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ auto_approve_threshold_cents: 0 }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      }),
+    ));
+    const text = textOf(await captureTools().firestarter_auto_approve_limit({}));
+    expect(text).toContain("$0.00 per order");
+    expect(text).not.toContain("OFF");
+  });
+
   it("set_limit_usd=50 PATCHes settings with 5000 cents and confirms", async () => {
     const fetchMock = vi.fn(async (url: any, init: any) => {
       expect(String(url)).toContain("/v1/billing/settings");
@@ -102,5 +113,28 @@ describe("firestarter_auto_approve_limit MCP tool", () => {
     const res = await captureTools().firestarter_auto_approve_limit({ set_limit_usd: 50, disable: true });
     expect(res.isError).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a sub-cent set_limit_usd instead of silently rounding", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await captureTools().firestarter_auto_approve_limit({ set_limit_usd: 49.999 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("whole-cent");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid two-decimal set_limit_usd (49.99 -> 4999 cents)", async () => {
+    const fetchMock = vi.fn(async (url: any, init: any) => {
+      expect(String(url)).toContain("/v1/billing/settings");
+      expect(JSON.parse(init.body)).toEqual({ auto_approve_threshold_cents: 4999 });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const text = textOf(await captureTools().firestarter_auto_approve_limit({ set_limit_usd: 49.99 }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(text).toContain("$49.99 per order");
   });
 });

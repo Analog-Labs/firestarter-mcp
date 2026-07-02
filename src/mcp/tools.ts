@@ -988,17 +988,25 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .optional()
         .describe("Set true to turn OFF auto-approval entirely (every order requires manual approval). Mutually exclusive with set_limit_usd."),
     },
-    { destructiveHint: false, idempotentHint: true },
+    // Mutates a PERSISTENT account-level billing setting (overwrites the prior
+    // value), so it is destructive in the MCP sense; re-setting the same value
+    // is a no-op, hence idempotent.
+    { destructiveHint: true, idempotentHint: true },
     async ({ set_limit_usd, disable }) => {
       try {
         // No mutation requested → report the currently persisted limit.
         if (set_limit_usd === undefined && !disable) {
           const bal = await apiRequest("GET", "/v1/billing/balance");
           const cents = bal.auto_approve_threshold_cents;
+          // null = auto-approval turned OFF; 0 = a configured $0 limit (nothing
+          // auto-approves). Report them distinctly so a buyer who explicitly set
+          // $0 isn't told the feature is "OFF".
           const text =
-            cents == null || cents === 0
+            cents == null
               ? "Auto-approval is OFF — every order requires your manual approval."
-              : `Your auto-approval limit is $${(cents / 100).toFixed(2)} per order. Orders at or below this auto-approve; anything above pauses for your approval.`;
+              : cents === 0
+                ? "Your auto-approval limit is $0.00 per order — every order requires your manual approval."
+                : `Your auto-approval limit is $${(cents / 100).toFixed(2)} per order. Orders at or below this auto-approve; anything above pauses for your approval.`;
           return { content: [{ type: "text" as const, text }] };
         }
 
@@ -1007,6 +1015,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             content: [{ type: "text" as const, text: "Pass either set_limit_usd or disable, not both." }],
             isError: true,
           };
+        }
+
+        // Reject sub-cent precision instead of silently rounding — the buyer's
+        // stated figure must map exactly to whole cents (e.g. 49.99, not 49.999).
+        if (set_limit_usd !== undefined) {
+          const rawCents = set_limit_usd * 100;
+          if (Math.abs(rawCents - Math.round(rawCents)) > 1e-6) {
+            return {
+              content: [{ type: "text" as const, text: "set_limit_usd must be a whole-cent amount (at most 2 decimal places, e.g. 49.99). Confirm the exact figure with the buyer before setting it." }],
+              isError: true,
+            };
+          }
         }
 
         const auto_approve_threshold_cents = disable ? null : Math.round((set_limit_usd as number) * 100);
