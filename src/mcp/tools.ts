@@ -1780,8 +1780,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         for (const l of listings) {
           const price = `${l.currency || "USD"} ${Number(l.current_price).toFixed(2)}`;
           const tag = l.buyable ? "✅ buyable" : "👁 browse-only";
+          // #611: surface the first product image URL on its own line so chat
+          // clients auto-unfurl a preview and agents have a fetchable, CORS-open
+          // image URL (the network image endpoint) instead of guessing a link.
+          const img0 = Array.isArray(l.images) && typeof l.images[0] === "string" && /^https?:\/\//i.test(l.images[0]) ? l.images[0] : null;
           lines.push(
-            `- **${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}\n  id: \`${l.id}\` · ${l.share_url}`,
+            `- **${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}\n  id: \`${l.id}\` · ${l.share_url}${img0 ? `\n  ${img0}` : ""}`,
           );
         }
         lines.push(
@@ -1830,7 +1834,23 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (l.created_at) text += `Listed: ${l.created_at}\n`;
           text += `Share link: ${SHARE_LINK_BASE}/${l.id}\n`;
           text += `\nPaste the share link bare in chat — it unfurls into a product card; humans get an "ask your AI agent to buy this" prompt and agents get machine-readable purchase instructions. Buyers' agents also find this via network search.`;
-          return { content: [{ type: "text" as const, text }] };
+          // #611: embed the product photos as MCP image blocks so any connected
+          // client renders them inline — the agent no longer has to fetch a bare
+          // URL with its own tool (which failed on the legacy web-hosted image
+          // path that returns an HTML SPA shell). fetchImageAsBase64 validates the
+          // bytes and returns null for anything that isn't a supported image, so a
+          // bad URL is silently skipped and never poisons the whole tool response.
+          const detailBlocks: ContentBlock[] = [{ type: "text", text }];
+          const detailImageUrls = (Array.isArray(l.images) ? (l.images as unknown[]) : [])
+            .filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
+            .slice(0, MAX_EMBED_IMAGES);
+          if (detailImageUrls.length > 0) {
+            const detailImages = await Promise.all(detailImageUrls.map(fetchImageAsBase64));
+            for (const img of detailImages) {
+              if (img) detailBlocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
+            }
+          }
+          return { content: detailBlocks };
         }
         const data = await apiRequest("GET", "/v1/listings");
         const listings = data.listings || [];

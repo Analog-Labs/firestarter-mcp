@@ -128,3 +128,118 @@ describe("firestarter_listings — image URL output (so the agent can post photo
     expect(text).not.toContain("Images (");
   });
 });
+
+/**
+ * #611: the agent couldn't render listing photos because firestarter_listings
+ * emitted only a bare image URL, and the seller's legacy URL resolved to an
+ * HTML SPA shell (200) rather than image bytes. The detail path now embeds the
+ * photos as MCP image blocks (fetched + validated server-side), so any client
+ * renders them inline. fetchImageAsBase64 must skip non-image responses so a
+ * bad URL never poisons the whole tool response.
+ */
+describe("firestarter_listings — inline image embedding (#611)", () => {
+  // Minimal JPEG SOI + APP0 marker (FF D8 FF E0 ...): valid magic bytes.
+  const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+
+  function installFetchEmbedding(imageResponder: (url: string) => Response) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        const u = String(url);
+        if (method === "GET" && /\/v1\/listings\/lst_/.test(u)) {
+          const id = u.split("/v1/listings/")[1];
+          const images =
+            id === "lst_multi"
+              ? ["https://img.test/1.jpg", "https://img.test/2.jpg", "https://img.test/3.jpg"]
+              : id === "lst_none"
+                ? []
+                : ["https://img.test/only.jpg"];
+          return jsonResponse(200, { id, product_name: "Sample", current_price: 5, base_price: 5, status: "active", images });
+        }
+        if (/^https:\/\/img\.test\//.test(u)) return imageResponder(u);
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+  }
+
+  it("embeds the product photo as an MCP image block when the URL returns a real image", async () => {
+    installFetchEmbedding(() => new Response(JPEG, { status: 200, headers: { "Content-Type": "image/jpeg", "Content-Length": String(JPEG.length) } }));
+    const tools = captureTools();
+
+    const res = await tools.firestarter_listings({ listing_id: "lst_one" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].type).toBe("text");
+    const images = res.content.filter((b: any) => b.type === "image");
+    expect(images).toHaveLength(1);
+    expect(images[0].mimeType).toBe("image/jpeg");
+    expect(typeof images[0].data).toBe("string");
+    expect(images[0].data.length).toBeGreaterThan(0);
+  });
+
+  it("caps embedded images at MAX_EMBED_IMAGES (3) and keeps every URL in the text block", async () => {
+    installFetchEmbedding(() => new Response(JPEG, { status: 200, headers: { "Content-Type": "image/jpeg" } }));
+    const tools = captureTools();
+
+    const res = await tools.firestarter_listings({ listing_id: "lst_multi" });
+
+    expect(res.content.filter((b: any) => b.type === "image")).toHaveLength(3);
+    expect(res.content[0].text).toContain("https://img.test/1.jpg");
+    expect(res.content[0].text).toContain("https://img.test/3.jpg");
+  });
+
+  it("silently skips a URL that returns an HTML page with 200 (the #611 bug) without erroring", async () => {
+    installFetchEmbedding(() => new Response("<!doctype html><html><body>SPA shell</body></html>", { status: 200, headers: { "Content-Type": "text/html" } }));
+    const tools = captureTools();
+
+    const res = await tools.firestarter_listings({ listing_id: "lst_one" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].type).toBe("text");
+    expect(res.content[0].text).toContain("Image: https://img.test/only.jpg");
+    expect(res.content.filter((b: any) => b.type === "image")).toHaveLength(0);
+  });
+});
+
+/**
+ * #611: the buyer-facing browse tool now surfaces the first product image URL
+ * on each result line, so chat clients auto-unfurl a preview and agents have a
+ * fetchable, CORS-open image URL instead of only a share link.
+ */
+describe("firestarter_catalog_search — surfaces image URL (#611)", () => {
+  it("includes the first image URL on the result line", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        if (method === "GET" && String(url).includes("/v1/listings/catalog")) {
+          return jsonResponse(200, {
+            query: { environment: "live" },
+            has_more: false,
+            listings: [
+              {
+                id: "lst_x",
+                product_name: "Widget",
+                current_price: 9.5,
+                currency: "USD",
+                buyable: true,
+                category: "Gadgets",
+                share_url: "https://firestarter.network/l/lst_x",
+                images: ["https://api.firestarter.network/v1/img/abc"],
+              },
+            ],
+          });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+
+    const res = await tools.firestarter_catalog_search({ query: "widget" });
+    const text = res.content[0].text as string;
+
+    expect(text).toContain("https://api.firestarter.network/v1/img/abc");
+    expect(text).toContain("lst_x");
+  });
+});
