@@ -1283,7 +1283,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `- Create listings with \`firestarter_list\` (just product_name + base_price)\n`;
         text += `- Import existing listings with \`firestarter_import\`\n`;
         text += `- Connect a Shopify store with \`firestarter_connect_shopify\`\n`;
-        text += `- Set up payouts with \`firestarter_payouts\` (can do later — listings work without it, earnings are just held)\n`;
+        text += `\n**Important:** Connect Stripe payouts with \`firestarter_payouts\` so buyers can actually purchase your listings. Without it, listings are visible but show as "browse-only" (checkout blocked). Takes ~2 minutes.\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -1386,7 +1386,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Array.isArray(listing.activation_warnings) && listing.activation_warnings.length > 0) {
           for (const warn of listing.activation_warnings) {
             if (warn.code === "SELLER_PAYOUTS_RECOMMENDED") {
-              text += `\n\n⚠️ **Payouts not connected.** The listing is live and buyable, but earnings will be held until Stripe payouts are set up. Call \`firestarter_payouts\` to get an onboarding link.`;
+              text += `\n\n⚠️ **Payouts not connected — buyers cannot purchase this listing yet.** The listing is visible in search, but checkout is blocked until Stripe payouts are set up. Call \`firestarter_payouts\` now to get a setup link (takes ~2 minutes).`;
             }
           }
         }
@@ -1631,7 +1631,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Check whether the seller's Stripe payouts are connected - required before an imported draft can be activated, and before the seller can be paid at all. If payouts are not connected, this also returns a Stripe onboarding link to send to the seller. Use it before activating imported drafts, or whenever a seller asks about getting paid. Pass country (ISO 3166-1 alpha-2, e.g. 'TH', 'GB', 'IN') when the seller is outside the US so Stripe onboarding uses the right country.",
+    "Check whether the seller's Stripe payouts are connected — REQUIRED for listings to be purchasable by buyers. Without Stripe, listings appear in search but show as 'browse-only' (buyers cannot checkout). If payouts are not connected, this returns a Stripe onboarding link to send to the seller (~2 min setup). Call this immediately after firestarter_register_seller or firestarter_list if the listing shows a payouts warning. Pass country (ISO 3166-1 alpha-2, e.g. 'TH', 'GB', 'IN') when the seller is outside the US so Stripe onboarding uses the right country.",
     {
       country: z.string().optional().describe("ISO 3166-1 alpha-2 country code for the seller (e.g. 'US', 'TH', 'GB', 'IN'). Only needed on first setup for non-US sellers."),
     },
