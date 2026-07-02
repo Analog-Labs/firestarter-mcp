@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 40 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 44 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -666,6 +666,10 @@
           },
           "limit": {
             "type": "number"
+          },
+          "country": {
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2 country code. Filters for listings that ship to this country."
           }
         },
         "required": []
@@ -894,6 +898,78 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "firestarter_create_market",
+      "description": "Set up a community/affiliate market so you earn a share of the platform fee on every sale your community drives.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "share_bps": {
+            "type": "integer",
+            "description": "Cut of the platform fee in basis points (1000 = 10%)."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "community",
+              "developer"
+            ],
+            "description": "Program type. Default community."
+          }
+        },
+        "required": [
+          "share_bps"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_market_link",
+      "description": "Mint a shareable join code for a market you own.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id."
+          },
+          "channel": {
+            "type": "string",
+            "description": "Optional channel tag."
+          },
+          "campaign": {
+            "type": "string",
+            "description": "Optional campaign tag."
+          }
+        },
+        "required": [
+          "program_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_market_earnings",
+      "description": "Show earnings for markets you own.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "firestarter_join_market",
+      "description": "Join a community market using its share code.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The market share code."
+          }
+        },
+        "required": [
+          "code"
+        ]
       }
     }
   ]
