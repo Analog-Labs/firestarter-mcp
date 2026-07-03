@@ -1736,37 +1736,72 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Check whether the seller's Stripe payouts are connected — REQUIRED for listings to be purchasable by buyers. Without Stripe, listings appear in search but show as 'browse-only' (buyers cannot checkout). If payouts are not connected, this returns a Stripe onboarding link to send to the seller (~2 min setup). Call this immediately after firestarter_register_seller or firestarter_list if the listing shows a payouts warning. Pass country (ISO 3166-1 alpha-2, e.g. 'TH', 'GB', 'IN') when the seller is outside the US so Stripe onboarding uses the right country.",
+    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Supports four providers: Stripe (46 countries), PayPal (200+ countries), Wise (80+ currencies, best for APAC), and Payoneer (190+ countries, popular with TikTok Shop/Amazon sellers). Call with no arguments to check current status. Pass `provider` to set up a new method. If the seller is outside the US/EU, suggest PayPal (easiest), Wise (best rates for APAC), or Payoneer (if they already have one from TikTok/Amazon).",
     {
-      country: z.string().optional().describe("ISO 3166-1 alpha-2 country code for the seller (e.g. 'US', 'TH', 'GB', 'IN'). Only needed on first setup for non-US sellers."),
+      provider: z.enum(["stripe", "paypal", "wise", "payoneer"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/EU), 'paypal' = PayPal email (global), 'wise' = Wise bank transfer (APAC/global), 'payoneer' = Payoneer (190+ countries, TikTok/Amazon sellers)."),
+      country: z.string().optional().describe("ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Needed for Stripe onboarding for non-US sellers."),
+      paypal_email: z.string().optional().describe("PayPal email for receiving payouts. Required when provider='paypal'."),
+      wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
+      payoneer_email: z.string().optional().describe("Payoneer account email. Required when provider='payoneer'."),
     },
-    async ({ country }) => {
+    async ({ provider, country, paypal_email, wise_recipient_id, payoneer_email }) => {
       try {
-        const status = await apiRequest("GET", "/v1/sellers/stripe-connect/status");
-        if (status.charges_enabled) {
-          let text = "**Payouts connected.** The seller's Stripe account can receive funds - imported drafts can be activated.";
-          if (!status.payouts_enabled) {
-            text += "\nNote: bank payouts are still pending verification on Stripe's side; this does not block activating listings.";
+        // If no provider specified, check current status
+        if (!provider) {
+          const status = await apiRequest("GET", "/v1/sellers/payout-method");
+          let text = "";
+          if (status.status === "active") {
+            text = `**Payouts active** via ${status.provider.toUpperCase()}.\nDestination: ${status.masked_destination}\n\nListings are purchasable by buyers.`;
+          } else if (status.provider && status.provider !== "none") {
+            text = `**Payouts pending** — ${status.provider.toUpperCase()} is configured but not yet active.\nRun \`firestarter_payouts\` with \`provider: "${status.provider}"\` to complete setup.`;
+          } else {
+            text = `**No payout method configured.** Listings are visible but buyers cannot checkout.\n\nAvailable providers:\n- **Stripe** — 46 countries, ~5 min setup (best for US/EU)\n- **PayPal** — 200+ countries, ~2 min setup (just an email)\n- **Wise** — 80+ currencies, best rates for APAC (Thailand, Singapore, India)\n- **Payoneer** — 190+ countries, popular with TikTok Shop/Amazon sellers\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
           }
           return { content: [{ type: "text" as const, text }] };
         }
-        // Not payable yet - fetch an onboarding link so the seller can finish.
-        // Idempotent: an existing Connect account just gets a fresh link.
-        const body: Record<string, string> = {};
-        if (country) body.country = country;
-        const link = await apiRequest("POST", "/v1/sellers/stripe-connect", Object.keys(body).length > 0 ? body : undefined);
-        let text = status.connected
-          ? "**Payouts not finished.** The seller started Stripe onboarding but charges are not enabled yet.\n"
-          : "**Payouts not connected.** The seller has not set up Stripe payouts.\n";
-        text += `\nSend the seller this onboarding link (a secure Stripe-hosted page - send it bare so it is clickable):\n${link.onboarding_url}\n`;
-        text += `\nAfter they finish, run firestarter_payouts again to verify, then activate the listing.`;
-        return { content: [{ type: "text" as const, text }] };
+
+        // Set up the chosen provider
+        if (provider === "stripe") {
+          // Existing Stripe Connect flow
+          const body: Record<string, string> = {};
+          if (country) body.country = country;
+          const link = await apiRequest("POST", "/v1/sellers/stripe-connect", Object.keys(body).length > 0 ? body : undefined);
+          let text = `**Stripe Connect setup**\n\nSend the seller this onboarding link (a secure Stripe-hosted page):\n${link.onboarding_url}\n`;
+          text += `\nAfter they finish, run \`firestarter_payouts\` again to verify.`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+
+        if (provider === "paypal") {
+          if (!paypal_email) {
+            return { content: [{ type: "text" as const, text: "To set up PayPal payouts, call `firestarter_payouts` with `provider: \"paypal\"` and `paypal_email: \"seller@email.com\"`. The seller will receive payouts to that PayPal account." }] };
+          }
+          const result = await apiRequest("POST", "/v1/sellers/payout-method/paypal", { email: paypal_email });
+          return { content: [{ type: "text" as const, text: `**PayPal payouts configured!**\nEmail: ${paypal_email}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
+        }
+
+        if (provider === "wise") {
+          if (!wise_recipient_id) {
+            return { content: [{ type: "text" as const, text: "To set up Wise payouts:\n1. Seller logs into wise.com and creates a recipient (their own bank account)\n2. Get the recipient ID from Wise\n3. Call `firestarter_payouts` with `provider: \"wise\"` and `wise_recipient_id: \"<id>\"`\n\nWise supports 80+ currencies with low fees — ideal for APAC sellers." }] };
+          }
+          const result = await apiRequest("POST", "/v1/sellers/payout-method/wise", { recipient_id: wise_recipient_id });
+          return { content: [{ type: "text" as const, text: `**Wise payouts configured!**\nRecipient: ${wise_recipient_id}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
+        }
+
+        if (provider === "payoneer") {
+          if (!payoneer_email) {
+            return { content: [{ type: "text" as const, text: "To set up Payoneer payouts, call `firestarter_payouts` with `provider: \"payoneer\"` and `payoneer_email: \"seller@email.com\"`. Many TikTok Shop and Amazon sellers already have a Payoneer account — use the same email. Covers 190+ countries." }] };
+          }
+          const result = await apiRequest("POST", "/v1/sellers/payout-method/payoneer", { email: payoneer_email });
+          return { content: [{ type: "text" as const, text: `**Payoneer payouts configured!**\nEmail: ${payoneer_email}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
+        }
+
+        return { content: [{ type: "text" as const, text: "Unknown provider." }], isError: true };
       } catch (err: any) {
         const msg = toErrorMessage(err);
         const hint = /no active seller profile/i.test(msg)
           ? "\n\nThe seller is not registered yet. Call `firestarter_register_seller` with their business name first, then retry."
           : "";
-        return { content: [{ type: "text" as const, text: `Error checking payouts: ${msg}${hint}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error managing payouts: ${msg}${hint}` }], isError: true };
       }
     }
   );

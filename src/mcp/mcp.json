@@ -590,15 +590,32 @@
     },
     {
       "name": "firestarter_payouts",
-      "description": "Check whether the seller's Stripe payouts are connected - required before an imported draft can be activated, and before the seller can be paid at all. If payouts are not connected, this also returns ",
+      "description": "Manage seller payout method (Stripe/PayPal/Wise). Call with no args to check status. Pass provider to set up.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "paypal",
+              "wise"
+            ],
+            "description": "Which provider to set up. Omit to check current status."
+          },
           "country": {
-            "type": "string"
+            "type": "string",
+            "description": "ISO country code for Stripe onboarding (non-US sellers)."
+          },
+          "paypal_email": {
+            "type": "string",
+            "description": "PayPal email for receiving payouts. Required when provider=paypal."
+          },
+          "wise_recipient_id": {
+            "type": "string",
+            "description": "Wise recipient ID. Required when provider=wise."
           }
-        },
-        "required": []
+        }
       }
     },
     {
