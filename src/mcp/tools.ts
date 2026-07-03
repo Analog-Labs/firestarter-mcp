@@ -887,7 +887,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_track_order
   server.tool(
     "firestarter_track_order",
-    "Track a shipped order's delivery status. Returns carrier, tracking number, estimated delivery, and current location/events. Use when a buyer asks 'where's my order?' or 'when will it arrive?'.",
+    "Track a shipped order's delivery status. Returns carrier, tracking number, estimated delivery, and current location/events. Use when a buyer asks 'where's my order?' or 'when will it arrive?'. Only works after an order has been paid and shipped — for unpaid/unshipped orders, use firestarter_status instead.",
     {
       execution_id: z.string().describe("The execution/order ID to track (exec_...)"),
     },
@@ -896,7 +896,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       try {
         const data = await apiRequest("GET", `/commerce/tracking/${execution_id}`);
         if (!data.tracking_number) {
-          return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — No tracking info yet. The seller may not have shipped it yet, or tracking hasn't been added.` }] };
+          return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — No tracking info yet. The seller may not have shipped it yet, or tracking hasn't been added. Use \`firestarter_status\` to check the order's current state.` }] };
         }
         let text = `**Order ${execution_id} — Shipping**\n`;
         text += `Carrier: ${data.carrier || "Unknown"}\n`;
@@ -912,7 +912,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error tracking: ${toErrorMessage(err)}` }], isError: true };
+        const msg = toErrorMessage(err);
+        // The tracking endpoint returns 404/403 for orders that haven't been
+        // paid or shipped yet — the generic error handler converts this into a
+        // misleading "API key invalid/revoked" message. Intercept and return a
+        // helpful response instead of an error.
+        if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
+          return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — Not ready for tracking yet. This order may not have been paid or shipped. Use \`firestarter_status\` to check its current state.` }] };
+        }
+        return { content: [{ type: "text" as const, text: `Error tracking: ${msg}` }], isError: true };
       }
     }
   );
@@ -941,6 +949,103 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error initiating return: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_confirm_delivery
+  server.tool(
+    "firestarter_confirm_delivery",
+    "Confirm that a delivered order was received by the buyer. This expedites the escrow release so the seller gets paid immediately instead of waiting for the auto-release window (5 days). Use when the buyer says 'I got it', 'package arrived', or 'confirm delivery'. Only works when order status is 'delivered'.",
+    {
+      execution_id: z.string().describe("The execution/order ID to confirm delivery for (exec_...)"),
+    },
+    async ({ execution_id }) => {
+      try {
+        // Find the order ID from the execution
+        const orderData = await apiRequest("GET", `/v1/executions/${execution_id}`);
+        const orderId = orderData.order_id || orderData.id;
+        await apiRequest("POST", `/buyer/orders/${orderId}/confirm`);
+        return { content: [{ type: "text" as const, text: `**Delivery confirmed for ${execution_id}.** Escrow release has been expedited — the seller will be paid on the next processing tick. Thank you for confirming!` }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        if (/not.*deliver/i.test(msg) || (err instanceof ApiError && err.status === 400)) {
+          return { content: [{ type: "text" as const, text: `Cannot confirm delivery: the order hasn't been delivered yet. Use \`firestarter_status\` to check its current state.` }] };
+        }
+        return { content: [{ type: "text" as const, text: `Error confirming delivery: ${msg}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_review
+  server.tool(
+    "firestarter_review",
+    "Submit a review for a delivered/completed order. Use when the buyer wants to rate their purchase experience (1-5 stars with optional comment). Only one review per order is allowed.",
+    {
+      execution_id: z.string().describe("The execution/order ID to review (exec_...)"),
+      rating: z.number().int().min(1).max(5).describe("Rating from 1 (poor) to 5 (excellent)"),
+      comment: z.string().max(1000).optional().describe("Optional text review (max 1000 chars)"),
+    },
+    async ({ execution_id, rating, comment }) => {
+      try {
+        // Find the order ID from the execution
+        const orderData = await apiRequest("GET", `/v1/executions/${execution_id}`);
+        const orderId = orderData.order_id || orderData.id;
+        await apiRequest("POST", `/buyer/reviews`, { order_id: orderId, rating, comment });
+        const stars = "★".repeat(rating) + "☆".repeat(5 - rating);
+        let text = `**Review submitted** ${stars} (${rating}/5)`;
+        if (comment) text += `\n"${comment}"`;
+        text += `\n\nThank you for the feedback — it helps other buyers and builds the seller's reputation.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        if (/already.*review/i.test(msg) || (err instanceof ApiError && err.code === "ALREADY_REVIEWED")) {
+          return { content: [{ type: "text" as const, text: `This order has already been reviewed. Each order can only be reviewed once.` }] };
+        }
+        if (/not.*deliver/i.test(msg)) {
+          return { content: [{ type: "text" as const, text: `Cannot review yet — the order must be delivered/completed first.` }] };
+        }
+        return { content: [{ type: "text" as const, text: `Error submitting review: ${msg}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_spend_cap
+  server.tool(
+    "firestarter_spend_cap",
+    "Read or set the buyer's monthly spend cap — a safety limit that prevents agents from overspending. When set, any purchase that would push the month's total past the cap is rejected with SPEND_CAP_EXCEEDED. Also shows/sets the alert threshold (default 80%) at which a warning fires. Use when the buyer says 'set a spending limit', 'what's my budget?', or 'cap my spending at $X'. Pass no arguments to read the current cap.",
+    {
+      spend_cap_dollars: z.number().min(1).optional().describe("New monthly spend cap in dollars (e.g. 500 = $500/month). Omit to just read the current value."),
+      alert_threshold_pct: z.number().int().min(1).max(100).optional().describe("Fire a warning when monthly spend reaches this % of the cap. Default 80."),
+      disable: z.boolean().optional().describe("Set to true to remove the spend cap entirely (no limit)."),
+    },
+    async ({ spend_cap_dollars, alert_threshold_pct, disable }) => {
+      try {
+        if (disable) {
+          await apiRequest("PATCH", "/v1/billing/settings", { spend_cap_cents: null });
+          return { content: [{ type: "text" as const, text: `**Spend cap removed.** There is no monthly spending limit. Agents can spend without a cap.` }] };
+        }
+        if (spend_cap_dollars !== undefined || alert_threshold_pct !== undefined) {
+          const body: any = {};
+          if (spend_cap_dollars !== undefined) body.spend_cap_cents = Math.round(spend_cap_dollars * 100);
+          if (alert_threshold_pct !== undefined) body.alert_threshold_pct = alert_threshold_pct;
+          await apiRequest("PATCH", "/v1/billing/settings", body);
+          let text = `**Spend cap updated.**\n`;
+          if (spend_cap_dollars !== undefined) text += `Monthly limit: $${spend_cap_dollars}\n`;
+          if (alert_threshold_pct !== undefined) text += `Alert at: ${alert_threshold_pct}% of cap\n`;
+          text += `\nPurchases that would exceed this cap are automatically rejected.`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+        // Read current
+        const balance = await apiRequest("GET", "/v1/billing/balance");
+        const cap = balance.spend_cap_cents;
+        const threshold = balance.alert_threshold_pct || 80;
+        if (!cap) {
+          return { content: [{ type: "text" as const, text: `**No spend cap set.** There is currently no monthly spending limit. Use \`firestarter_spend_cap\` with \`spend_cap_dollars\` to set one.` }] };
+        }
+        return { content: [{ type: "text" as const, text: `**Monthly spend cap: $${(cap / 100).toFixed(2)}**\nAlert threshold: ${threshold}%\n\nPurchases that would exceed $${(cap / 100).toFixed(2)} in a calendar month are automatically rejected.` }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error managing spend cap: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
