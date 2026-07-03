@@ -201,19 +201,17 @@ describe("firestarter_import — draft import flow", () => {
   });
 });
 
-describe("firestarter_payouts — Stripe Connect status + onboarding", () => {
-  const STATUS_URL = "http://api.test/v1/sellers/stripe-connect/status";
-  const CONNECT_URL = "http://api.test/v1/sellers/stripe-connect";
+describe("firestarter_payouts — multi-provider status + setup", () => {
+  const PAYOUT_METHOD_URL = "http://api.test/v1/sellers/payout-method";
 
-  it("connected: reports payable and does NOT create an onboarding link", async () => {
+  it("active provider: reports status correctly", async () => {
     const calls = installFetch(() => ({
       status: 200,
       json: {
-        connected: true,
-        account_id: "acct_1",
-        charges_enabled: true,
-        payouts_enabled: true,
-        details_submitted: true,
+        provider: "stripe",
+        status: "active",
+        masked_destination: "acct_...1234",
+        available_providers: ["stripe", "paypal", "wise"],
       },
     }));
     const tools = captureTools();
@@ -221,22 +219,21 @@ describe("firestarter_payouts — Stripe Connect status + onboarding", () => {
     const res = await tools.firestarter_payouts({});
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ method: "GET", url: STATUS_URL });
+    expect(calls[0]).toMatchObject({ method: "GET", url: PAYOUT_METHOD_URL });
     const text = textOf(res);
     expect(res.isError).toBeFalsy();
-    expect(text).toContain("Payouts connected");
-    expect(text).not.toContain("pending verification");
+    expect(text).toContain("Payouts active");
+    expect(text).toContain("STRIPE");
   });
 
-  it("charges enabled but bank payouts pending: connected, with a non-blocking note", async () => {
+  it("no provider configured: shows available options", async () => {
     installFetch(() => ({
       status: 200,
       json: {
-        connected: true,
-        account_id: "acct_1",
-        charges_enabled: true,
-        payouts_enabled: false,
-        details_submitted: true,
+        provider: "none",
+        status: "not_configured",
+        masked_destination: null,
+        available_providers: ["stripe", "paypal", "wise"],
       },
     }));
     const tools = captureTools();
@@ -244,61 +241,38 @@ describe("firestarter_payouts — Stripe Connect status + onboarding", () => {
     const res = await tools.firestarter_payouts({});
 
     const text = textOf(res);
-    expect(text).toContain("Payouts connected");
-    expect(text).toContain("pending verification");
-    expect(text).toContain("does not block activating");
+    expect(text).toContain("No payout method configured");
+    expect(text).toContain("Stripe");
+    expect(text).toContain("PayPal");
+    expect(text).toContain("Wise");
   });
 
-  it("not connected: fetches an onboarding link and tells the agent to re-verify", async () => {
-    const calls = installFetch((method, url) => {
-      if (method === "GET" && url === STATUS_URL) {
-        return {
-          status: 200,
-          json: { connected: false, charges_enabled: false, payouts_enabled: false, details_submitted: false },
-        };
-      }
-      if (method === "POST" && url === CONNECT_URL) {
-        return {
-          status: 201,
-          json: { account_id: "acct_new", onboarding_url: "https://connect.stripe.com/setup/s/abc123", existing: false },
-        };
-      }
-      throw new Error(`unexpected fetch: ${method} ${url}`);
-    });
+  it("setup stripe: returns onboarding link", async () => {
+    installFetch(() => ({
+      status: 200,
+      json: { account_id: "acct_new", onboarding_url: "https://connect.stripe.com/setup/s/abc123" },
+    }));
     const tools = captureTools();
 
-    const res = await tools.firestarter_payouts({});
+    const res = await tools.firestarter_payouts({ provider: "stripe", country: "US" });
 
-    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
-      `GET ${STATUS_URL}`,
-      `POST ${CONNECT_URL}`,
-    ]);
     const text = textOf(res);
-    expect(text).toContain("Payouts not connected");
+    expect(text).toContain("Stripe Connect setup");
     expect(text).toContain("https://connect.stripe.com/setup/s/abc123");
-    expect(text).toContain("run firestarter_payouts again");
   });
 
-  it("started but unfinished onboarding: refreshes the link with 'not finished' framing", async () => {
-    installFetch((method, url) => {
-      if (method === "GET" && url === STATUS_URL) {
-        return {
-          status: 200,
-          json: { connected: true, account_id: "acct_1", charges_enabled: false, payouts_enabled: false, details_submitted: false },
-        };
-      }
-      return {
-        status: 200,
-        json: { account_id: "acct_1", onboarding_url: "https://connect.stripe.com/setup/s/resume", existing: true },
-      };
-    });
+  it("setup paypal: configures email", async () => {
+    installFetch(() => ({
+      status: 200,
+      json: { ok: true, provider: "paypal", email: "seller@test.com", status: "active", message: "PayPal payouts are now active." },
+    }));
     const tools = captureTools();
 
-    const res = await tools.firestarter_payouts({});
+    const res = await tools.firestarter_payouts({ provider: "paypal", paypal_email: "seller@test.com" });
 
     const text = textOf(res);
-    expect(text).toContain("Payouts not finished");
-    expect(text).toContain("https://connect.stripe.com/setup/s/resume");
+    expect(text).toContain("PayPal payouts configured");
+    expect(text).toContain("seller@test.com");
   });
 
   it("no seller profile: errors with the registration pointer", async () => {
