@@ -1736,14 +1736,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Supports three providers: Stripe (46 countries), PayPal (200+ countries), and Wise (80+ currencies, best for APAC). Call with no arguments to check current status. Pass `provider` to set up a new method. If the seller is outside the US/EU, suggest PayPal (easiest) or Wise (best rates for APAC).",
+    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Supports four providers: Stripe (46 countries), PayPal (200+ countries), Wise (80+ currencies, best for APAC), and Payoneer (190+ countries, popular with TikTok Shop/Amazon sellers). Call with no arguments to check current status. Pass `provider` to set up a new method. If the seller is outside the US/EU, suggest PayPal (easiest), Wise (best rates for APAC), or Payoneer (if they already have one from TikTok/Amazon).",
     {
-      provider: z.enum(["stripe", "paypal", "wise"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/EU), 'paypal' = PayPal email (global), 'wise' = Wise bank transfer (APAC/global)."),
+      provider: z.enum(["stripe", "paypal", "wise", "payoneer"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/EU), 'paypal' = PayPal email (global), 'wise' = Wise bank transfer (APAC/global), 'payoneer' = Payoneer (190+ countries, TikTok/Amazon sellers)."),
       country: z.string().optional().describe("ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Needed for Stripe onboarding for non-US sellers."),
       paypal_email: z.string().optional().describe("PayPal email for receiving payouts. Required when provider='paypal'."),
       wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
+      payoneer_email: z.string().optional().describe("Payoneer account email. Required when provider='payoneer'."),
     },
-    async ({ provider, country, paypal_email, wise_recipient_id }) => {
+    async ({ provider, country, paypal_email, wise_recipient_id, payoneer_email }) => {
       try {
         // If no provider specified, check current status
         if (!provider) {
@@ -1754,7 +1755,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           } else if (status.provider && status.provider !== "none") {
             text = `**Payouts pending** — ${status.provider.toUpperCase()} is configured but not yet active.\nRun \`firestarter_payouts\` with \`provider: "${status.provider}"\` to complete setup.`;
           } else {
-            text = `**No payout method configured.** Listings are visible but buyers cannot checkout.\n\nAvailable providers:\n- **Stripe** — 46 countries, ~5 min setup (best for US/EU)\n- **PayPal** — 200+ countries, ~2 min setup (just an email)\n- **Wise** — 80+ currencies, best rates for APAC (Thailand, Singapore, India)\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
+            text = `**No payout method configured.** Listings are visible but buyers cannot checkout.\n\nAvailable providers:\n- **Stripe** — 46 countries, ~5 min setup (best for US/EU)\n- **PayPal** — 200+ countries, ~2 min setup (just an email)\n- **Wise** — 80+ currencies, best rates for APAC (Thailand, Singapore, India)\n- **Payoneer** — 190+ countries, popular with TikTok Shop/Amazon sellers\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
           }
           return { content: [{ type: "text" as const, text }] };
         }
@@ -1784,6 +1785,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }
           const result = await apiRequest("POST", "/v1/sellers/payout-method/wise", { recipient_id: wise_recipient_id });
           return { content: [{ type: "text" as const, text: `**Wise payouts configured!**\nRecipient: ${wise_recipient_id}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
+        }
+
+        if (provider === "payoneer") {
+          if (!payoneer_email) {
+            return { content: [{ type: "text" as const, text: "To set up Payoneer payouts, call `firestarter_payouts` with `provider: \"payoneer\"` and `payoneer_email: \"seller@email.com\"`. Many TikTok Shop and Amazon sellers already have a Payoneer account — use the same email. Covers 190+ countries." }] };
+          }
+          const result = await apiRequest("POST", "/v1/sellers/payout-method/payoneer", { email: payoneer_email });
+          return { content: [{ type: "text" as const, text: `**Payoneer payouts configured!**\nEmail: ${payoneer_email}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
         }
 
         return { content: [{ type: "text" as const, text: "Unknown provider." }], isError: true };
