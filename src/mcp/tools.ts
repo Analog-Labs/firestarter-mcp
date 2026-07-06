@@ -585,7 +585,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         deadline: z.string().optional().describe("Delivery deadline, e.g. 'Friday', 'in 3 days', '2026-07-03'"),
         min_price: z.number().optional().describe("Price floor in USD"),
         max_price: z.number().optional().describe("Budget ceiling in USD"),
-        quantity: z.number().int().optional().describe("How many units"),
+        quantity: z.number().int().min(1).max(100).optional().describe("How many units (1-100)"),
         context: z
           .object({
             country: z.string().optional().describe("Destination country (takes precedence over the top-level country)"),
@@ -596,7 +596,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           })
           .optional()
           .describe("Structured buyer context: destination, locale, currency, and intent."),
-        limit: z.number().int().optional().describe("Max options per page (1-50, default 10)."),
+        limit: z.number().int().min(1).max(50).optional().describe("Max options per page (1-50, default 10)."),
         cursor: z.string().optional().describe("Opaque pagination cursor from a prior preview's page.next_cursor to fetch the next page."),
       },
       outputSchema: previewOutputShape,
