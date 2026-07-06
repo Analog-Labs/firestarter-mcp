@@ -16,6 +16,11 @@ const API_REQUEST_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_API_TIMEOUT_MS
 const IMPORT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMPORT_TIMEOUT_MS || 25_000);
 // Evidence submission runs a vision soft-check server-side - same headroom.
 const VERIFY_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_VERIFY_TIMEOUT_MS || 25_000);
+// Keyless preview runs a live multi-source product search (Google Shopping +
+// Shopify + catalog). A cold cache can take ~25-30s - well past the 12s default -
+// so it needs its own budget, or every cold "what can you get me?" fails with a
+// spurious "Firestarter API timed out". Warm-cache hits are sub-second.
+const PREVIEW_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_PREVIEW_TIMEOUT_MS || 30_000);
 const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 2_500);
 // Public share pages (GET /l/:id) — humans get a product card, agents get
 // machine-readable purchase instructions, chat apps unfurl a preview card.
@@ -649,7 +654,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (limit != null) params.set("limit", String(limit));
         if (cursor) params.set("cursor", cursor);
 
-        const data = await apiRequest("GET", `/commerce/preview?${params.toString()}`);
+        const data = await apiRequest("GET", `/commerce/preview?${params.toString()}`, undefined, PREVIEW_TIMEOUT_MS);
 
         if (data.blocked) {
           return {
