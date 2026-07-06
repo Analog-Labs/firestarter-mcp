@@ -12,7 +12,7 @@
 import { z } from "zod";
 
 /** Dated schema version, surfaced in every structured payload (à la UCP). */
-export const MCP_OUTPUT_SCHEMA_VERSION = "2026-07-06";
+export const MCP_OUTPUT_SCHEMA_VERSION = "2026-07-07";
 
 /**
  * Human-readable copy for the eligibility/blocker reason codes emitted by
@@ -37,6 +37,8 @@ const previewOption = z.object({
   title: z.string(),
   price_usd: z.number().nullable(),
   currency: z.string(),
+  /** Integer minor units (e.g. cents) in the option's native currency. */
+  price: z.object({ currency: z.string(), amount_minor: z.number().int().nullable() }),
   shipping: z.object({ known: z.boolean(), amount_usd: z.number().nullable() }),
   /** price + shipping when both are known, else null. */
   total_usd: z.number().nullable(),
@@ -58,8 +60,20 @@ export const previewOutputShape = {
   schema_version: z.literal(MCP_OUTPUT_SCHEMA_VERSION),
   query: z.string(),
   destination: z.object({ country: z.string().nullable(), city: z.string().nullable() }).nullable(),
+  /** Echoed structured buyer context (locale, currency, intent). */
+  context: z.object({
+    language: z.string().nullable(),
+    currency: z.string().nullable(),
+    intent: z.string().nullable(),
+  }),
   count: z.number().int(),
   buyable_count: z.number().int(),
+  /** Cursor pagination for the option list. */
+  page: z.object({
+    limit: z.number().int(),
+    next_cursor: z.string().nullable(),
+    has_more: z.boolean(),
+  }),
   blocked: z.boolean(),
   reason: z.string().nullable(),
   options: z.array(previewOption),
@@ -75,7 +89,7 @@ export type PreviewStructured = z.infer<typeof previewOutputSchema>;
  */
 export function toPreviewStructured(
   data: any,
-  input: { query: string; country?: string; city?: string },
+  input: { query: string; country?: string; city?: string; language?: string; currency?: string; intent?: string },
 ): PreviewStructured {
   const rawOptions: any[] = Array.isArray(data?.options) ? data.options : [];
   const options = rawOptions.map((o: any, i: number) => {
@@ -85,12 +99,15 @@ export function toPreviewStructured(
     const amount_usd = typeof o?.shipping?.amount_usd === "number" ? o.shipping.amount_usd : null;
     const total_usd =
       price_usd != null && known ? Math.round((price_usd + (amount_usd ?? 0)) * 100) / 100 : null;
+    const currency = typeof o?.currency === "string" ? o.currency : "USD";
     return {
       rank: i + 1,
       id: typeof o?.id === "string" ? o.id : "",
       title: typeof o?.title === "string" ? o.title : "",
       price_usd,
-      currency: typeof o?.currency === "string" ? o.currency : "USD",
+      currency,
+      // Machine-precise money in the option's native currency, alongside the float above.
+      price: { currency, amount_minor: price_usd != null ? Math.round(price_usd * 100) : null },
       shipping: { known, amount_usd },
       total_usd,
       seller: typeof o?.seller === "string" ? o.seller : null,
@@ -107,12 +124,27 @@ export function toPreviewStructured(
   });
   const destination =
     input.country || input.city ? { country: input.country ?? null, city: input.city ?? null } : null;
+  // Prefer the service-echoed context; fall back to the tool's input.
+  const dctx = data?.context ?? {};
+  const context = {
+    language: (typeof dctx.language === "string" ? dctx.language : input.language) ?? null,
+    currency: (typeof dctx.currency === "string" ? dctx.currency : input.currency) ?? null,
+    intent: (typeof dctx.intent === "string" ? dctx.intent : input.intent) ?? null,
+  };
+  const dpage = data?.page ?? {};
+  const page = {
+    limit: Number.isInteger(dpage.limit) ? dpage.limit : 10,
+    next_cursor: typeof dpage.next_cursor === "string" ? dpage.next_cursor : null,
+    has_more: !!dpage.has_more,
+  };
   return {
     schema_version: MCP_OUTPUT_SCHEMA_VERSION,
     query: typeof data?.query === "string" ? data.query : input.query,
     destination,
+    context,
     count: options.length,
     buyable_count: options.filter((o) => o.purchasable && o.eligible).length,
+    page,
     blocked: !!data?.blocked,
     reason: typeof data?.reason === "string" ? data.reason : null,
     options,

@@ -586,11 +586,23 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         min_price: z.number().optional().describe("Price floor in USD"),
         max_price: z.number().optional().describe("Budget ceiling in USD"),
         quantity: z.number().int().optional().describe("How many units"),
+        context: z
+          .object({
+            country: z.string().optional().describe("Destination country (takes precedence over the top-level country)"),
+            city: z.string().optional().describe("Destination city (takes precedence over the top-level city)"),
+            language: z.string().optional().describe("Buyer language, BCP-47 (e.g. 'en', 'fr-CA'). Advisory."),
+            currency: z.string().optional().describe("Display currency, ISO-4217 (e.g. 'USD'). Advisory — preview does not convert money."),
+            intent: z.string().optional().describe("Free-text buyer preference (e.g. 'prefers eco-friendly'). Recorded; shapes ranking only in firestarter_execute."),
+          })
+          .optional()
+          .describe("Structured buyer context: destination, locale, currency, and intent."),
+        limit: z.number().int().optional().describe("Max options per page (1-50, default 10)."),
+        cursor: z.string().optional().describe("Opaque pagination cursor from a prior preview's page.next_cursor to fetch the next page."),
       },
       outputSchema: previewOutputShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ query, country, city, deadline, min_price, max_price, quantity }: {
+    async ({ query, country, city, deadline, min_price, max_price, quantity, context, limit, cursor }: {
       query: string;
       country?: string;
       city?: string;
@@ -598,29 +610,43 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       min_price?: number;
       max_price?: number;
       quantity?: number;
+      context?: { country?: string; city?: string; language?: string; currency?: string; intent?: string };
+      limit?: number;
+      cursor?: string;
     }) => {
       try {
+        const ctx = context ?? {};
+        const destCountry = ctx.country ?? country;
+        const destCity = ctx.city ?? city;
+        const language = ctx.language;
+        const currency = ctx.currency ? ctx.currency.toUpperCase() : undefined;
+        const intent = ctx.intent;
         const params = new URLSearchParams({ q: query });
-        if (country) params.set("country", country);
-        if (city) params.set("city", city);
+        if (destCountry) params.set("country", destCountry);
+        if (destCity) params.set("city", destCity);
         if (deadline) params.set("deadline", deadline);
         if (min_price != null) params.set("min", String(min_price));
         if (max_price != null) params.set("max", String(max_price));
         if (quantity != null) params.set("qty", String(quantity));
+        if (language) params.set("language", language);
+        if (currency) params.set("currency", currency);
+        if (intent) params.set("intent", intent);
+        if (limit != null) params.set("limit", String(limit));
+        if (cursor) params.set("cursor", cursor);
 
         const data = await apiRequest("GET", `/commerce/preview?${params.toString()}`);
 
         if (data.blocked) {
           return {
             content: [{ type: "text" as const, text: `Can't preview that: ${data.reason || "the item isn't supported on Firestarter."}` }],
-            structuredContent: toPreviewStructured(data, { query, country, city }),
+            structuredContent: toPreviewStructured(data, { query, country: destCountry, city: destCity, language, currency, intent }),
           };
         }
         const options: any[] = Array.isArray(data.options) ? data.options : [];
         if (options.length === 0) {
           return {
             content: [{ type: "text" as const, text: `No matching products found for "${data.query || query}". Try a broader query, or drop the price/deadline filters.` }],
-            structuredContent: toPreviewStructured(data, { query, country, city }),
+            structuredContent: toPreviewStructured(data, { query, country: destCountry, city: destCity, language, currency, intent }),
           };
         }
 
@@ -649,7 +675,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
         return {
           content: [{ type: "text" as const, text }],
-          structuredContent: toPreviewStructured(data, { query, country, city }),
+          structuredContent: toPreviewStructured(data, { query, country: destCountry, city: destCity, language, currency, intent }),
         };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
