@@ -91,6 +91,22 @@
           },
           "quantity": {
             "type": "number"
+          },
+          "context": {
+            "type": "object",
+            "properties": {
+              "country": { "type": "string" },
+              "city": { "type": "string" },
+              "language": { "type": "string" },
+              "currency": { "type": "string" },
+              "intent": { "type": "string" }
+            }
+          },
+          "limit": {
+            "type": "number"
+          },
+          "cursor": {
+            "type": "string"
           }
         },
         "required": [
