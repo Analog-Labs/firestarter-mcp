@@ -10,6 +10,7 @@
  * See MCP_P1_STRUCTURED_OUTPUTS.html for the audit + rollout plan.
  */
 import { z } from "zod";
+import { toMinorUnits } from "./ucp-schema.js";
 
 /** Dated schema version, surfaced in every structured payload (à la UCP). */
 export const MCP_OUTPUT_SCHEMA_VERSION = "2026-07-07";
@@ -106,8 +107,9 @@ export function toPreviewStructured(
       title: typeof o?.title === "string" ? o.title : "",
       price_usd,
       currency,
-      // Machine-precise money in the option's native currency, alongside the float above.
-      price: { currency, amount_minor: price_usd != null ? Math.round(price_usd * 100) : null },
+      // Machine-precise money in the option's native currency, alongside the float
+      // above. Minor units honor the ISO-4217 exponent (USD=2, JPY=0, KWD=3).
+      price: { currency, amount_minor: toMinorUnits(price_usd, currency) },
       shipping: { known, amount_usd },
       total_usd,
       seller: typeof o?.seller === "string" ? o.seller : null,
