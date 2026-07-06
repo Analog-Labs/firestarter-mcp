@@ -211,6 +211,21 @@ export async function fetchImageAsBase64(url: string): Promise<{ data: string; m
   }
 }
 
+/** Fetch up to MAX_EMBED_IMAGES of the given URLs and return MCP image blocks so
+ *  any connected client (Claude/GPT/Cursor/Copilot) renders the product photos
+ *  inline. Dedupes, skips non-http URLs and unsupported formats, and silently
+ *  drops any fetch that fails so a bad image never poisons the whole tool
+ *  response. The bare URLs stay in the text/structured payload for chat clients
+ *  that unfurl links instead. */
+async function inlineImageBlocks(urls: Array<string | null | undefined>): Promise<Array<{ type: "image"; data: string; mimeType: string }>> {
+  const picked = [...new Set(urls.filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u)))].slice(0, MAX_EMBED_IMAGES);
+  if (picked.length === 0) return [];
+  const fetched = await Promise.all(picked.map(fetchImageAsBase64));
+  const blocks: Array<{ type: "image"; data: string; mimeType: string }> = [];
+  for (const img of fetched) if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
+  return blocks;
+}
+
 async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Promise<ContentBlock[]> {
   const blocks: ContentBlock[] = [];
   const lines: string[] = [];
@@ -673,8 +688,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           ? `\n\n${buyableEligible} option${buyableEligible === 1 ? " is" : "s are"} buyable now — call firestarter_execute (or pass a listing_id) to purchase, after confirming with the buyer.`
           : `\n\nNone of these can be purchased through Firestarter right now — share the browse links, or refine the query toward checkout-ready listings.`;
 
+        // Inline the top options' photos so MCP clients (Claude/Cursor/Copilot)
+        // render them; the image URLs also remain in structuredContent for chat
+        // clients that unfurl links.
+        const previewImages = await inlineImageBlocks(options.map((o) => o.image_url ?? o.image));
         return {
-          content: [{ type: "text" as const, text }],
+          content: [{ type: "text" as const, text }, ...previewImages],
           structuredContent: toPreviewStructured(data, { query, country: destCountry, city: destCity, language, currency, intent }),
         };
       } catch (err: any) {
@@ -2165,7 +2184,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         lines.push(
           "\nTo buy a **buyable** item, call `firestarter_execute` with `listing_id` set to its id. **Browse-only** items can't be checked out here — share the link so the buyer can view them, and suggest the seller finish Stripe Connect to enable checkout.",
         );
-        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        // Inline each listing's first photo so MCP clients render them; the URLs
+        // also remain in the text above for chat clients that unfurl links.
+        const catalogImages = await inlineImageBlocks(listings.map((l) => (Array.isArray(l.images) ? l.images[0] : null)));
+        return { content: [{ type: "text" as const, text: lines.join("\n") }, ...catalogImages] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error searching catalog: ${toErrorMessage(err)}` }], isError: true };
       }
