@@ -12,7 +12,7 @@ import { pool } from "../db/pool.js";
 import { logger } from "../lib/logger.js";
 
 const API_URL = process.env.API_URL || "https://api.firestarter.network";
-const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // reject anything over 6MB
+export const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // reject anything over 6MB
 const THUMB_MAX_DIM = 320; // px — list/search/gallery thumbnails
 const DATA_URI_RE = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/;
 
