@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { marginCentsFor } from "../lib/margin.js";
 import { isRelevantMatch } from "../lib/relevance.js";
+import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS } from "./schemas.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -413,6 +414,22 @@ async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Prom
 
 // ─── Register all tools ─────────────────────────────────────────────────────
 
+/**
+ * Register a tool, preferring the modern `registerTool` API so the tool can
+ * advertise a typed `outputSchema` and return `structuredContent`. Falls back to
+ * the classic `tool()` signature for minimal server doubles (e.g. the unit-test
+ * fakes that only implement `tool`); the fallback omits the outputSchema, which
+ * is fine for those content-only tests.
+ */
+function registerToolCompat(server: McpServer, name: string, config: any, handler: any): void {
+  const s = server as any;
+  if (typeof s.registerTool === "function") {
+    s.registerTool(name, config, handler);
+  } else {
+    s.tool(name, config.description, config.inputSchema, handler);
+  }
+}
+
 export function registerTools(server: McpServer, apiKey: string, apiBase: string) {
   const apiRequest = makeApiRequest(apiKey, apiBase);
 
@@ -555,19 +572,33 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Phase A: keyless commerce preview surfaced as a read-only tool. Shows real
   // options + prices + buyability + per-option eligibility WITHOUT creating an
   // execution, so an agent can answer "what can you get me?" before committing.
-  server.tool(
+  registerToolCompat(
+    server,
     "firestarter_preview",
-    "Preview real products for a natural-language request WITHOUT starting a purchase. Returns live options with prices, whether each can be bought through Firestarter (vs browse-only), shipping, and per-option eligibility — in budget, can arrive by the deadline, and ships to the destination. Use it to show the buyer what's available and answer \"what can you get me?\" before committing to firestarter_execute. Read-only: nothing is bought and no approval is created.",
     {
-      query: z.string().describe("What to look for, e.g. 'polo t-shirt' or 'wireless earbuds under $50'"),
-      country: z.string().optional().describe("Destination country (ISO alpha-2 or common name) — enables shipping/serviceability checks"),
-      city: z.string().optional().describe("Destination city"),
-      deadline: z.string().optional().describe("Delivery deadline, e.g. 'Friday', 'in 3 days', '2026-07-03'"),
-      min_price: z.number().optional().describe("Price floor in USD"),
-      max_price: z.number().optional().describe("Budget ceiling in USD"),
-      quantity: z.number().int().optional().describe("How many units"),
+      description:
+        "Preview real products for a natural-language request WITHOUT starting a purchase. Returns live options with prices, whether each can be bought through Firestarter (vs browse-only), shipping, and per-option eligibility — in budget, can arrive by the deadline, and ships to the destination. Use it to show the buyer what's available and answer \"what can you get me?\" before committing to firestarter_execute. Read-only: nothing is bought and no approval is created.",
+      inputSchema: {
+        query: z.string().describe("What to look for, e.g. 'polo t-shirt' or 'wireless earbuds under $50'"),
+        country: z.string().optional().describe("Destination country (ISO alpha-2 or common name) — enables shipping/serviceability checks"),
+        city: z.string().optional().describe("Destination city"),
+        deadline: z.string().optional().describe("Delivery deadline, e.g. 'Friday', 'in 3 days', '2026-07-03'"),
+        min_price: z.number().optional().describe("Price floor in USD"),
+        max_price: z.number().optional().describe("Budget ceiling in USD"),
+        quantity: z.number().int().optional().describe("How many units"),
+      },
+      outputSchema: previewOutputShape,
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ query, country, city, deadline, min_price, max_price, quantity }) => {
+    async ({ query, country, city, deadline, min_price, max_price, quantity }: {
+      query: string;
+      country?: string;
+      city?: string;
+      deadline?: string;
+      min_price?: number;
+      max_price?: number;
+      quantity?: number;
+    }) => {
       try {
         const params = new URLSearchParams({ q: query });
         if (country) params.set("country", country);
@@ -580,24 +611,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const data = await apiRequest("GET", `/commerce/preview?${params.toString()}`);
 
         if (data.blocked) {
-          return { content: [{ type: "text" as const, text: `Can't preview that: ${data.reason || "the item isn't supported on Firestarter."}` }] };
+          return {
+            content: [{ type: "text" as const, text: `Can't preview that: ${data.reason || "the item isn't supported on Firestarter."}` }],
+            structuredContent: toPreviewStructured(data, { query, country, city }),
+          };
         }
         const options: any[] = Array.isArray(data.options) ? data.options : [];
         if (options.length === 0) {
-          return { content: [{ type: "text" as const, text: `No matching products found for "${data.query || query}". Try a broader query, or drop the price/deadline filters.` }] };
+          return {
+            content: [{ type: "text" as const, text: `No matching products found for "${data.query || query}". Try a broader query, or drop the price/deadline filters.` }],
+            structuredContent: toPreviewStructured(data, { query, country, city }),
+          };
         }
-
-        // Human-readable reason copy for the non-blocking + blocking codes.
-        const reasonText: Record<string, string> = {
-          NOT_CHECKOUT_CAPABLE: "browse-only (can't check out here)",
-          BUDGET_EXCEEDED: "over budget",
-          BELOW_MIN_BUDGET: "below your price floor",
-          OUT_OF_STOCK: "out of stock",
-          RELEVANCE_BELOW_FLOOR: "weak match",
-          DEADLINE_INFEASIBLE: "can't arrive by the deadline",
-          DEADLINE_UNKNOWN: "delivery time unknown",
-          DESTINATION_UNSERVICEABLE: "doesn't ship to that destination",
-        };
 
         let text = `**Preview for "${data.query || query}"** (${options.length} option${options.length === 1 ? "" : "s"})\n`;
         const buyableEligible = options.filter((o) => o.purchasable && o.eligible).length;
@@ -613,7 +638,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             if (o.eligible) {
               text += `\n   ✓ eligible to buy now`;
             } else {
-              const blockers = (o.reasons || []).map((r: string) => reasonText[r] || r);
+              const blockers = (o.reasons || []).map((r: string) => PREVIEW_REASON_LABELS[r] || r);
               text += `\n   ⚠ not eligible: ${blockers.join("; ") || "see details"}`;
             }
           }
@@ -622,7 +647,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           ? `\n\n${buyableEligible} option${buyableEligible === 1 ? " is" : "s are"} buyable now — call firestarter_execute (or pass a listing_id) to purchase, after confirming with the buyer.`
           : `\n\nNone of these can be purchased through Firestarter right now — share the browse links, or refine the query toward checkout-ready listings.`;
 
-        return { content: [{ type: "text" as const, text }] };
+        return {
+          content: [{ type: "text" as const, text }],
+          structuredContent: toPreviewStructured(data, { query, country, city }),
+        };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
