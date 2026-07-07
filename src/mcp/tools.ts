@@ -927,14 +927,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const detail = card.card ? `${card.card.brand} ending in ${card.card.last4} (expires ${card.card.exp_month}/${card.card.exp_year})` : "saved";
           let text = `**Payment method on file:** ${detail}\n\nOrders will charge this card automatically.\n\n`;
           const setup = await apiRequest("POST", "/v1/billing/setup-payment");
-          text += `To update or add a different card:\n${setup.url}\n\n`;
+          text += `To update or add a different card:\n${setup.short_url || setup.url}\n\n`;
           text += `Or go to your dashboard settings: https://firestarter.network/dashboard?tab=settings`;
           return { content: [{ type: "text" as const, text }] };
         }
         // No payment method - get a setup link
         const setup = await apiRequest("POST", "/v1/billing/setup-payment");
         let text = "**No payment method on file.** A card is needed before any purchase can complete.\n\n";
-        text += `Add a card (no login needed, works from any device):\n${setup.url}\n\n`;
+        text += `Add a card (no login needed, works from any device):\n${setup.short_url || setup.url}\n\n`;
         text += `Or add one from your dashboard settings: https://firestarter.network/dashboard?tab=settings\n\n`;
         text += `Once added, any pending orders resume automatically.`;
         return { content: [{ type: "text" as const, text }] };
