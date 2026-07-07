@@ -13,6 +13,18 @@ import { logger } from "../lib/logger.js";
 
 const API_URL = process.env.API_URL || "https://api.firestarter.network";
 export const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // reject anything over 6MB
+
+/**
+ * HTTP request-body ceiling for the upload endpoints that carry image/document
+ * bytes (base64 product images + multipart ticket attachments). Both are bounded
+ * by MAX_IMAGE_BYTES, but base64 inflates the payload by 4/3 and rides inside a
+ * data-URI + JSON envelope, so the transport limit must sit above the raw image
+ * cap or a maxed-out image is rejected by the body-limit middleware before the
+ * store's own check can return a clean, typed error. 4/3 for base64 + 256KB of
+ * headroom for the data-URI prefix and JSON keys. Every non-upload route stays
+ * on the tight default limit set in index.ts.
+ */
+export const MAX_UPLOAD_BODY_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 256 * 1024;
 const THUMB_MAX_DIM = 320; // px — list/search/gallery thumbnails
 const DATA_URI_RE = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/;
 

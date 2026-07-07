@@ -1091,7 +1091,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_spend_cap
   server.tool(
     "firestarter_spend_cap",
-    "Read or set the buyer's monthly spend cap — a safety limit that prevents agents from overspending. When set, any purchase that would push the month's total past the cap is rejected with SPEND_CAP_EXCEEDED. Also shows/sets the alert threshold (default 80%) at which a warning fires. Use when the buyer says 'set a spending limit', 'what's my budget?', or 'cap my spending at $X'. Pass no arguments to read the current cap.",
+    "Read, raise, lower, set, or remove the buyer's monthly spend cap - the safety limit on total monthly spend. THIS is the tool for changing the spending limit: call it whenever the buyer wants to increase, raise, bump, set, lower, or change their cap (e.g. 'increase my spending cap to $100', 'raise my limit to $X', 'set a spending limit', 'cap my spending at $X', 'what's my budget?'). IMPORTANT: when a purchase is rejected with SPEND_CAP_EXCEEDED and the buyer wants to proceed, call THIS tool with a higher spend_cap_dollars and then retry the purchase - never tell the buyer you cannot change the cap. Pass no arguments to read the current cap; set disable:true to remove it entirely. Also shows/sets the alert threshold (default 80%) at which a warning fires.",
     {
       spend_cap_dollars: z.number().min(1).optional().describe("New monthly spend cap in dollars (e.g. 500 = $500/month). Omit to just read the current value."),
       alert_threshold_pct: z.number().int().min(1).max(100).optional().describe("Fire a warning when monthly spend reaches this % of the cap. Default 80."),
