@@ -25,7 +25,7 @@
   "tools": [
     {
       "name": "firestarter_execute",
-      "description": "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL \u2014 it does NOT pay yet. Full flow: firestarter_execute (find/price) \u2192 review options with the buyer \u2192 firestarter_approve (confirm + pay) \u2192 firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this. If the buyer has a saved shipping address, it is used automatically \u2014 you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\\",
+      "description": "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -126,7 +126,7 @@
     },
     {
       "name": "firestarter_status",
-      "description": "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live). Use this to check on orders, see what options were found, get tracking updates, or confirm whether you are in test/sandbox mode. Firestarter DOES have a test mode: an `fs_test_\u2026` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking \u2014 no real money moves and no real seller is contacted); an `fs_live_\u2026` key is real. The mode is fixed by the configured API key, not a per-call option.",
+      "description": "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live). Use this to check on orders, see what options were found, get tracking updates, or confirm whether you are in test/sandbox mode. Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -142,7 +142,7 @@
     },
     {
       "name": "firestarter_approve",
-      "description": "Confirm and place an order that is awaiting approval \u2014 this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval \u2192 you confirm the ship-to with the buyer \u2192 firestarter_approve places and pays for the order \u2192 the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically \u2014 you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved \u2014 browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \\",
+      "description": "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -164,7 +164,7 @@
     },
     {
       "name": "firestarter_addresses",
-      "description": "List the buyer's saved shipping addresses (masked). Use this to see if they already have an address on file BEFORE asking them to type one \u2014 then pass the matching `address_id` to firestarter_execute or firestarter_approve. The default address (used automatically at approval) is marked. Values are masked (partial street, no zip/phone); you don't need the full address to reference it by id.",
+      "description": "List the buyer's saved shipping addresses (masked). Use this to see if they already have an address on file BEFORE asking them to type one — then pass the matching `address_id` to firestarter_execute or firestarter_approve. The default address (used automatically at approval) is marked. Values are masked (partial street, no zip/phone); you don't need the full address to reference it by id.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -173,7 +173,7 @@
     },
     {
       "name": "firestarter_auto_approve_limit",
-      "description": "Read or set the buyer's PERSISTENT, account-level auto-approval limit for purchases. This is a real stored account setting (not a chat note or session memory): orders whose total is at or below the limit are auto-approved and paid without a manual confirmation step, and anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Call with NO arguments to report the current limit. To change it, pass set_limit_usd (e.g. 50 for '$50 per order'; 0 makes every order require manual approval) OR disable=true to turn auto-approval off entirely. The maximum limit is $10,000. Always confirm the exact dollar amount with the buyer before setting it \u2014 never invent, assume, or round a value the buyer did not state. Only report success after this tool returns a confirmation.",
+      "description": "Read or set the buyer's PERSISTENT, account-level auto-approval limit for purchases. This is a real stored account setting (not a chat note or session memory): orders whose total is at or below the limit are auto-approved and paid without a manual confirmation step, and anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Call with NO arguments to report the current limit. To change it, pass set_limit_usd (e.g. 50 for '$50 per order'; 0 makes every order require manual approval) OR disable=true to turn auto-approval off entirely. The maximum limit is $10,000. Always confirm the exact dollar amount with the buyer before setting it — never invent, assume, or round a value the buyer did not state. Only report success after this tool returns a confirmation.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -216,7 +216,7 @@
     },
     {
       "name": "firestarter_track_order",
-      "description": "Track a shipped order's delivery status. Returns carrier, tracking number, estimated delivery, and current location/events. Use when a buyer asks 'where's my order?' or 'when will it arrive?'. Only works after an order has been paid and shipped \u2014 for unpaid/unshipped orders, use firestarter_status instead.",
+      "description": "Track a shipped order's delivery status. Returns carrier, tracking number, estimated delivery, and current location/events. Use when a buyer asks 'where's my order?' or 'when will it arrive?'. Only works after an order has been paid and shipped — for unpaid/unshipped orders, use firestarter_status instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -249,7 +249,7 @@
     },
     {
       "name": "firestarter_receipt",
-      "description": "Get the payment receipt for an order the buyer has already paid for (after firestarter_approve completed). Returns an itemized breakdown \u2014 item, subtotal, shipping, tax, total \u2014 plus payment method and date, suitable for expense or invoice records. Use whenever the buyer asks for a receipt, invoice, proof of payment, or expense documentation. If the order hasn't been paid yet, there's no receipt: check firestarter_status instead. For delivery progress use firestarter_track_order; to send the item back use firestarter_return.",
+      "description": "Get the payment receipt for an order the buyer has already paid for (after firestarter_approve completed). Returns an itemized breakdown — item, subtotal, shipping, tax, total — plus payment method and date, suitable for expense or invoice records. Use whenever the buyer asks for a receipt, invoice, proof of payment, or expense documentation. If the order hasn't been paid yet, there's no receipt: check firestarter_status instead. For delivery progress use firestarter_track_order; to send the item back use firestarter_return.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -410,7 +410,7 @@
     },
     {
       "name": "firestarter_list",
-      "description": "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults \u2014 do NOT interrogate the seller for category, inventory, shipping, or ship-from. Create the listing immediately with what you have, then tell them what defaulted and how to refine it. Defaults when omitted: inventory unlimited, shipping = network default ($9.99, free over $50), ship-from = account default address, ships domestic only. If the seller already sent a photo in the conversation, reuse that URL in image_urls \u2014 never ask them to re-send it. The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
+      "description": "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults — do NOT interrogate the seller for category, inventory, shipping, or ship-from. Create the listing immediately with what you have, then tell them what defaulted and how to refine it. Defaults when omitted: inventory unlimited, shipping = network default ($9.99, free over $50), ship-from = account default address, ships domestic only. If the seller already sent a photo in the conversation, reuse that URL in image_urls — never ask them to re-send it. The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -616,7 +616,7 @@
     },
     {
       "name": "firestarter_payouts",
-      "description": "Manage seller payout method \u2014 REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Supports four providers: Stripe (46 countries), PayPal (200+ countries), Wise (80+ currencies, best for APAC), and Payoneer (190+ countries, popular with TikTok Shop/Amazon sellers). Call with no arguments to check current status. Pass provider to set up a new method. If the seller is outside the US/EU, suggest PayPal (easiest), Wise (best rates for APAC), or Payoneer (if they already have one from TikTok/Amazon).",
+      "description": "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Supports four providers: Stripe (46 countries), PayPal (200+ countries), Wise (80+ currencies, best for APAC), and Payoneer (190+ countries, popular with TikTok Shop/Amazon sellers). Call with no arguments to check current status. Pass provider to set up a new method. If the seller is outside the US/EU, suggest PayPal (easiest), Wise (best rates for APAC), or Payoneer (if they already have one from TikTok/Amazon).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -651,7 +651,7 @@
     },
     {
       "name": "firestarter_connect_shopify",
-      "description": "Connect a seller's Shopify store to Firestarter \u2014 step 1 of the Shopify flow: connect_shopify \u2192 (catalog syncs automatically) \u2192 firestarter_listings to see imported products \u2192 firestarter_sync_shopify to refresh after store edits \u2192 orders arrive via firestarter_seller_orders \u2192 firestarter_ship_order. Call with NO arguments first: if a store is already connected it returns the connection status, store name, and last sync time (and you're done); if not, it tells you to ask for the store handle. Once you have the handle, call again with shop_handle to mint a one-click install link \u2014 the seller clicks it, approves on Shopify, and their whole catalog syncs into Firestarter automatically (no tokens to paste). Use this whenever a seller mentions Shopify, wants to connect/link their store, or asks why their products aren't showing up. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain). To force a fresh catalog pull on an already-connected store, use firestarter_sync_shopify instead.",
+      "description": "Connect a seller's Shopify store to Firestarter — step 1 of the Shopify flow: connect_shopify → (catalog syncs automatically) → firestarter_listings to see imported products → firestarter_sync_shopify to refresh after store edits → orders arrive via firestarter_seller_orders → firestarter_ship_order. Call with NO arguments first: if a store is already connected it returns the connection status, store name, and last sync time (and you're done); if not, it tells you to ask for the store handle. Once you have the handle, call again with shop_handle to mint a one-click install link — the seller clicks it, approves on Shopify, and their whole catalog syncs into Firestarter automatically (no tokens to paste). Use this whenever a seller mentions Shopify, wants to connect/link their store, or asks why their products aren't showing up. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain). To force a fresh catalog pull on an already-connected store, use firestarter_sync_shopify instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -680,7 +680,7 @@
     },
     {
       "name": "firestarter_sync_shopify",
-      "description": "Re-sync a connected store's catalog into Firestarter \u2014 pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter. Use this AFTER firestarter_connect_shopify, whenever the seller says they added/edited/removed products, prices look stale, a previous sync errored, or items aren't appearing. The store must already be connected (run firestarter_connect_shopify first if not). Syncing runs in the background and returns immediately \u2014 tell the seller it may take a moment, then confirm results with firestarter_listings. Read-mostly: it imports/updates Firestarter listings from the store but never changes the seller's Shopify store. By default it syncs the seller's connected Shopify store; pass connection_id to target a specific connection when several platforms are linked.",
+      "description": "Re-sync a connected store's catalog into Firestarter — pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter. Use this AFTER firestarter_connect_shopify, whenever the seller says they added/edited/removed products, prices look stale, a previous sync errored, or items aren't appearing. The store must already be connected (run firestarter_connect_shopify first if not). Syncing runs in the background and returns immediately — tell the seller it may take a moment, then confirm results with firestarter_listings. Read-mostly: it imports/updates Firestarter listings from the store but never changes the seller's Shopify store. By default it syncs the seller's connected Shopify store; pass connection_id to target a specific connection when several platforms are linked.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -693,7 +693,7 @@
     },
     {
       "name": "firestarter_catalog_search",
-      "description": "Search the Firestarter NETWORK catalog \u2014 products listed for sale by ALL sellers \u2014 without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag \u2014 buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it \u2014 narrow the query or raise `limit`. Read-only: never charges or changes anything.",
+      "description": "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -725,7 +725,7 @@
     },
     {
       "name": "firestarter_listings",
-      "description": "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed \u2014 every listing has a public share link (https://firestarter.network/l/<id>) that unfurls into a product card and hands purchase instructions to any AI agent that opens it.",
+      "description": "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — every listing has a public share link (https://firestarter.network/l/<id>) that unfurls into a product card and hands purchase instructions to any AI agent that opens it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -784,7 +784,7 @@
     },
     {
       "name": "firestarter_update_listing",
-      "description": "Update a listing's product details \u2014 name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also activates imported drafts (status 'active') - drafts need a positive price and at least one photo. High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code to relay, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
+      "description": "Update a listing's product details — name, description, category, inventory, or status. Use this to rename a product, change its description, update stock levels, or pause/reactivate a listing. Also activates imported drafts (status 'active') - drafts need a positive price and at least one photo. High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code to relay, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -818,7 +818,7 @@
     },
     {
       "name": "firestarter_set_shipping_policy",
-      "description": "Set where a seller is willing to ship a listing. Use this when a buyer wants delivery to a country the listing does not yet cover (a checkout came back 'seller not shipping to that destination') and the seller agrees to ship there \u2014 or whenever the seller wants to change their shipping reach. mode 'domestic' = ship-from country only (the default); mode 'list' = the home country plus the countries you name (ISO alpha-2, e.g. ['CA','GB','AU']); mode 'worldwide' = everywhere except any you exclude. Sanctioned/embargoed destinations stay blocked regardless. Sets the policy for one listing \u2014 pass its ID.",
+      "description": "Set where a seller is willing to ship a listing. Use this when a buyer wants delivery to a country the listing does not yet cover (a checkout came back 'seller not shipping to that destination') and the seller agrees to ship there — or whenever the seller wants to change their shipping reach. mode 'domestic' = ship-from country only (the default); mode 'list' = the home country plus the countries you name (ISO alpha-2, e.g. ['CA','GB','AU']); mode 'worldwide' = everywhere except any you exclude. Sanctioned/embargoed destinations stay blocked regardless. Sets the policy for one listing — pass its ID.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -864,7 +864,7 @@
     },
     {
       "name": "firestarter_delist",
-      "description": "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting \u2014 this takes the product off the market immediately.",
+      "description": "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting — this takes the product off the market immediately.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -879,7 +879,7 @@
     },
     {
       "name": "firestarter_seller_orders",
-      "description": "View the seller's incoming orders \u2014 product, quantity, amount, net payout, order status, and payout status. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) \u2192 firestarter_confirm_order (accept a pending order) \u2192 firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
+      "description": "View the seller's incoming orders — product, quantity, amount, net payout, order status, and payout status. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -888,7 +888,7 @@
     },
     {
       "name": "firestarter_confirm_order",
-      "description": "Accept a pending incoming order \u2014 step 2 of the seller fulfillment flow (firestarter_seller_orders \u2192 firestarter_confirm_order \u2192 firestarter_ship_order). Use when a seller wants to accept/confirm an order a buyer placed. Confirming notifies the buyer that the order is accepted and is the gate before shipping. Pass the order_id exactly as shown by firestarter_seller_orders (the order_id field, NOT the exec_... execution id). Only orders still in 'pending' can be confirmed \u2014 an order that's already confirmed or shipped doesn't need this; go straight to firestarter_ship_order.",
+      "description": "Accept a pending incoming order — step 2 of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). Use when a seller wants to accept/confirm an order a buyer placed. Confirming notifies the buyer that the order is accepted and is the gate before shipping. Pass the order_id exactly as shown by firestarter_seller_orders (the order_id field, NOT the exec_... execution id). Only orders still in 'pending' can be confirmed — an order that's already confirmed or shipped doesn't need this; go straight to firestarter_ship_order.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -903,7 +903,7 @@
     },
     {
       "name": "firestarter_ship_order",
-      "description": "Mark an order shipped by attaching a carrier and tracking number \u2014 the final step of the seller fulfillment flow (firestarter_seller_orders \u2192 firestarter_confirm_order \u2192 firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required; carrier is optional and defaults to USPS. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
+      "description": "Mark an order shipped by attaching a carrier and tracking number — the final step of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required; carrier is optional and defaults to USPS. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1038,7 +1038,7 @@
     },
     {
       "name": "firestarter_market_link",
-      "description": "Mint a shareable join code for a market you own (from firestarter_create_market). Give the code to your community \u2014 when a member redeems it (firestarter_join_market) they are attributed to your program (first-touch, ~90-day lock) so you earn on their activity. Optionally tag a channel/campaign for tracking.",
+      "description": "Mint a shareable join code for a market you own (from firestarter_create_market). Give the code to your community — when a member redeems it (firestarter_join_market) they are attributed to your program (first-touch, ~90-day lock) so you earn on their activity. Optionally tag a channel/campaign for tracking.",
       "inputSchema": {
         "type": "object",
         "properties": {
