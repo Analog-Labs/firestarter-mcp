@@ -95,11 +95,21 @@
           "context": {
             "type": "object",
             "properties": {
-              "country": { "type": "string" },
-              "city": { "type": "string" },
-              "language": { "type": "string" },
-              "currency": { "type": "string" },
-              "intent": { "type": "string" }
+              "country": {
+                "type": "string"
+              },
+              "city": {
+                "type": "string"
+              },
+              "language": {
+                "type": "string"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "intent": {
+                "type": "string"
+              }
             }
           },
           "limit": {
@@ -606,7 +616,7 @@
     },
     {
       "name": "firestarter_payouts",
-      "description": "Manage seller payout method (Stripe/PayPal/Wise). Call with no args to check status. Pass provider to set up.",
+      "description": "Manage seller payout method \u2014 REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Supports four providers: Stripe (46 countries), PayPal (200+ countries), Wise (80+ currencies, best for APAC), and Payoneer (190+ countries, popular with TikTok Shop/Amazon sellers). Call with no arguments to check current status. Pass provider to set up a new method. If the seller is outside the US/EU, suggest PayPal (easiest), Wise (best rates for APAC), or Payoneer (if they already have one from TikTok/Amazon).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -615,21 +625,26 @@
             "enum": [
               "stripe",
               "paypal",
-              "wise"
+              "wise",
+              "payoneer"
             ],
-            "description": "Which provider to set up. Omit to check current status."
+            "description": "Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/EU), 'paypal' = PayPal email (global), 'wise' = Wise bank transfer (APAC/global), 'payoneer' = Payoneer (190+ countries, TikTok/Amazon sellers)."
           },
           "country": {
             "type": "string",
-            "description": "ISO country code for Stripe onboarding (non-US sellers)."
+            "description": "ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Needed for Stripe onboarding for non-US sellers."
           },
           "paypal_email": {
             "type": "string",
-            "description": "PayPal email for receiving payouts. Required when provider=paypal."
+            "description": "PayPal email for receiving payouts. Required when provider='paypal'."
           },
           "wise_recipient_id": {
             "type": "string",
-            "description": "Wise recipient ID. Required when provider=wise."
+            "description": "Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."
+          },
+          "payoneer_email": {
+            "type": "string",
+            "description": "Payoneer account email. Required when provider='payoneer'."
           }
         }
       }
