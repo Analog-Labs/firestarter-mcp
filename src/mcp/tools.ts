@@ -461,7 +461,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
       budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
-      delivery_address: z.string().optional().describe("Optional. The buyer's saved default address is used automatically at approval — only pass a new address here if they have none saved or want to ship elsewhere. Prefer address_id for a saved address."),
+      delivery_address: z.object({
+        name: z.string().optional(),
+        street1: z.string().describe("Street address"),
+        street2: z.string().optional(),
+        city: z.string(),
+        state: z.string().optional(),
+        zip: z.string().optional(),
+        country: z.string().optional().describe("ISO country code, e.g. US, TH. Defaults to US."),
+        phone: z.string().optional(),
+      }).optional().describe("Optional structured shipping address. The buyer's saved default address is used automatically at approval — only pass a new address here if they have none saved or want it shipped elsewhere; prefer a saved address_id. street1 + city are always required; state + zip are also required for US/CA/AU."),
       address_id: z.string().optional().describe("A saved address id (addr_...) to ship to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Localizes search + shipping to that destination."),
       location: z
         .object({
@@ -495,7 +504,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           body.metadata = { requested_by };
         }
         if (budget_max) body.budget = { max_total: budget_max, currency: "USD" };
-        if (delivery_address) body.delivery_address = { address: delivery_address };
+        if (delivery_address) body.delivery_address = delivery_address;
         if (address_id) body.address_id = address_id;
         // Location makes the find step location-aware (local supply first) even
         // without a full delivery address. Only forward fields the buyer gave.
