@@ -39,7 +39,18 @@
             "type": "number"
           },
           "delivery_address": {
-            "type": "string"
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "street1": { "type": "string" },
+              "street2": { "type": "string" },
+              "city": { "type": "string" },
+              "state": { "type": "string" },
+              "zip": { "type": "string" },
+              "country": { "type": "string" },
+              "phone": { "type": "string" }
+            },
+            "required": ["street1", "city"]
           },
           "address_id": {
             "type": "string"
