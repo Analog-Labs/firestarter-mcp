@@ -945,15 +945,30 @@
     },
     {
       "name": "firestarter_seller_disputes",
-      "description": "View and manage disputes on the seller's orders. Lists open disputes with reasons. Use when a seller mentions a dispute, complaint, or return issue.",
+      "description": "View and resolve disputes on the seller's orders. Call with NO arguments to list open disputes (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "resolve_id": {
-            "type": "string"
+          "dispute_id": {
+            "type": "string",
+            "description": "Dispute ID to act on (disp_...). Omit to list all disputes."
           },
-          "resolution": {
-            "type": "string"
+          "action": {
+            "type": "string",
+            "enum": ["refund", "contest", "split"],
+            "description": "What to do with the dispute: 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."
+          },
+          "buyer_pct": {
+            "type": "number",
+            "description": "For action 'split': percent refunded to the buyer. buyer_pct + seller_pct must equal 100."
+          },
+          "seller_pct": {
+            "type": "number",
+            "description": "For action 'split': percent the seller keeps. buyer_pct + seller_pct must equal 100."
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "Optional note explaining the decision, recorded on the dispute and shown to the buyer."
           }
         },
         "required": []
