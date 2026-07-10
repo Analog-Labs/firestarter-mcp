@@ -2675,18 +2675,41 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   );
 
   // Tool: firestarter_seller_disputes
+  // Call with no args to LIST disputes; pass dispute_id + action to ACT on one.
+  // The action maps to the dispute engine's seller responses (voluntary_refund /
+  // contest / propose_split) so escrow actually moves. Sending a bare
+  // { resolution } string is intentionally NOT accepted by the API (it requires
+  // an explicit action), so the tool must translate the seller's intent here.
   server.tool(
     "firestarter_seller_disputes",
-    "View and manage disputes on the seller's orders. Lists open disputes with reasons. Use when a seller mentions a dispute, complaint, or return issue.",
+    "View and resolve disputes on the seller's orders. Call with NO arguments to list open disputes (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return.",
     {
-      resolve_id: z.string().optional().describe("Dispute ID to resolve. Omit to list all disputes."),
-      resolution: z.string().optional().describe("Resolution text when resolving a dispute (e.g. 'Refund issued', 'Replacement sent')."),
+      dispute_id: z.string().optional().describe("Dispute ID to act on (disp_...). Omit to list all disputes."),
+      action: z.enum(["refund", "contest", "split"]).optional().describe("What to do with the dispute: 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."),
+      buyer_pct: z.number().min(0).max(100).optional().describe("For action 'split': percent refunded to the buyer. buyer_pct + seller_pct must equal 100."),
+      seller_pct: z.number().min(0).max(100).optional().describe("For action 'split': percent the seller keeps. buyer_pct + seller_pct must equal 100."),
+      reasoning: z.string().optional().describe("Optional note explaining the decision, recorded on the dispute and shown to the buyer."),
     },
-    async ({ resolve_id, resolution }) => {
+    async ({ dispute_id, action, buyer_pct, seller_pct, reasoning }) => {
       try {
-        if (resolve_id) {
-          await apiRequest("PUT", `/v1/sellers/disputes/${resolve_id}/resolve`, { resolution: resolution || "resolved" });
-          return { content: [{ type: "text" as const, text: `**Dispute resolved.** Resolution: ${resolution || "resolved"}` }] };
+        if (dispute_id) {
+          if (!action) {
+            return { content: [{ type: "text" as const, text: `To act on dispute ${dispute_id}, choose an action: **refund** (full refund to the buyer), **contest** (reject the claim), or **split** (partial refund - give buyer_pct and seller_pct summing to 100).` }] };
+          }
+          const ENGINE_ACTION = { refund: "voluntary_refund", contest: "contest", split: "propose_split" } as const;
+          const engineAction = ENGINE_ACTION[action];
+          const payload: Record<string, unknown> = { action: engineAction };
+          if (reasoning) payload.reasoning = reasoning;
+          if (engineAction === "propose_split") {
+            payload.buyer_pct = buyer_pct ?? 50;
+            payload.seller_pct = seller_pct ?? 50;
+          }
+          await apiRequest("PUT", `/v1/sellers/disputes/${dispute_id}/resolve`, payload);
+          const summary =
+            engineAction === "voluntary_refund" ? "Full refund issued to the buyer. The escrow freeze is lifted and the order is closed."
+              : engineAction === "contest" ? "Claim contested. The buyer has been notified and can respond, counter, or escalate."
+                : `Split proposed to the buyer: ${payload.buyer_pct}% refund / ${payload.seller_pct}% to you. It applies once the buyer accepts.`;
+          return { content: [{ type: "text" as const, text: `**Dispute ${dispute_id} updated.** ${summary}` }] };
         }
         const data = await apiRequest("GET", "/v1/sellers/disputes");
         const disputes = data.disputes || [];
@@ -2695,9 +2718,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         const lines = [`**Disputes** (${disputes.length})\n`];
         for (const d of disputes) {
-          lines.push(`- **${d.product || "Order"}** - Reason: ${d.reason || "Not specified"} - Status: ${d.status}${d.resolution ? ` - Resolution: ${d.resolution}` : ""}`);
+          lines.push(`- **${d.product || "Order"}** (${d.id}) - Reason: ${d.reason || "Not specified"} - Status: ${d.status}${d.resolution ? ` - Resolution: ${d.resolution}` : ""}`);
         }
-        lines.push(`\nTo resolve a dispute, call this tool again with resolve_id.`);
+        lines.push(`\nTo act on one, call again with its dispute_id and an action (refund / contest / split).`);
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error with disputes: ${toErrorMessage(err)}` }], isError: true };
