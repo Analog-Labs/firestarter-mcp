@@ -171,7 +171,7 @@ const MAX_EMBED_IMAGES = 3; // cap inline images per response
 
 type ContentBlock =
   | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+  | { type: "image"; data: string; mimeType: string; annotations?: { audience?: ("user" | "assistant")[]; priority?: number } };
 
 // MIME types an MCP image block may carry. Anything else (svg, avif,
 // octet-stream, or an HTML error page returned with a 200) makes the model
@@ -222,12 +222,12 @@ export async function fetchImageAsBase64(url: string): Promise<{ data: string; m
  *  drops any fetch that fails so a bad image never poisons the whole tool
  *  response. The bare URLs stay in the text/structured payload for chat clients
  *  that unfurl links instead. */
-async function inlineImageBlocks(urls: Array<string | null | undefined>): Promise<Array<{ type: "image"; data: string; mimeType: string }>> {
+async function inlineImageBlocks(urls: Array<string | null | undefined>): Promise<Array<{ type: "image"; data: string; mimeType: string; annotations: { audience: ("user" | "assistant")[]; priority: number } }>> {
   const picked = [...new Set(urls.filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u)))].slice(0, MAX_EMBED_IMAGES);
   if (picked.length === 0) return [];
   const fetched = await Promise.all(picked.map(fetchImageAsBase64));
-  const blocks: Array<{ type: "image"; data: string; mimeType: string }> = [];
-  for (const img of fetched) if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
+  const blocks: Array<{ type: "image"; data: string; mimeType: string; annotations: { audience: ("user" | "assistant")[]; priority: number } }> = [];
+  for (const img of fetched) if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType, annotations: { audience: ["user", "assistant"] as const as ("user" | "assistant")[], priority: 0.8 } });
   return blocks;
 }
 
@@ -379,6 +379,14 @@ async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Prom
               : "View listing";
         optLines.push(`  ${linkLabel}: ${tidyProductUrl(opt.product_url)}`);
       }
+      // Surface the product image URL on its own line so Claude includes it in
+      // responses and chat clients (claude.ai, Telegram, Slack) auto-render a
+      // preview. The base64 image blocks above provide context to the model;
+      // this bare URL is what makes the image VISIBLE to the end user.
+      const imgUrl = opt.image_url || opt.metadata?.image;
+      if (typeof imgUrl === "string" && /^https?:\/\//i.test(imgUrl)) {
+        optLines.push(`  ${imgUrl}`);
+      }
       if (isOwnListing) {
         optLines.push(`  This is your own listing - shown so you can see how it appears to buyers. It is not offered for purchase.`);
       } else if (unconnectedStore) {
@@ -402,7 +410,7 @@ async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Prom
       if (imageUrls.length > 0) {
         const images = await Promise.all(imageUrls.map(fetchImageAsBase64));
         for (const img of images) {
-          if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
+          if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType, annotations: { audience: ["user", "assistant"] as ("user" | "assistant")[], priority: 0.8 } });
         }
       }
     }
