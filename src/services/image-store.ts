@@ -13,6 +13,10 @@ import { logger } from "../lib/logger.js";
 
 const API_URL = process.env.API_URL || "https://api.firestarter.network";
 export const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // reject anything over 6MB
+// Raster image types we accept for user uploads. Deliberately excludes
+// image/svg+xml: an SVG served from our blob host can carry inline script and
+// become a stored-XSS vector when opened directly.
+export const ALLOWED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
 /**
  * HTTP request-body ceiling for the upload endpoints that carry image/document
