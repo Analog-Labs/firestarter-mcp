@@ -964,7 +964,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_cancel
   server.tool(
     "firestarter_cancel",
-    "Cancel an active execution. If payment was authorized, the hold will be released.",
+    "Cancel an active execution. A not-yet-captured authorization hold is voided; an already-captured payment is refunded. An order that has already shipped can't be cancelled — use firestarter_return instead.",
     {
       execution_id: z.string().describe("The execution ID to cancel"),
       reason: z.string().optional().describe("Reason for cancellation"),
@@ -974,6 +974,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         await apiRequest("POST", `/v1/executions/${execution_id}/cancel`, { reason });
         return { content: [{ type: "text" as const, text: `Execution ${execution_id} cancelled.${reason ? ` Reason: ${reason}` : ""}` }] };
       } catch (err: any) {
+        if (err instanceof ApiError && err.code === "ORDER_ALREADY_SHIPPED") {
+          return { content: [{ type: "text" as const, text: `This order can't be cancelled — it's already paid and shipped. Use \`firestarter_return\` to return it for a refund.` }] };
+        }
         return { content: [{ type: "text" as const, text: `Error cancelling: ${toErrorMessage(err)}` }], isError: true };
       }
     }
@@ -989,7 +992,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     { readOnlyHint: true, destructiveHint: false },
     async ({ execution_id }) => {
       try {
-        const data = await apiRequest("GET", `/commerce/tracking/${execution_id}`);
+        // API-key-authed route. Do NOT use /commerce/tracking/:id — that one is
+        // JWT/dashboard-only and 401s an API key (mis-reported as a revoked key).
+        const data = await apiRequest("GET", `/v1/executions/${execution_id}/tracking`);
         if (!data.tracking_number) {
           return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — No tracking info yet. The seller may not have shipped it yet, or tracking hasn't been added. Use \`firestarter_status\` to check the order's current state.` }] };
         }
@@ -1008,10 +1013,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
-        // The tracking endpoint returns 404/403 for orders that haven't been
-        // paid or shipped yet — the generic error handler converts this into a
-        // misleading "API key invalid/revoked" message. Intercept and return a
-        // helpful response instead of an error.
+        // Not-ready orders come back as 200 with no tracking_number (handled above).
+        // A 404/403 (order not found for this org, or not yet trackable) must not be
+        // relayed as the generic "invalid/revoked key" message — give a helpful hint.
         if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
           return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — Not ready for tracking yet. This order may not have been paid or shipped. Use \`firestarter_status\` to check its current state.` }] };
         }
