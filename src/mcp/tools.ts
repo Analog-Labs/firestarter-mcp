@@ -166,7 +166,7 @@ async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, exec
 
 // MCP content blocks: text + image (base64) for inline rendering in any client.
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB cap
-const IMAGE_FETCH_TIMEOUT_MS = 3_000; // 3s per image (keep total under MCP client timeout)
+const IMAGE_FETCH_TIMEOUT_MS = 8_000; // 8s per image — Firestarter-hosted blobs need headroom
 const MAX_EMBED_IMAGES = 3; // cap inline images per response
 
 type ContentBlock =
@@ -193,25 +193,64 @@ function sniffImageMime(buf: Uint8Array): string | null {
   return null;
 }
 
+/** Extract the hex blob id from a Firestarter-hosted image URL (/v1/img/<id>).
+ *  Returns null for external URLs. */
+function extractBlobId(url: string): string | null {
+  const m = url.match(/\/v1\/img\/([a-f0-9]{32})(?:\?|$)/i);
+  return m ? m[1] : null;
+}
+
+/** Read a self-hosted image directly from the database — avoids the HTTP
+ *  roundtrip that fails when the MCP server can't reach its own public URL
+ *  (DNS, loopback, firewall). Falls back to null so the HTTP path can retry. */
+async function readBlobDirect(id: string): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const { pool } = await import("../db/pool.js");
+    const r = await pool.query(
+      "SELECT content_type, bytes FROM listing_image_blobs WHERE id = $1",
+      [id],
+    );
+    const row = r.rows[0];
+    if (!row?.bytes) return null;
+    const mime = (row.content_type || "").split(";")[0].trim().toLowerCase();
+    const mimeType = SUPPORTED_IMAGE_MIME.has(mime) ? mime : sniffImageMime(new Uint8Array(row.bytes));
+    if (!mimeType) return null;
+    return { data: Buffer.from(row.bytes).toString("base64"), mimeType };
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch an image URL and return base64 for MCP image blocks. Only supported
  *  formats are returned; anything else yields null so the caller silently skips
  *  the image instead of poisoning the tool response. */
 export async function fetchImageAsBase64(url: string): Promise<{ data: string; mimeType: string } | null> {
+  const blobId = extractBlobId(url);
+  if (blobId) {
+    const direct = await readBlobDirect(blobId);
+    if (direct) return direct;
+    console.error(`[firestarter-mcp] direct blob read failed for ${blobId}, falling back to HTTP`);
+  }
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(`[firestarter-mcp] image fetch failed: ${res.status} for ${url}`);
+      return null;
+    }
     const contentLength = Number(res.headers.get("content-length") || 0);
     if (contentLength > MAX_IMAGE_BYTES) return null;
     const buf = await res.arrayBuffer();
     if (buf.byteLength > MAX_IMAGE_BYTES) return null;
     const bytes = new Uint8Array(buf);
     const headerMime = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    // Trust the header only if it's a supported image type; otherwise sniff the
-    // bytes. If neither yields a supported format, skip the image entirely.
     const mimeType = SUPPORTED_IMAGE_MIME.has(headerMime) ? headerMime : sniffImageMime(bytes);
-    if (!mimeType) return null;
+    if (!mimeType) {
+      console.error(`[firestarter-mcp] unsupported image MIME: ${headerMime} for ${url}`);
+      return null;
+    }
     return { data: Buffer.from(buf).toString("base64"), mimeType };
-  } catch {
+  } catch (err) {
+    console.error(`[firestarter-mcp] image fetch error for ${url}:`, (err as Error).message);
     return null;
   }
 }
