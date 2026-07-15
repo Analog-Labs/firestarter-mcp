@@ -931,6 +931,53 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_save_address
+  server.tool(
+    "firestarter_save_address",
+    "Save a delivery address to the buyer's address book for reuse on future orders. Use this after a purchase when the buyer gave a new address, or when they explicitly ask to save an address. Pass an optional label (e.g. 'Home', 'Office', 'Mom's house') — if omitted, a default label is assigned. Set `is_default: true` to make it the default shipping address for future orders. Returns the saved address id.",
+    {
+      street1: z.string().describe("Street address line 1"),
+      street2: z.string().optional().describe("Street address line 2 (apt, suite, etc.)"),
+      city: z.string().describe("City"),
+      state: z.string().optional().describe("State / province / region"),
+      zip: z.string().optional().describe("Postal / ZIP code"),
+      country: z.string().optional().describe("ISO country code (e.g. US, PK, KE). Defaults to US."),
+      name: z.string().optional().describe("Recipient name"),
+      phone: z.string().optional().describe("Phone number for delivery"),
+      label: z.string().optional().describe("Label for this address (e.g. 'Home', 'Office', 'Warehouse'). If omitted, a default label is assigned."),
+      is_default: z.boolean().optional().describe("Set to true to make this the default shipping address."),
+    },
+    async (args) => {
+      try {
+        const body: Record<string, unknown> = {
+          street1: args.street1,
+          city: args.city,
+          country: args.country || "US",
+        };
+        if (args.street2) body.street2 = args.street2;
+        if (args.state) body.state = args.state;
+        if (args.zip) body.zip = args.zip;
+        if (args.name) body.name = args.name;
+        if (args.phone) body.phone = args.phone;
+        if (args.label) body.label = args.label;
+        if (args.is_default) body.is_default = args.is_default;
+
+        const saved = await apiRequest("POST", "/v1/addresses", body);
+        const place = [saved.city, saved.state, saved.country].filter(Boolean).join(", ");
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Address saved as "${saved.label || "Address"}" (${place}).` +
+              `\nid: \`${saved.id}\`${saved.is_default ? " (default)" : ""}` +
+              `\nUse this \`address_id\` on future firestarter_execute / firestarter_approve calls to ship here.`,
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error saving address: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_payment_method
   server.tool(
     "firestarter_payment_method",
