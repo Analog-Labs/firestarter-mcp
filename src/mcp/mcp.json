@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 47 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 48 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -180,6 +180,49 @@
         "type": "object",
         "properties": {},
         "required": []
+      }
+    },
+    {
+      "name": "firestarter_save_address",
+      "description": "Save a delivery address to the buyer's address book for reuse on future orders. Use this after a purchase when the buyer gave a new address, or when they explicitly ask to save an address. Pass an optional label (e.g. 'Home', 'Office', 'Mom's house') — if omitted, a default label is assigned. Set `is_default: true` to make it the default shipping address for future orders. Returns the saved address id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "street1": {
+            "type": "string"
+          },
+          "street2": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "street1",
+          "city"
+        ]
       }
     },
     {
