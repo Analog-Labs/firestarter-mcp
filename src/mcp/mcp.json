@@ -1098,6 +1098,11 @@
               "developer"
             ],
             "description": "Program type. Default community."
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Buyer-facing community name, e.g. 'Analog'. Displayed on join/browse/community surfaces."
           }
         },
         "required": [
@@ -1146,6 +1151,10 @@
           "code": {
             "type": "string",
             "description": "The market share code."
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Set true only after the buyer explicitly confirms switching from another locked community."
           }
         },
         "required": [

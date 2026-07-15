@@ -2832,12 +2832,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         share_bps: z.number().int().min(0).max(10000).describe("Cut of Firestarter's platform fee in basis points (1000 = 10%). Capped at the platform self-serve max; the response returns the effective value."),
         type: z.enum(["community", "developer"]).optional().describe("Program type. Default 'community'."),
+        display_name: z.string().max(60).optional().describe("Buyer-facing community name, e.g. 'Analog'. Displayed on join/browse/community surfaces."),
       },
-      async ({ share_bps, type }) => {
+      async ({ share_bps, type, display_name }) => {
         try {
-          const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps });
+          const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps, display_name });
           const p = res.program ?? {};
-          let text = `**Market created.** Program id: \`${p.id}\`. Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee`;
+          let text = `**Market created.**${p.display_name ? ` ${p.display_name}.` : ""} Program id: \`${p.id}\`. Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee`;
           if (res.override_bps_capped) text += ` (capped from your request to the platform max of ${(Number(res.max_self_serve_bps ?? 0) / 100).toFixed(2)}%)`;
           text += `.\n\nNext: firestarter_market_link with program_id \`${p.id}\` to get a share code. Members who join through it have their purchases (and, when enabled, their sales) attributed to you. Earnings: firestarter_market_earnings.`;
           return { content: [{ type: "text" as const, text }] };
@@ -2886,16 +2887,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. First-touch: the first market joined locks for ~90 days. Use when a user pastes a Firestarter join/market code or asks to join a community's market.",
       {
         code: z.string().describe("The market share code the community gave you."),
+        force: z.boolean().optional().describe("Set true only after the buyer explicitly confirms switching from another locked community."),
       },
-      async ({ code }) => {
+      async ({ code, force }) => {
         try {
-          const res = await apiRequest("POST", "/v1/attribution/redeem", { code });
+          const res = await apiRequest("POST", "/v1/attribution/redeem", { code, force: force === true });
           if (res.idempotent) return { content: [{ type: "text" as const, text: "You're already in this market — nothing changed." }] };
-          if (res.replaced) return { content: [{ type: "text" as const, text: "Joined — your attribution moved to this market (the previous lock had expired)." }] };
+          if (res.replaced) return { content: [{ type: "text" as const, text: `Joined — your attribution moved to this market${force ? " after your explicit switch confirmation" : " (the previous lock had expired)"}.` }] };
           return { content: [{ type: "text" as const, text: "**Joined the market.** Your future buys (and sells, when that's enabled) credit this community." }] };
         } catch (err: any) {
           const msg = toErrorMessage(err);
-          if (/locked/i.test(msg)) return { content: [{ type: "text" as const, text: "You're locked to another market right now and can't switch yet (first-touch lock). Try again after the lock window." }] };
+          if (/locked/i.test(msg)) return { content: [{ type: "text" as const, text: "You're locked to another market right now. Ask the buyer to confirm the switch, then call this tool again with `force: true`." }] };
           return { content: [{ type: "text" as const, text: `Couldn't join: ${msg}` }], isError: true };
         }
       }

@@ -9,6 +9,9 @@
  * handlers (captured via a fake McpServer) against a mocked global fetch.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { registerTools } from "../../src/mcp/tools.js";
 
 type ToolHandler = (args: any) => Promise<any>;
@@ -25,6 +28,16 @@ function captureTools(): Record<string, ToolHandler> {
 
 function textOf(res: any): string {
   return res.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+}
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, "..", "..");
+
+function staticManifestTool(name: string): any {
+  const manifest = JSON.parse(readFileSync(resolve(repoRoot, "src", "mcp", "mcp.json"), "utf8"));
+  const tool = manifest.tools.find((t: any) => t.name === name);
+  expect(tool, `missing static MCP manifest tool ${name}`).toBeTruthy();
+  return tool;
 }
 
 let savedFlag: string | undefined;
@@ -58,19 +71,29 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     expect(typeof tools.firestarter_join_market).toBe("function");
   });
 
+  it("static MCP manifest advertises community display names and explicit force joins", () => {
+    const createProps = staticManifestTool("firestarter_create_market").inputSchema.properties;
+    expect(createProps.display_name).toMatchObject({ type: "string", maxLength: 60 });
+
+    const joinProps = staticManifestTool("firestarter_join_market").inputSchema.properties;
+    expect(joinProps.force).toMatchObject({ type: "boolean" });
+  });
+
   it("firestarter_create_market POSTs the program and surfaces the cap", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
       expect(String(url)).toContain("/v1/attribution/programs");
       const body = JSON.parse(init.body);
       expect(body.override_bps).toBe(5000);
       expect(body.type).toBe("community");
+      expect(body.display_name).toBe("Analog");
       return new Response(
-        JSON.stringify({ program: { id: "apg_x", override_bps: 2000 }, max_self_serve_bps: 2000, override_bps_capped: true }),
+        JSON.stringify({ program: { id: "apg_x", override_bps: 2000, display_name: "Analog" }, max_self_serve_bps: 2000, override_bps_capped: true }),
         { status: 201, headers: { "Content-Type": "application/json" } },
       );
     }));
-    const text = textOf(await captureTools().firestarter_create_market({ share_bps: 5000 }));
+    const text = textOf(await captureTools().firestarter_create_market({ share_bps: 5000, display_name: "Analog" }));
     expect(text).toContain("apg_x");
+    expect(text).toContain("Analog");
     expect(text).toContain("20.00%"); // effective 2000 bps after the cap
     expect(text).toContain("capped");
     expect(text).toContain("firestarter_market_link"); // points the agent to the next step
@@ -87,12 +110,23 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
   });
 
   it("firestarter_join_market redeems a code (first-touch)", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
       expect(String(url)).toContain("/v1/attribution/redeem");
+      expect(JSON.parse(init.body)).toMatchObject({ code: "ABCD1234", force: false });
       return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const text = textOf(await captureTools().firestarter_join_market({ code: "ABCD1234" }));
     expect(text).toContain("Joined the market");
+  });
+
+  it("firestarter_join_market can force only after explicit buyer confirmation", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
+      expect(String(url)).toContain("/v1/attribution/redeem");
+      expect(JSON.parse(init.body)).toMatchObject({ code: "WXYZ", force: true });
+      return new Response(JSON.stringify({ ok: true, replaced: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const text = textOf(await captureTools().firestarter_join_market({ code: "WXYZ", force: true }));
+    expect(text).toContain("explicit switch confirmation");
   });
 
   it("firestarter_join_market relays a lock conflict gracefully (not an error)", async () => {
