@@ -231,7 +231,7 @@ async function inlineImageBlocks(urls: Array<string | null | undefined>): Promis
   return blocks;
 }
 
-async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Promise<ContentBlock[]> {
+async function formatExecution(exec: any): Promise<ContentBlock[]> {
   const blocks: ContentBlock[] = [];
   const lines: string[] = [];
 
@@ -400,18 +400,20 @@ async function formatExecution(exec: any, opts?: { skipImages?: boolean }): Prom
 
     // Fetch product images for the top options and include as MCP image blocks
     // so any connected client (Claude Desktop, Cursor, etc.) renders them inline.
-    // Skip when called from time-sensitive paths (execute polls for 45s already).
-    if (!opts?.skipImages) {
-      const imageUrls = exec.options
-        .slice(0, MAX_EMBED_IMAGES)
-        .map((opt: any) => opt.image_url || opt.metadata?.image || null)
-        .filter((url: string | null): url is string => !!url && /^https?:\/\//i.test(url));
+    // Bounded and parallel (<= MAX_EMBED_IMAGES, IMAGE_FETCH_TIMEOUT_MS each), so
+    // it is cheap enough to run on EVERY path — including the quote step, where
+    // the buyer is deciding and the picture matters most. (It used to be skipped
+    // there to shave latency off the already-slow 45s poll; showing the product
+    // at the decision moment is worth the ~one bounded parallel fetch.)
+    const imageUrls = exec.options
+      .slice(0, MAX_EMBED_IMAGES)
+      .map((opt: any) => opt.image_url || opt.metadata?.image || null)
+      .filter((url: string | null): url is string => !!url && /^https?:\/\//i.test(url));
 
-      if (imageUrls.length > 0) {
-        const images = await Promise.all(imageUrls.map(fetchImageAsBase64));
-        for (const img of images) {
-          if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType, annotations: { audience: ["user", "assistant"] as ("user" | "assistant")[], priority: 0.8 } });
-        }
+    if (imageUrls.length > 0) {
+      const images = await Promise.all(imageUrls.map(fetchImageAsBase64));
+      for (const img of images) {
+        if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType, annotations: { audience: ["user", "assistant"] as ("user" | "assistant")[], priority: 0.8 } });
       }
     }
   } else {
