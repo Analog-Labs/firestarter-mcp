@@ -526,8 +526,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const created = await apiRequest("POST", "/v1/executions", body);
         const defaultDelivery = created?.default_delivery?.masked || null;
         const exec = await pollExecution(apiRequest, created.id, 45_000);
-        // Skip images on execute (already used 45s polling; images on status check)
-        const blocks = await formatExecution(exec, { skipImages: true });
+        const blocks = await formatExecution(exec);
 
         if (exec.status === "awaiting_approval") {
           const opts = Array.isArray(exec.options) ? exec.options : [];
