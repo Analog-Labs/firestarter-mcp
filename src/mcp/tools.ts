@@ -180,9 +180,40 @@ async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, exec
 }
 
 // MCP content blocks: text + image (base64) for inline rendering in any client.
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB cap
+//
+// SIZE BUDGET — an MCP client rejects the WHOLE tool result over 1MB ("Tool
+// result is too large"), so every limit here is derived from that ceiling
+// rather than from what a single image might plausibly weigh. Two facts drive
+// the math: base64 inflates bytes by 4/3, and a response embeds several images
+// alongside its text. The old per-image cap (5MB) sat ABOVE the whole-response
+// cap — one ~768KB product photo blew the limit alone, and three maxed-out
+// images produced ~20MB of base64 — which broke firestarter_preview /
+// firestarter_execute for any search returning external (non-hosted) photos.
+export const MCP_RESULT_LIMIT_BYTES = 1024 * 1024; // client-side hard cap on a tool result
+// Ceiling on the base64 of ALL images in one response. The rest of the 1MB is
+// left to text, structured content, and the JSON envelope — options lists with
+// shipping/eligibility prose are not small.
+export const MAX_RESPONSE_IMAGE_BASE64_BYTES = Math.floor(MCP_RESULT_LIMIT_BYTES * 0.6);
+// Per-image raw ceiling. An image ABOVE this is downscaled rather than dropped
+// — a 900KB Google Shopping photo should still reach the buyer, just smaller.
+const MAX_IMAGE_BYTES = 256 * 1024;
+// Refuse to even download past this — downscaling can shrink a big image, but
+// nothing justifies pulling a 20MB TIFF over the wire to make a 320px thumb.
+const MAX_IMAGE_DOWNLOAD_BYTES = 5 * 1024 * 1024;
 const IMAGE_FETCH_TIMEOUT_MS = 8_000; // 8s per image — Firestarter-hosted blobs need headroom
 const MAX_EMBED_IMAGES = 3; // cap inline images per response
+
+/** Shrink image bytes to a ~320px JPEG. Dynamically imports image-store to keep
+ *  its DB pool and Jimp out of the stdio MCP path (same reason readBlobDirect
+ *  does), and returns null on any failure so the caller keeps the original. */
+async function shrinkImage(bytes: Buffer): Promise<Buffer | null> {
+  try {
+    const store = await import("../services/image-store.js");
+    return await store.downscaleToJpegThumb(bytes);
+  } catch {
+    return null;
+  }
+}
 
 type ContentBlock =
   | { type: "text"; text: string }
@@ -274,15 +305,24 @@ export async function fetchImageAsBase64(url: string): Promise<{ data: string; m
       return null;
     }
     const contentLength = Number(res.headers.get("content-length") || 0);
-    if (contentLength > MAX_IMAGE_BYTES) return null;
+    if (contentLength > MAX_IMAGE_DOWNLOAD_BYTES) return null;
     const buf = await res.arrayBuffer();
-    if (buf.byteLength > MAX_IMAGE_BYTES) return null;
+    if (buf.byteLength > MAX_IMAGE_DOWNLOAD_BYTES) return null;
     const bytes = new Uint8Array(buf);
     const headerMime = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
     const mimeType = SUPPORTED_IMAGE_MIME.has(headerMime) ? headerMime : sniffImageMime(bytes);
     if (!mimeType) {
       console.error(`[firestarter-mcp] unsupported image MIME: ${headerMime} for ${url}`);
       return null;
+    }
+    // External images never hit the ?thumb= path above, so they arrive full-res
+    // and must be shrunk here or they blow the 1MB tool-result cap. Downscale
+    // is best-effort: if the source won't decode, fall through to the raw bytes
+    // and let the caller's response budget be the backstop.
+    if (buf.byteLength > MAX_IMAGE_BYTES) {
+      const thumb = await shrinkImage(Buffer.from(buf));
+      if (thumb) return { data: thumb.toString("base64"), mimeType: "image/jpeg" };
+      console.error(`[firestarter-mcp] oversized image could not be downscaled: ${buf.byteLength}B for ${url}`);
     }
     return { data: Buffer.from(buf).toString("base64"), mimeType };
   } catch (err) {
@@ -297,12 +337,26 @@ export async function fetchImageAsBase64(url: string): Promise<{ data: string; m
  *  drops any fetch that fails so a bad image never poisons the whole tool
  *  response. The bare URLs stay in the text/structured payload for chat clients
  *  that unfurl links instead. */
-async function inlineImageBlocks(urls: Array<string | null | undefined>): Promise<Array<{ type: "image"; data: string; mimeType: string; annotations: { audience: ("user" | "assistant")[]; priority: number } }>> {
+export async function inlineImageBlocks(urls: Array<string | null | undefined>): Promise<Array<{ type: "image"; data: string; mimeType: string; annotations: { audience: ("user" | "assistant")[]; priority: number } }>> {
   const picked = [...new Set(urls.filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u)))].slice(0, MAX_EMBED_IMAGES);
   if (picked.length === 0) return [];
   const fetched = await Promise.all(picked.map(fetchImageAsBase64));
   const blocks: Array<{ type: "image"; data: string; mimeType: string; annotations: { audience: ("user" | "assistant")[]; priority: number } }> = [];
-  for (const img of fetched) if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType, annotations: { audience: ["user", "assistant"] as const as ("user" | "assistant")[], priority: 0.8 } });
+  // Hard backstop on the 1MB tool-result cap. Downscaling upstream is
+  // best-effort (an undecodable source passes through at full size), so this
+  // running total is the only thing that GUARANTEES the response fits. Drop
+  // photos rather than overshoot: a missing image degrades the answer, an
+  // oversized one destroys it — the client rejects the entire response.
+  let budget = MAX_RESPONSE_IMAGE_BASE64_BYTES;
+  for (const img of fetched) {
+    if (!img) continue;
+    if (img.data.length > budget) {
+      console.error(`[firestarter-mcp] image dropped: ${img.data.length}B base64 exceeds remaining ${budget}B of the response image budget`);
+      continue;
+    }
+    budget -= img.data.length;
+    blocks.push({ type: "image", data: img.data, mimeType: img.mimeType, annotations: { audience: ["user", "assistant"] as const as ("user" | "assistant")[], priority: 0.8 } });
+  }
   return blocks;
 }
 

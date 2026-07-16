@@ -89,6 +89,25 @@ export function thumbBlobId(id: string): string {
 }
 
 /**
+ * Downscale arbitrary image bytes to a THUMB_MAX_DIM JPEG, without touching the
+ * DB. Shared by getOrCreateThumb (stored blobs) and the MCP image embedder,
+ * which needs the same shrink for EXTERNAL images it never stores. Returns null
+ * when the source is undecodable (e.g. some webp) so callers fall back to the
+ * original bytes rather than dropping the image.
+ */
+export async function downscaleToJpegThumb(bytes: Buffer): Promise<Buffer | null> {
+  try {
+    const img = await Jimp.read(bytes);
+    if (img.width > THUMB_MAX_DIM || img.height > THUMB_MAX_DIM) {
+      img.scaleToFit({ w: THUMB_MAX_DIM, h: THUMB_MAX_DIM });
+    }
+    return await img.getBuffer("image/jpeg", { quality: 72 });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * #336: lazily produce (and cache) a downscaled thumbnail for a stored blob.
  * Generated on first request and stored alongside the full-res blob, so list /
  * search / gallery surfaces can load light images while the detail page keeps
@@ -102,22 +121,21 @@ export async function getOrCreateThumb(id: string): Promise<{ contentType: strin
 
   const src = await pool.query("SELECT bytes FROM listing_image_blobs WHERE id = $1", [id]);
   if (!src.rows[0]) return null;
+  const bytes = await downscaleToJpegThumb(src.rows[0].bytes as Buffer);
+  if (!bytes) {
+    logger.warn("image-store: thumbnail generation failed", { id });
+    return null;
+  }
   try {
-    const img = await Jimp.read(src.rows[0].bytes as Buffer);
-    if (img.width > THUMB_MAX_DIM || img.height > THUMB_MAX_DIM) {
-      img.scaleToFit({ w: THUMB_MAX_DIM, h: THUMB_MAX_DIM });
-    }
-    const bytes = await img.getBuffer("image/jpeg", { quality: 72 });
     await pool.query(
       `INSERT INTO listing_image_blobs (id, content_type, bytes, byte_size)
        VALUES ($1, 'image/jpeg', $2, $3) ON CONFLICT (id) DO NOTHING`,
       [tid, bytes, bytes.length]
     );
-    return { contentType: "image/jpeg", bytes };
   } catch (err) {
-    logger.warn("image-store: thumbnail generation failed", { id, error: (err as Error).message });
-    return null;
+    logger.warn("image-store: thumbnail cache write failed", { id, error: (err as Error).message });
   }
+  return { contentType: "image/jpeg", bytes };
 }
 
 /**
