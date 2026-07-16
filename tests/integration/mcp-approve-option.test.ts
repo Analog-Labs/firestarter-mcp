@@ -156,4 +156,33 @@ describe("firestarter_approve — option targeting", () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/browse-only/);
   });
+
+  it("turns PRICE_CHANGED into a renewed-consent prompt and forwards the confirmed total", async () => {
+    installFetch({
+      onApprove: () => jsonResponse(409, {
+        error: "Shipping changed the order total from $1.05 to $34.20.",
+        code: "PRICE_CHANGED",
+        previous_total: 1.05,
+        new_total: 34.2,
+        requires_reapproval: true,
+      }),
+    });
+    const tools = captureTools();
+
+    const changed = await tools.firestarter_approve({ execution_id: "exec_1" });
+    expect(changed.isError).toBe(true);
+    expect(changed.content[0].text).toContain("Nothing was charged");
+    expect(changed.content[0].text).toContain("$34.20");
+    expect(changed.content[0].text).toContain("confirm_total: 34.20");
+
+    fetchCalls = [];
+    installFetch();
+    const confirmed = await captureTools().firestarter_approve({
+      execution_id: "exec_1",
+      confirm_total: 34.2,
+    });
+    const approve = fetchCalls.find((c) => c.method === "POST" && c.url.endsWith("/approve"));
+    expect(approve?.body).toEqual({ confirm_total: 34.2 });
+    expect(confirmed.isError).toBeFalsy();
+  });
 });

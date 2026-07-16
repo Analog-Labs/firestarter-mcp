@@ -32,6 +32,21 @@ const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.netw
 // as a fallback for clients that cannot encode the image into a tool argument.
 const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firestarter.network/seller";
 
+function listingShareUrl(listing: any): string | null {
+  if (listing?.test_mode === true || listing?.environment === "test" || listing?.status !== "active") {
+    return null;
+  }
+  if (typeof listing?.share_url === "string" && listing.share_url.trim()) {
+    return listing.share_url.trim();
+  }
+  // Backward compatibility during rolling deploys where the API may not yet
+  // return share_url. New API responses always include it (string or null).
+  if (listing?.share_url === undefined && listing?.id) {
+    return `${SHARE_LINK_BASE}/${listing.id}`;
+  }
+  return null;
+}
+
 function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   // Authentication/credential failures (401/403) must not be relayed as a generic
@@ -165,9 +180,40 @@ async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, exec
 }
 
 // MCP content blocks: text + image (base64) for inline rendering in any client.
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB cap
+//
+// SIZE BUDGET — an MCP client rejects the WHOLE tool result over 1MB ("Tool
+// result is too large"), so every limit here is derived from that ceiling
+// rather than from what a single image might plausibly weigh. Two facts drive
+// the math: base64 inflates bytes by 4/3, and a response embeds several images
+// alongside its text. The old per-image cap (5MB) sat ABOVE the whole-response
+// cap — one ~768KB product photo blew the limit alone, and three maxed-out
+// images produced ~20MB of base64 — which broke firestarter_preview /
+// firestarter_execute for any search returning external (non-hosted) photos.
+export const MCP_RESULT_LIMIT_BYTES = 1024 * 1024; // client-side hard cap on a tool result
+// Ceiling on the base64 of ALL images in one response. The rest of the 1MB is
+// left to text, structured content, and the JSON envelope — options lists with
+// shipping/eligibility prose are not small.
+export const MAX_RESPONSE_IMAGE_BASE64_BYTES = Math.floor(MCP_RESULT_LIMIT_BYTES * 0.6);
+// Per-image raw ceiling. An image ABOVE this is downscaled rather than dropped
+// — a 900KB Google Shopping photo should still reach the buyer, just smaller.
+const MAX_IMAGE_BYTES = 256 * 1024;
+// Refuse to even download past this — downscaling can shrink a big image, but
+// nothing justifies pulling a 20MB TIFF over the wire to make a 320px thumb.
+const MAX_IMAGE_DOWNLOAD_BYTES = 5 * 1024 * 1024;
 const IMAGE_FETCH_TIMEOUT_MS = 8_000; // 8s per image — Firestarter-hosted blobs need headroom
 const MAX_EMBED_IMAGES = 3; // cap inline images per response
+
+/** Shrink image bytes to a ~320px JPEG. Dynamically imports image-store to keep
+ *  its DB pool and Jimp out of the stdio MCP path (same reason readBlobDirect
+ *  does), and returns null on any failure so the caller keeps the original. */
+async function shrinkImage(bytes: Buffer): Promise<Buffer | null> {
+  try {
+    const store = await import("../services/image-store.js");
+    return await store.downscaleToJpegThumb(bytes);
+  } catch {
+    return null;
+  }
+}
 
 type ContentBlock =
   | { type: "text"; text: string }
@@ -202,9 +248,24 @@ function extractBlobId(url: string): string | null {
 
 /** Read a self-hosted image directly from the database — avoids the HTTP
  *  roundtrip that fails when the MCP server can't reach its own public URL
- *  (DNS, loopback, firewall). Falls back to null so the HTTP path can retry. */
+ *  (DNS, loopback, firewall). Prefers the downscaled thumbnail (~320px JPEG,
+ *  typically 10x smaller than the full image) so the base64 payload embedded in
+ *  the tool result stays small — a full-res product PNG can be 200KB+, which is
+ *  ~270KB of base64 PER option and can exceed a client's inline-render budget.
+ *  Falls back to the full blob (undecodable source), then null (HTTP retry). */
 async function readBlobDirect(id: string): Promise<{ data: string; mimeType: string } | null> {
   try {
+    const store = await import("../services/image-store.js");
+    // Thumbnail first — small, fast, and always a supported JPEG.
+    try {
+      const thumb = await store.getOrCreateThumb(id);
+      if (thumb?.bytes) {
+        const tmime = (thumb.contentType || "").split(";")[0].trim().toLowerCase();
+        const mimeType = SUPPORTED_IMAGE_MIME.has(tmime) ? tmime : sniffImageMime(new Uint8Array(thumb.bytes));
+        if (mimeType) return { data: Buffer.from(thumb.bytes).toString("base64"), mimeType };
+      }
+    } catch { /* thumb unavailable (e.g. Jimp can't decode) — fall back to full */ }
+
     const { pool } = await import("../db/pool.js");
     const r = await pool.query(
       "SELECT content_type, bytes FROM listing_image_blobs WHERE id = $1",
@@ -231,22 +292,37 @@ export async function fetchImageAsBase64(url: string): Promise<{ data: string; m
     if (direct) return direct;
     console.error(`[firestarter-mcp] direct blob read failed for ${blobId}, falling back to HTTP`);
   }
+  // For a Firestarter-hosted blob, fetch the lightweight ?thumb=1 variant over
+  // HTTP too (the endpoint downscales server-side) so the embedded base64 stays
+  // small even on the HTTP path (e.g. a stdio MCP with no DB access).
+  const fetchUrl = blobId && !/[?&]thumb=/i.test(url)
+    ? `${url}${url.includes("?") ? "&" : "?"}thumb=1`
+    : url;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
+    const res = await fetch(fetchUrl, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
     if (!res.ok) {
       console.error(`[firestarter-mcp] image fetch failed: ${res.status} for ${url}`);
       return null;
     }
     const contentLength = Number(res.headers.get("content-length") || 0);
-    if (contentLength > MAX_IMAGE_BYTES) return null;
+    if (contentLength > MAX_IMAGE_DOWNLOAD_BYTES) return null;
     const buf = await res.arrayBuffer();
-    if (buf.byteLength > MAX_IMAGE_BYTES) return null;
+    if (buf.byteLength > MAX_IMAGE_DOWNLOAD_BYTES) return null;
     const bytes = new Uint8Array(buf);
     const headerMime = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
     const mimeType = SUPPORTED_IMAGE_MIME.has(headerMime) ? headerMime : sniffImageMime(bytes);
     if (!mimeType) {
       console.error(`[firestarter-mcp] unsupported image MIME: ${headerMime} for ${url}`);
       return null;
+    }
+    // External images never hit the ?thumb= path above, so they arrive full-res
+    // and must be shrunk here or they blow the 1MB tool-result cap. Downscale
+    // is best-effort: if the source won't decode, fall through to the raw bytes
+    // and let the caller's response budget be the backstop.
+    if (buf.byteLength > MAX_IMAGE_BYTES) {
+      const thumb = await shrinkImage(Buffer.from(buf));
+      if (thumb) return { data: thumb.toString("base64"), mimeType: "image/jpeg" };
+      console.error(`[firestarter-mcp] oversized image could not be downscaled: ${buf.byteLength}B for ${url}`);
     }
     return { data: Buffer.from(buf).toString("base64"), mimeType };
   } catch (err) {
@@ -261,12 +337,26 @@ export async function fetchImageAsBase64(url: string): Promise<{ data: string; m
  *  drops any fetch that fails so a bad image never poisons the whole tool
  *  response. The bare URLs stay in the text/structured payload for chat clients
  *  that unfurl links instead. */
-async function inlineImageBlocks(urls: Array<string | null | undefined>): Promise<Array<{ type: "image"; data: string; mimeType: string; annotations: { audience: ("user" | "assistant")[]; priority: number } }>> {
+export async function inlineImageBlocks(urls: Array<string | null | undefined>): Promise<Array<{ type: "image"; data: string; mimeType: string; annotations: { audience: ("user" | "assistant")[]; priority: number } }>> {
   const picked = [...new Set(urls.filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u)))].slice(0, MAX_EMBED_IMAGES);
   if (picked.length === 0) return [];
   const fetched = await Promise.all(picked.map(fetchImageAsBase64));
   const blocks: Array<{ type: "image"; data: string; mimeType: string; annotations: { audience: ("user" | "assistant")[]; priority: number } }> = [];
-  for (const img of fetched) if (img) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType, annotations: { audience: ["user", "assistant"] as const as ("user" | "assistant")[], priority: 0.8 } });
+  // Hard backstop on the 1MB tool-result cap. Downscaling upstream is
+  // best-effort (an undecodable source passes through at full size), so this
+  // running total is the only thing that GUARANTEES the response fits. Drop
+  // photos rather than overshoot: a missing image degrades the answer, an
+  // oversized one destroys it — the client rejects the entire response.
+  let budget = MAX_RESPONSE_IMAGE_BASE64_BYTES;
+  for (const img of fetched) {
+    if (!img) continue;
+    if (img.data.length > budget) {
+      console.error(`[firestarter-mcp] image dropped: ${img.data.length}B base64 exceeds remaining ${budget}B of the response image budget`);
+      continue;
+    }
+    budget -= img.data.length;
+    blocks.push({ type: "image", data: img.data, mimeType: img.mimeType, annotations: { audience: ["user", "assistant"] as const as ("user" | "assistant")[], priority: 0.8 } });
+  }
   return blocks;
 }
 
@@ -797,7 +887,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value. If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
@@ -814,8 +904,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         phone: z.string().optional(),
       }).optional().describe("Optional. The buyer's saved default address is used automatically — only pass a NEW address here to ship this order elsewhere, or when the buyer has no saved address. street1 + city are always required; state + zip are also required for US/CA/AU. On a first order with no saved address, the address you pass is saved as their default for next time."),
       shipping_option_index: z.number().int().min(0).optional().describe("0-based index of the shipping method to use, from the selected option's shipping_options list (shown by firestarter_status). Omit to use the default rate; the order total is recalculated server-side for the chosen rate."),
+      confirm_total: z.number().nonnegative().optional().describe("Exact updated total in USD from a prior PRICE_CHANGED response. Pass only after showing that total to the buyer and receiving a new explicit confirmation; never guess or pre-fill it on the first approval."),
     },
-    async ({ execution_id, selected_option, option_id, delivery_address, address_id, shipping_option_index }) => {
+    async ({ execution_id, selected_option, option_id, delivery_address, address_id, shipping_option_index, confirm_total }) => {
       try {
         // Bare "approve" (no execution_id): resolve the pending purchase so a
         // user replying just "approve" in chat doesn't dead-end with "nothing
@@ -873,6 +964,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (delivery_address) body.delivery_address = delivery_address;
         if (address_id) body.address_id = address_id;
         if (shipping_option_index != null) body.shipping_option_index = shipping_option_index;
+        if (confirm_total != null) body.confirm_total = confirm_total;
         if (option_id) {
           body.option_id = option_id;
         } else if (selected_option !== undefined) {
@@ -916,6 +1008,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         blocks.unshift({ type: "text", text: "Execution approved.\n" });
         return { content: blocks };
       } catch (err: any) {
+        if (err instanceof ApiError && err.code === "PRICE_CHANGED") {
+          const oldTotal = Number(err.body?.previous_total);
+          const newTotal = Number(err.body?.new_total);
+          const oldLabel = Number.isFinite(oldTotal) ? `$${oldTotal.toFixed(2)}` : "the quoted amount";
+          const newLabel = Number.isFinite(newTotal) ? `$${newTotal.toFixed(2)}` : "the updated amount";
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Shipping changed the order total from ${oldLabel} to ${newLabel}. Nothing was charged. Show the buyer ${newLabel} and ask for a new explicit confirmation. Only after they confirm, call firestarter_approve again with confirm_total: ${Number.isFinite(newTotal) ? newTotal.toFixed(2) : "<new total>"}.`,
+            }],
+            isError: true,
+          };
+        }
         return { content: [{ type: "text" as const, text: `Error approving: ${toErrorMessage(err)}` }], isError: true };
       }
     }
@@ -1136,7 +1241,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_confirm_delivery
   server.tool(
     "firestarter_confirm_delivery",
-    "Confirm that a delivered order was received by the buyer. This expedites the escrow release so the seller gets paid immediately instead of waiting for the auto-release window (5 days). Use when the buyer says 'I got it', 'package arrived', or 'confirm delivery'. Only works when order status is 'delivered'.",
+    "Confirm that a shipped or delivered order was received by the buyer. This marks a shipped order delivered and expedites escrow release instead of waiting for carrier confirmation plus the auto-release window (5 days). Use when the buyer says 'I got it', 'package arrived', or 'confirm delivery'.",
     {
       execution_id: z.string().describe("The execution/order ID to confirm delivery for (exec_...)"),
     },
@@ -1149,8 +1254,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text: `**Delivery confirmed for ${execution_id}.** Escrow release has been expedited — the seller will be paid on the next processing tick. Thank you for confirming!` }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
-        if (/not.*deliver/i.test(msg) || (err instanceof ApiError && err.status === 400)) {
-          return { content: [{ type: "text" as const, text: `Cannot confirm delivery: the order hasn't been delivered yet. Use \`firestarter_status\` to check its current state.` }] };
+        if (/not.*(deliver|receiv|ship)/i.test(msg) || (err instanceof ApiError && err.status === 400)) {
+          return { content: [{ type: "text" as const, text: `Cannot confirm delivery: the order has not shipped yet. Use \`firestarter_status\` to check its current state.` }] };
         }
         return { content: [{ type: "text" as const, text: `Error confirming delivery: ${msg}` }], isError: true };
       }
@@ -1651,9 +1756,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             text += `- ${block.message}\n`;
           }
           text += `\nOnce resolved, activate with \`firestarter_update_listing\` (status "active").`;
-        } else {
-          text += `Share link: ${SHARE_LINK_BASE}/${listing.id}\n`;
+        } else if (listingShareUrl(listing)) {
+          text += `Share link: ${listingShareUrl(listing)}\n`;
           text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
+        } else {
+          text += `\n**Sandbox-only listing.** No public share link is created in test mode. It remains available through test-mode catalog and listing tools.`;
         }
         // No photo on the listing → give a concrete way to add one. A photo the
         // seller attached in chat can't be forwarded into the listing (MCP tool
@@ -2304,7 +2411,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_listings
   server.tool(
     "firestarter_listings",
-    "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — every listing has a public share link (https://firestarter.network/l/<id>) that unfurls into a product card and hands purchase instructions to any AI agent that opens it.",
+    "View your own product listings (seller side): name, current price, inventory, status, demand, and live share link when available. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed. Active live listings have a public share link; sandbox and draft listings do not.",
     {
       listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list all active listings."),
     },
@@ -2335,8 +2442,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }
           if (l.demand_score != null) text += `Demand score: ${l.demand_score}\n`;
           if (l.created_at) text += `Listed: ${l.created_at}\n`;
-          text += `Share link: ${SHARE_LINK_BASE}/${l.id}\n`;
-          text += `\nPaste the share link bare in chat — it unfurls into a product card; humans get an "ask your AI agent to buy this" prompt and agents get machine-readable purchase instructions. Buyers' agents also find this via network search.`;
+          const shareUrl = listingShareUrl(l);
+          if (shareUrl) {
+            text += `Share link: ${shareUrl}\n`;
+            text += `\nPaste the share link bare in chat — it unfurls into a product card; humans get an "ask your AI agent to buy this" prompt and agents get machine-readable purchase instructions. Buyers' agents also find this via network search.`;
+          } else {
+            text += `Environment: sandbox\n`;
+            text += `\nNo public share link is created for sandbox listings. Use test-mode catalog and listing tools to inspect it.`;
+          }
           // #611: embed the product photos as MCP image blocks so any connected
           // client renders them inline — the agent no longer has to fetch a bare
           // URL with its own tool (which failed on the legacy web-hosted image
@@ -2375,8 +2488,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // (the list view previously dropped it, so the model confabulated "no new listings").
           if (l.created_at) text += `, listed ${String(l.created_at).slice(0, 10)}`;
           text += ` — ID \`${l.id}\`\n`;
+          const shareUrl = listingShareUrl(l);
+          text += shareUrl ? `  Share link: ${shareUrl}\n` : "  Sandbox-only: no public share link\n";
         }
-        text += `\nPass a listing ID for full detail. Each listing has a share link (${SHARE_LINK_BASE}/<id>) that unfurls into a product card and hands purchase instructions to any agent that opens it.`;
+        text += `\nPass a listing ID for full detail. Active live listings include a public share link; sandbox listings remain accessible only through test-mode tools.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -2652,7 +2767,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_seller_orders
   server.tool(
     "firestarter_seller_orders",
-    "View the seller's incoming orders — product, quantity, amount, net payout, order status, and payout status. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
+    "View the seller's incoming orders — product, quantity, amount, net payout, order status, payout status, and carrier tracking when shipped. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
     {},
     async () => {
       try {
@@ -2669,7 +2784,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (o.status === "pending" || o.status === "confirmed") anyPending = true;
           // #556: surface the order_id so the agent can chain straight into
           // firestarter_confirm_order / firestarter_ship_order without re-asking.
-          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status} - order_id \`${o.id}\``);
+          const tracking = o.tracking_number
+            ? ` - Tracking: ${o.carrier || "Carrier"} ${o.tracking_number}${o.tracking_url ? ` (${o.tracking_url})` : ""}`
+            : "";
+          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}${tracking} - order_id \`${o.id}\``);
         }
         if (anyPending) {
           lines.push(`\nAccept a pending order with firestarter_confirm_order (its order_id), then add tracking with firestarter_ship_order once it's on its way.`);
