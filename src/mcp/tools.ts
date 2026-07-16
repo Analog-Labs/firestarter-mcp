@@ -2902,5 +2902,48 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
       }
     );
+
+    server.tool(
+      "firestarter_my_market",
+      "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, and how long the first-touch lock lasts. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', or before joining/leaving so you can confirm the current state. Read-only.",
+      {},
+      async () => {
+        try {
+          const res = await apiRequest("GET", "/v1/attribution/me");
+          const community = res?.community ?? null;
+          if (!community || community.connected !== true) {
+            return { content: [{ type: "text" as const, text: "You're not connected to any community market. Paste a share code and I can join one for you (firestarter_join_market)." }] };
+          }
+          const lines = [
+            `**Connected to:** ${community.name}`,
+            community.code ? `Join code: \`${community.code}\`` : null,
+            `Status: ${community.program_status}`,
+            community.locked_until ? `Locked until: ${new Date(community.locked_until).toISOString().slice(0, 10)} (first-touch lock)` : null,
+            community.attributed_at ? `Joined: ${new Date(community.attributed_at).toISOString().slice(0, 10)}` : null,
+            "\nYour buys (and sells, when enabled) credit this community. To leave, use firestarter_leave_market.",
+          ].filter(Boolean);
+          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't check your market: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_leave_market",
+      "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch and the first-touch lock has expired. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
+      {},
+      async () => {
+        try {
+          const res = await apiRequest("POST", "/v1/attribution/disconnect", {});
+          if (res?.disconnected === true) {
+            return { content: [{ type: "text" as const, text: "**Left the market.** Your future orders no longer credit that community. You can join another anytime with a share code (firestarter_join_market)." }] };
+          }
+          return { content: [{ type: "text" as const, text: "You weren't connected to any community market — nothing to leave." }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't leave the market: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
   }
 }

@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 48 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 50 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -1160,6 +1160,24 @@
         "required": [
           "code"
         ]
+      }
+    },
+    {
+      "name": "firestarter_my_market",
+      "description": "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, and how long the first-touch lock lasts. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', or before joining/leaving so you can confirm the current state. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_leave_market",
+      "description": "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch and the first-touch lock has expired. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
       }
     }
   ]
