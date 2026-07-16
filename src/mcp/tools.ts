@@ -1001,7 +1001,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (args.label) body.label = args.label;
         if (args.is_default) body.is_default = args.is_default;
 
-        const saved = await apiRequest("POST", "/v1/addresses", body);
+        // POST /v1/addresses responds { address: {...} } — unwrap it.
+        const res = await apiRequest("POST", "/v1/addresses", body);
+        const saved = res?.address ?? res;
         const place = [saved.city, saved.state, saved.country].filter(Boolean).join(", ");
         return {
           content: [{
