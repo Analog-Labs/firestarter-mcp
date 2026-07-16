@@ -153,7 +153,7 @@
     },
     {
       "name": "firestarter_approve",
-      "description": "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+      "description": "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value. If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -168,6 +168,11 @@
           },
           "address_id": {
             "type": "string"
+          },
+          "confirm_total": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Exact updated USD total from a prior PRICE_CHANGED response, supplied only after renewed buyer confirmation."
           }
         },
         "required": []
