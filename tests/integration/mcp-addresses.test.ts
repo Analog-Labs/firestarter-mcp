@@ -90,6 +90,44 @@ describe("firestarter_addresses", () => {
     });
 });
 
+describe("firestarter_save_address", () => {
+    it("POSTs the address and surfaces the saved id/label from the { address } envelope", async () => {
+        const tools = captureTools();
+        const calls = installFetch((method, url) => {
+            if (method === "POST" && url.includes("/v1/addresses")) {
+                // Real API shape: the created row is wrapped under `address`.
+                return {
+                    status: 201,
+                    json: { address: { id: "addr_new1", label: "Office", city: "Lahore", state: null, country: "PK", is_default: false } },
+                };
+            }
+            return { status: 404, json: {} };
+        });
+
+        const res = await tools.firestarter_save_address({ street1: "384 Street 5", city: "Lahore", country: "PK", label: "Office" });
+        const text = textOf(res);
+
+        // The bug this guards: reading fields off the envelope (saved.id) instead
+        // of saved.address.id printed "id: undefined" and an empty place.
+        expect(res.isError).toBeUndefined();
+        expect(text).toContain("addr_new1");
+        expect(text).toContain("Office");
+        expect(text).toContain("Lahore");
+        expect(text).not.toContain("undefined");
+
+        const post = calls.find((c) => c.method === "POST" && c.url.includes("/v1/addresses"));
+        expect(post?.body).toMatchObject({ street1: "384 Street 5", city: "Lahore", country: "PK", label: "Office" });
+    });
+
+    it("marks the default when the API says so", async () => {
+        const tools = captureTools();
+        installFetch(() => ({ status: 201, json: { address: { id: "addr_d", label: "Default", city: "Nairobi", country: "KE", is_default: true } } }));
+        const text = textOf(await tools.firestarter_save_address({ street1: "12 Ring Road", city: "Nairobi", country: "KE" }));
+        expect(text).toContain("addr_d");
+        expect(text).toContain("(default)");
+    });
+});
+
 describe("address_id passthrough", () => {
     it("firestarter_approve forwards address_id to the approve API body", async () => {
         const tools = captureTools();
