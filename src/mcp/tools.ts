@@ -32,6 +32,21 @@ const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.netw
 // as a fallback for clients that cannot encode the image into a tool argument.
 const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firestarter.network/seller";
 
+function listingShareUrl(listing: any): string | null {
+  if (listing?.test_mode === true || listing?.environment === "test" || listing?.status !== "active") {
+    return null;
+  }
+  if (typeof listing?.share_url === "string" && listing.share_url.trim()) {
+    return listing.share_url.trim();
+  }
+  // Backward compatibility during rolling deploys where the API may not yet
+  // return share_url. New API responses always include it (string or null).
+  if (listing?.share_url === undefined && listing?.id) {
+    return `${SHARE_LINK_BASE}/${listing.id}`;
+  }
+  return null;
+}
+
 function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   // Authentication/credential failures (401/403) must not be relayed as a generic
@@ -1687,9 +1702,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             text += `- ${block.message}\n`;
           }
           text += `\nOnce resolved, activate with \`firestarter_update_listing\` (status "active").`;
-        } else {
-          text += `Share link: ${SHARE_LINK_BASE}/${listing.id}\n`;
+        } else if (listingShareUrl(listing)) {
+          text += `Share link: ${listingShareUrl(listing)}\n`;
           text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
+        } else {
+          text += `\n**Sandbox-only listing.** No public share link is created in test mode. It remains available through test-mode catalog and listing tools.`;
         }
         // No photo on the listing → give a concrete way to add one. A photo the
         // seller attached in chat can't be forwarded into the listing (MCP tool
@@ -2340,7 +2357,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_listings
   server.tool(
     "firestarter_listings",
-    "View your own product listings (seller side): name, current price, inventory, status, demand, and share link. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed — every listing has a public share link (https://firestarter.network/l/<id>) that unfurls into a product card and hands purchase instructions to any AI agent that opens it.",
+    "View your own product listings (seller side): name, current price, inventory, status, demand, and live share link when available. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed. Active live listings have a public share link; sandbox and draft listings do not.",
     {
       listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list all active listings."),
     },
@@ -2371,8 +2388,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }
           if (l.demand_score != null) text += `Demand score: ${l.demand_score}\n`;
           if (l.created_at) text += `Listed: ${l.created_at}\n`;
-          text += `Share link: ${SHARE_LINK_BASE}/${l.id}\n`;
-          text += `\nPaste the share link bare in chat — it unfurls into a product card; humans get an "ask your AI agent to buy this" prompt and agents get machine-readable purchase instructions. Buyers' agents also find this via network search.`;
+          const shareUrl = listingShareUrl(l);
+          if (shareUrl) {
+            text += `Share link: ${shareUrl}\n`;
+            text += `\nPaste the share link bare in chat — it unfurls into a product card; humans get an "ask your AI agent to buy this" prompt and agents get machine-readable purchase instructions. Buyers' agents also find this via network search.`;
+          } else {
+            text += `Environment: sandbox\n`;
+            text += `\nNo public share link is created for sandbox listings. Use test-mode catalog and listing tools to inspect it.`;
+          }
           // #611: embed the product photos as MCP image blocks so any connected
           // client renders them inline — the agent no longer has to fetch a bare
           // URL with its own tool (which failed on the legacy web-hosted image
@@ -2411,8 +2434,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // (the list view previously dropped it, so the model confabulated "no new listings").
           if (l.created_at) text += `, listed ${String(l.created_at).slice(0, 10)}`;
           text += ` — ID \`${l.id}\`\n`;
+          const shareUrl = listingShareUrl(l);
+          text += shareUrl ? `  Share link: ${shareUrl}\n` : "  Sandbox-only: no public share link\n";
         }
-        text += `\nPass a listing ID for full detail. Each listing has a share link (${SHARE_LINK_BASE}/<id>) that unfurls into a product card and hands purchase instructions to any agent that opens it.`;
+        text += `\nPass a listing ID for full detail. Active live listings include a public share link; sandbox listings remain accessible only through test-mode tools.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
