@@ -418,14 +418,6 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
               : "View listing";
         optLines.push(`  ${linkLabel}: ${tidyProductUrl(opt.product_url)}`);
       }
-      // Surface the product image URL on its own line so Claude includes it in
-      // responses and chat clients (claude.ai, Telegram, Slack) auto-render a
-      // preview. The base64 image blocks above provide context to the model;
-      // this bare URL is what makes the image VISIBLE to the end user.
-      const imgUrl = opt.image_url || opt.metadata?.image;
-      if (typeof imgUrl === "string" && /^https?:\/\//i.test(imgUrl)) {
-        optLines.push(`  ${imgUrl}`);
-      }
       if (isOwnListing) {
         optLines.push(`  This is your own listing - shown so you can see how it appears to buyers. It is not offered for purchase.`);
       } else if (unconnectedStore) {
