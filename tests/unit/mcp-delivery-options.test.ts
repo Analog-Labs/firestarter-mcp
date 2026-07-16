@@ -1,0 +1,86 @@
+/**
+ * Buyer-facing delivery-options menu (renderDeliveryOptions).
+ *
+ * The rates already existed on execution_options.shipping_options; the gap was
+ * that they were never SHOWN, so the agent silently used the cheapest and the
+ * buyer never got to pick a speed. These tests lock the surfaced menu: it lists
+ * every method with its index (= approve's shipping_option_index), price, ETA,
+ * and an all-in total that includes the app margin, and it stays out of the way
+ * when there is no real choice to make.
+ */
+import { describe, it, expect } from "vitest";
+import { renderDeliveryOptions } from "../../src/mcp/tools.js";
+
+const METHODS = [
+  { method_type: "standard", label: "USPS Ground", carrier: "USPS", service: "Ground", price_cents: 699, delivery_days: 6, delivery_range: "~6 business days", is_estimated: false, badges: ["Best Value"] },
+  { method_type: "express", label: "UPS 2-Day", carrier: "UPS", service: "2-Day", price_cents: 2299, delivery_days: 2, is_estimated: false, badges: ["Fastest"] },
+];
+
+function purchasableOpt(over: Record<string, unknown> = {}) {
+  return { purchasable: true, subtotal: 45.0, tax: 0, shipping_options: METHODS, ...over };
+}
+
+describe("renderDeliveryOptions", () => {
+  it("renders a numbered menu whose numbers are the shipping_option_index", () => {
+    const lines = renderDeliveryOptions(purchasableOpt(), null);
+    expect(lines[0]).toMatch(/Delivery options/i);
+    expect(lines.some((l) => l.includes("[0] USPS Ground"))).toBe(true);
+    expect(lines.some((l) => l.includes("[1] UPS 2-Day"))).toBe(true);
+    // closing hint tells the agent how to act on the numbers
+    expect(lines[lines.length - 1]).toMatch(/shipping_option_index/);
+  });
+
+  it("shows each method's price, ETA, and badges", () => {
+    const lines = renderDeliveryOptions(purchasableOpt(), null).join("\n");
+    expect(lines).toContain("$6.99");
+    expect(lines).toContain("$22.99");
+    expect(lines).toContain("~6 business days"); // delivery_range preferred
+    expect(lines).toContain("~2 days"); // delivery_days fallback
+    expect(lines).toContain("Best Value");
+    expect(lines).toContain("Fastest");
+  });
+
+  it("computes an all-in total = subtotal + shipping + tax (no margin) when no margin", () => {
+    const lines = renderDeliveryOptions(purchasableOpt(), null).join("\n");
+    // standard: 4500 + 699 + 0 = 5199
+    expect(lines).toContain("$51.99 all-in");
+    // express: 4500 + 2299 + 0 = 6799
+    expect(lines).toContain("$67.99 all-in");
+  });
+
+  it("adds the app integration margin to the all-in, matching the charge path", () => {
+    // 2% margin, no cap. standard base 5199 -> +104 (round(5199*0.02)) = 5303
+    const lines = renderDeliveryOptions(purchasableOpt(), { margin_bps: 200 }).join("\n");
+    expect(lines).toContain("$53.03 all-in");
+  });
+
+  it("returns nothing when there is no real choice (single method)", () => {
+    expect(renderDeliveryOptions(purchasableOpt({ shipping_options: [METHODS[0]] }), null)).toEqual([]);
+  });
+
+  it("returns nothing for browse-only options", () => {
+    expect(renderDeliveryOptions(purchasableOpt({ purchasable: false }), null)).toEqual([]);
+  });
+
+  it("returns nothing when no shipping options exist", () => {
+    expect(renderDeliveryOptions(purchasableOpt({ shipping_options: null }), null)).toEqual([]);
+  });
+
+  it("labels an estimated (non-carrier) rate as an estimate", () => {
+    const est = [
+      { label: "Standard", price_cents: 649, delivery_days: 5, is_estimated: true, badges: [] },
+      { label: "Express", price_cents: 2199, delivery_days: 1, is_estimated: true, badges: [] },
+    ];
+    const lines = renderDeliveryOptions(purchasableOpt({ shipping_options: est }), null).join("\n");
+    expect(lines).toContain("estimate");
+  });
+
+  it("shows free shipping as 'free', not $0.00", () => {
+    const withFree = [
+      { label: "Standard", price_cents: 0, delivery_days: 5, is_estimated: false, badges: ["Best Value"] },
+      { label: "Express", price_cents: 1500, delivery_days: 1, is_estimated: false, badges: ["Fastest"] },
+    ];
+    const lines = renderDeliveryOptions(purchasableOpt({ shipping_options: withFree }), null).join("\n");
+    expect(lines).toContain("[0] Standard · free");
+  });
+});

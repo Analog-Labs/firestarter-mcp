@@ -360,6 +360,62 @@ export async function inlineImageBlocks(urls: Array<string | null | undefined>):
   return blocks;
 }
 
+/**
+ * Render the buyer-facing delivery-options menu for one purchasable option.
+ *
+ * The rates already exist — the quote step rate-shops each purchasable option and
+ * stores the full method list on `execution_options.shipping_options` (the same
+ * array `firestarter_approve`'s `shipping_option_index` selects into). Until now
+ * that list was never shown, so a buyer silently got the cheapest rate and was
+ * never offered the speed/carrier trade-off. This surfaces it as a numbered menu
+ * whose numbers ARE the `shipping_option_index` to pass to approve.
+ *
+ * Non-blocking by design: approving without a choice still uses the cheapest
+ * rate, so a buyer who doesn't care about speed is never stalled. Rendered only
+ * for purchasable options carrying a real choice (>= 2 methods).
+ */
+export function renderDeliveryOptions(opt: any, dm: any): string[] {
+  const methods: any[] = Array.isArray(opt.shipping_options) ? opt.shipping_options : [];
+  if (opt.purchasable === false || methods.length < 2) return [];
+
+  const subtotalCents = Math.round(Number(opt.subtotal ?? 0) * 100);
+  const taxCents = Math.round(Number(opt.tax ?? 0) * 100);
+  const marginBps = dm && typeof dm.margin_bps === "number" ? dm.margin_bps : 0;
+  const capCents = dm && typeof dm.per_transaction_cap_cents === "number" ? dm.per_transaction_cap_cents : undefined;
+
+  const lines: string[] = ["  Delivery options — pick a speed, or approve to use the cheapest:"];
+  methods.forEach((m: any, i: number) => {
+    const priceCents = Number(m.price_cents);
+    const price = !Number.isFinite(priceCents) ? "price at checkout" : priceCents === 0 ? "free" : `$${(priceCents / 100).toFixed(2)}`;
+    const eta = typeof m.delivery_range === "string" && m.delivery_range.trim()
+      ? m.delivery_range.trim()
+      : Number.isFinite(m.delivery_days)
+        ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}`
+        : null;
+    const label = (typeof m.label === "string" && m.label.trim())
+      || [m.carrier, m.service].filter(Boolean).join(" ")
+      || m.method_type
+      || "Shipping";
+    // All-in incl. the app margin, computed the exact way the charge path does,
+    // so the number shown is the number the buyer pays for that speed.
+    let allIn: string | null = null;
+    if (Number.isFinite(priceCents)) {
+      const baseCents = subtotalCents + priceCents + taxCents;
+      const withMargin = marginBps > 0 ? baseCents + marginCentsFor(baseCents, marginBps, capCents) : baseCents;
+      allIn = `$${(withMargin / 100).toFixed(2)} all-in`;
+    }
+    const tags: string[] = [];
+    if (Array.isArray(m.badges)) tags.push(...m.badges.filter((b: unknown) => typeof b === "string" && b));
+    if (m.is_estimated) tags.push("estimate");
+    const parts = [`[${i}] ${label}`, price];
+    if (eta) parts.push(eta);
+    if (allIn) parts.push(allIn);
+    lines.push(`   ${parts.join(" · ")}${tags.length ? ` — ${tags.join(", ")}` : ""}`);
+  });
+  lines.push("  To choose one, approve with shipping_option_index set to its [number].");
+  return lines;
+}
+
 async function formatExecution(exec: any): Promise<ContentBlock[]> {
   const blocks: ContentBlock[] = [];
   const lines: string[] = [];
@@ -493,6 +549,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
           optLines.push(`  Total with app margin: $${((itemCents + marginCents) / 100).toFixed(2)} (+$${(marginCents / 100).toFixed(2)})`);
         }
       }
+      // Delivery-options menu: show the real speed/carrier choices the buyer can
+      // pick between (the numbers ARE the shipping_option_index for approve), so
+      // shipping stops being an invisible auto-pick. Non-blocking — approving
+      // without a choice still uses the cheapest rate.
+      if (!browseOnly) {
+        for (const shipLine of renderDeliveryOptions(opt, dm)) optLines.push(shipLine);
+      }
       // #256: surface the exact link the API returned. For a Firestarter
       // listing product_url is ALREADY the /l/<id> share link — use it verbatim
       // and never reconstruct one from an id (stripping "lst_" yields a dead
@@ -587,7 +650,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). You do NOT need a budget or address to call this. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total). You do NOT need a budget or address to call this. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
@@ -887,7 +950,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value. If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value. If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
@@ -903,7 +966,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         country: z.string().optional().describe("ISO country code, e.g. US, TH. Defaults to US."),
         phone: z.string().optional(),
       }).optional().describe("Optional. The buyer's saved default address is used automatically — only pass a NEW address here to ship this order elsewhere, or when the buyer has no saved address. street1 + city are always required; state + zip are also required for US/CA/AU. On a first order with no saved address, the address you pass is saved as their default for next time."),
-      shipping_option_index: z.number().int().min(0).optional().describe("0-based index of the shipping method to use, from the selected option's shipping_options list (shown by firestarter_status). Omit to use the default rate; the order total is recalculated server-side for the chosen rate."),
+      shipping_option_index: z.number().int().min(0).optional().describe("0-based index of the delivery speed to use, taken from the numbered 'Delivery options' menu shown for the option (in firestarter_execute / firestarter_status output, or firestarter_shipping_options). Omit to use the cheapest rate; the order total is recalculated server-side for the chosen speed and included in what the buyer approves."),
       confirm_total: z.number().nonnegative().optional().describe("Exact updated total in USD from a prior PRICE_CHANGED response. Pass only after showing that total to the buyer and receiving a new explicit confirmation; never guess or pre-fill it on the first approval."),
     },
     async ({ execution_id, selected_option, option_id, delivery_address, address_id, shipping_option_index, confirm_total }) => {
@@ -1022,6 +1085,91 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
         return { content: [{ type: "text" as const, text: `Error approving: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_shipping_options
+  // Shows the buyer the real delivery-speed choices (Standard / Express /
+  // Same-Day, with prices, ETAs, and per-speed all-in totals) for an order
+  // awaiting approval, and previews the re-priced total for a chosen speed —
+  // BEFORE anything is paid. The numbers map 1:1 to firestarter_approve's
+  // shipping_option_index, so the buyer picks a speed and the agent carries the
+  // index into approve. Non-blocking: approving without a pick uses the cheapest.
+  server.tool(
+    "firestarter_shipping_options",
+    "Show and compare the delivery speeds for an order awaiting approval, and preview the re-priced total for a chosen speed — before paying. Returns the numbered 'Delivery options' menu (Standard / Express / Same-Day, each with its price, ETA, and all-in total); the buyer picks one and you place the order by calling firestarter_approve with shipping_option_index set to that [number]. Use this when the buyer asks about delivery speed/cost, wants it faster, or you want to show the trade-off before they approve — otherwise firestarter_execute already lists these inline and approving without a pick uses the cheapest rate. Pass refresh:true to re-fetch live carrier rates (e.g. if the quote is stale), and select_index to preview one speed's new total.",
+    {
+      execution_id: z.string().describe("The execution ID (exec_...) to show delivery options for — an order that is awaiting approval."),
+      option_id: z.string().optional().describe("Which option's delivery methods to show (opt_...). Omit to use the pre-selected option (the one the buyer is about to approve)."),
+      select_index: z.number().int().min(0).optional().describe("Preview a specific delivery speed: the [number] from the menu. Shows that speed's new all-in total and the exact shipping_option_index to approve with. Does NOT select or pay — it's a preview."),
+      refresh: z.boolean().optional().describe("Re-fetch live carrier rates and persist them before showing the menu. Use when the stored rates may be stale (e.g. >30 min old). Off by default."),
+    },
+    async ({ execution_id, option_id, select_index, refresh }) => {
+      try {
+        const qs = new URLSearchParams();
+        if (option_id) qs.set("option_id", option_id);
+        if (refresh) qs.set("refresh", "true");
+        const suffix = qs.toString() ? `?${qs.toString()}` : "";
+        const data = await apiRequest("GET", `/v1/executions/${execution_id}/shipping-options${suffix}`);
+        const methods: any[] = Array.isArray(data.options) ? data.options : [];
+        if (methods.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "No delivery options are available for this order yet — they're computed once a product and a delivery address are set. Check firestarter_status, or approve to use the standard rate.",
+            }],
+          };
+        }
+
+        // App integration margin varies by API key; fetch it so the all-in shown
+        // here is the all-in charged. Best-effort — a miss just omits the margin.
+        let dm: any = null;
+        try {
+          const exec = await apiRequest("GET", `/v1/executions/${execution_id}`);
+          dm = exec?.developer_margin ?? null;
+        } catch { /* margin is best-effort; base all-in still shown */ }
+        const marginBps = dm && typeof dm.margin_bps === "number" ? dm.margin_bps : 0;
+        const capCents = dm && typeof dm.per_transaction_cap_cents === "number" ? dm.per_transaction_cap_cents : undefined;
+        const allInCents = (baseCents: number) =>
+          marginBps > 0 ? baseCents + marginCentsFor(baseCents, marginBps, capCents) : baseCents;
+        const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+        const lines: string[] = [];
+        lines.push(`Delivery options${data.product_title ? ` for ${data.product_title}` : ""} — pick a speed, or approve to use the cheapest:`);
+        for (const m of methods) {
+          const price = m.price_cents == null ? "price at checkout" : m.price_cents === 0 ? "free" : fmt(m.price_cents);
+          const eta = m.delivery_range || (m.delivery_days != null ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}` : null);
+          const label = m.label || [m.carrier, m.service].filter(Boolean).join(" ") || m.method_type || "Shipping";
+          const allIn = m.all_in_cents != null ? `${fmt(allInCents(m.all_in_cents))} all-in` : null;
+          const tags = [...(Array.isArray(m.badges) ? m.badges : []), m.is_estimated ? "estimate" : null].filter(Boolean);
+          const parts = [`[${m.index}] ${label}`, price];
+          if (eta) parts.push(eta);
+          if (allIn) parts.push(allIn);
+          lines.push(`  ${parts.join(" · ")}${tags.length ? ` — ${tags.join(", ")}` : ""}`);
+        }
+
+        if (select_index != null) {
+          const chosen = methods.find((m) => m.index === select_index);
+          if (!chosen) {
+            lines.push("", `[${select_index}] isn't one of the options above — choose one of the listed [numbers].`);
+          } else {
+            const label = chosen.label || [chosen.carrier, chosen.service].filter(Boolean).join(" ") || chosen.method_type || "that speed";
+            const total = chosen.all_in_cents != null ? fmt(allInCents(chosen.all_in_cents)) : "the price shown above";
+            lines.push("", `Selected ${label} — new total ${total}. To place the order at this speed, approve with shipping_option_index = ${select_index}.`);
+          }
+        } else {
+          lines.push("", "To choose one, approve with shipping_option_index set to its [number]. Approving without it uses the cheapest.");
+        }
+        if (data.refreshed) lines.push("", "(Live rates refreshed just now.)");
+
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err: any) {
+        const msg = err instanceof ApiError ? err.message : err?.message || String(err);
+        return {
+          content: [{ type: "text" as const, text: `Couldn't load delivery options: ${msg}` }],
+          isError: true,
+        };
       }
     }
   );
