@@ -1172,7 +1172,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_confirm_delivery
   server.tool(
     "firestarter_confirm_delivery",
-    "Confirm that a delivered order was received by the buyer. This expedites the escrow release so the seller gets paid immediately instead of waiting for the auto-release window (5 days). Use when the buyer says 'I got it', 'package arrived', or 'confirm delivery'. Only works when order status is 'delivered'.",
+    "Confirm that a shipped or delivered order was received by the buyer. This marks a shipped order delivered and expedites escrow release instead of waiting for carrier confirmation plus the auto-release window (5 days). Use when the buyer says 'I got it', 'package arrived', or 'confirm delivery'.",
     {
       execution_id: z.string().describe("The execution/order ID to confirm delivery for (exec_...)"),
     },
@@ -1185,8 +1185,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text: `**Delivery confirmed for ${execution_id}.** Escrow release has been expedited — the seller will be paid on the next processing tick. Thank you for confirming!` }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
-        if (/not.*deliver/i.test(msg) || (err instanceof ApiError && err.status === 400)) {
-          return { content: [{ type: "text" as const, text: `Cannot confirm delivery: the order hasn't been delivered yet. Use \`firestarter_status\` to check its current state.` }] };
+        if (/not.*(deliver|receiv|ship)/i.test(msg) || (err instanceof ApiError && err.status === 400)) {
+          return { content: [{ type: "text" as const, text: `Cannot confirm delivery: the order has not shipped yet. Use \`firestarter_status\` to check its current state.` }] };
         }
         return { content: [{ type: "text" as const, text: `Error confirming delivery: ${msg}` }], isError: true };
       }
@@ -2688,7 +2688,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_seller_orders
   server.tool(
     "firestarter_seller_orders",
-    "View the seller's incoming orders — product, quantity, amount, net payout, order status, and payout status. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
+    "View the seller's incoming orders — product, quantity, amount, net payout, order status, payout status, and carrier tracking when shipped. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
     {},
     async () => {
       try {
@@ -2705,7 +2705,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (o.status === "pending" || o.status === "confirmed") anyPending = true;
           // #556: surface the order_id so the agent can chain straight into
           // firestarter_confirm_order / firestarter_ship_order without re-asking.
-          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status} - order_id \`${o.id}\``);
+          const tracking = o.tracking_number
+            ? ` - Tracking: ${o.carrier || "Carrier"} ${o.tracking_number}${o.tracking_url ? ` (${o.tracking_url})` : ""}`
+            : "";
+          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}${tracking} - order_id \`${o.id}\``);
         }
         if (anyPending) {
           lines.push(`\nAccept a pending order with firestarter_confirm_order (its order_id), then add tracking with firestarter_ship_order once it's on its way.`);
