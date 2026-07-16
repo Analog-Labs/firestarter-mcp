@@ -202,9 +202,24 @@ function extractBlobId(url: string): string | null {
 
 /** Read a self-hosted image directly from the database — avoids the HTTP
  *  roundtrip that fails when the MCP server can't reach its own public URL
- *  (DNS, loopback, firewall). Falls back to null so the HTTP path can retry. */
+ *  (DNS, loopback, firewall). Prefers the downscaled thumbnail (~320px JPEG,
+ *  typically 10x smaller than the full image) so the base64 payload embedded in
+ *  the tool result stays small — a full-res product PNG can be 200KB+, which is
+ *  ~270KB of base64 PER option and can exceed a client's inline-render budget.
+ *  Falls back to the full blob (undecodable source), then null (HTTP retry). */
 async function readBlobDirect(id: string): Promise<{ data: string; mimeType: string } | null> {
   try {
+    const store = await import("../services/image-store.js");
+    // Thumbnail first — small, fast, and always a supported JPEG.
+    try {
+      const thumb = await store.getOrCreateThumb(id);
+      if (thumb?.bytes) {
+        const tmime = (thumb.contentType || "").split(";")[0].trim().toLowerCase();
+        const mimeType = SUPPORTED_IMAGE_MIME.has(tmime) ? tmime : sniffImageMime(new Uint8Array(thumb.bytes));
+        if (mimeType) return { data: Buffer.from(thumb.bytes).toString("base64"), mimeType };
+      }
+    } catch { /* thumb unavailable (e.g. Jimp can't decode) — fall back to full */ }
+
     const { pool } = await import("../db/pool.js");
     const r = await pool.query(
       "SELECT content_type, bytes FROM listing_image_blobs WHERE id = $1",
@@ -231,8 +246,14 @@ export async function fetchImageAsBase64(url: string): Promise<{ data: string; m
     if (direct) return direct;
     console.error(`[firestarter-mcp] direct blob read failed for ${blobId}, falling back to HTTP`);
   }
+  // For a Firestarter-hosted blob, fetch the lightweight ?thumb=1 variant over
+  // HTTP too (the endpoint downscales server-side) so the embedded base64 stays
+  // small even on the HTTP path (e.g. a stdio MCP with no DB access).
+  const fetchUrl = blobId && !/[?&]thumb=/i.test(url)
+    ? `${url}${url.includes("?") ? "&" : "?"}thumb=1`
+    : url;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
+    const res = await fetch(fetchUrl, { signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS) });
     if (!res.ok) {
       console.error(`[firestarter-mcp] image fetch failed: ${res.status} for ${url}`);
       return null;
