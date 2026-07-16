@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 50 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 51 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -266,6 +266,31 @@
           },
           "reason": {
             "type": "string"
+          }
+        },
+        "required": [
+          "execution_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_shipping_options",
+      "description": "Show and compare the delivery speeds for an order awaiting approval, and preview the re-priced total for a chosen speed — before paying. Returns the numbered 'Delivery options' menu (Standard / Express / Same-Day, each with its price, ETA, and all-in total); the buyer picks one and you place the order by calling firestarter_approve with shipping_option_index set to that number. Use this when the buyer asks about delivery speed/cost, wants it faster, or you want to show the trade-off before they approve. Pass refresh:true to re-fetch live carrier rates, and select_index to preview one speed's new total.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "option_id": {
+            "type": "string"
+          },
+          "select_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "refresh": {
+            "type": "boolean"
           }
         },
         "required": [
