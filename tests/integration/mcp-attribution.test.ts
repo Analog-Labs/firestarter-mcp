@@ -137,4 +137,42 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     expect(textOf(res)).toContain("locked");
     expect(res.isError).toBeUndefined(); // a graceful explanation, not a tool error
   });
+
+  it("firestarter_my_market shows the current connection (GET /me)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+      expect(String(url)).toContain("/v1/attribution/me");
+      return new Response(JSON.stringify({
+        community: { connected: true, name: "Dom's Discord", code: "ABCD1234", program_status: "active", locked_until: "2026-10-01T00:00:00Z", attributed_at: "2026-07-03T00:00:00Z" },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const text = textOf(await captureTools().firestarter_my_market({}));
+    expect(text).toContain("Dom's Discord");
+    expect(text).toContain("ABCD1234");
+    expect(text).toContain("2026-10-01");
+  });
+
+  it("firestarter_my_market reports when not connected to any market", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ community: null }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    ));
+    const text = textOf(await captureTools().firestarter_my_market({}));
+    expect(text).toContain("not connected to any community market");
+  });
+
+  it("firestarter_leave_market disconnects the active binding (POST /disconnect)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+      expect(String(url)).toContain("/v1/attribution/disconnect");
+      return new Response(JSON.stringify({ ok: true, disconnected: true, program_id: "prog_1" }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const text = textOf(await captureTools().firestarter_leave_market({}));
+    expect(text).toContain("Left the market");
+  });
+
+  it("firestarter_leave_market is a no-op when nothing was connected", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, disconnected: false, program_id: null }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    ));
+    const text = textOf(await captureTools().firestarter_leave_market({}));
+    expect(text).toContain("weren't connected");
+  });
 });
