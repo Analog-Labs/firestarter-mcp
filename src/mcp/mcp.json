@@ -39,7 +39,7 @@
             "type": "number"
           },
           "delivery_address": {
-            "description": "A single-line string ('123 Main St, Austin, TX 78701, US') OR structured fields. A complete address (ZIP + state for US/CA/AU) lets execute quote a real carrier rate before approval.",
+            "description": "A single-line string ('123 Main St, Austin, TX 78701, US') OR an object { name?, street1, street2?, city, state?, zip?, country? }. Accepted even if partial or odd-shaped (never rejected for shape); a complete address (ZIP + state for US/CA/AU) lets execute quote a real carrier rate before approval, and the response's needs_more names any missing field.",
             "anyOf": [
               { "type": "string" },
               {
@@ -53,8 +53,7 @@
                   "zip": { "type": "string" },
                   "country": { "type": "string" },
                   "phone": { "type": "string" }
-                },
-                "required": ["street1", "city"]
+                }
               }
             ]
           },

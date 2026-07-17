@@ -655,19 +655,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
       budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
-      delivery_address: z.union([
-        z.string().describe('A single-line address, e.g. "123 Main St, Austin, TX 78701, US". Comma-separated; include ZIP + state for US/CA/AU so a real shipping rate can be quoted before approval.'),
-        z.object({
-          name: z.string().optional(),
-          street1: z.string().describe("Street address"),
-          street2: z.string().optional(),
-          city: z.string(),
-          state: z.string().optional(),
-          zip: z.string().optional(),
-          country: z.string().optional().describe("ISO country code, e.g. US, TH. Defaults to US."),
-          phone: z.string().optional(),
-        }),
-      ]).optional().describe("Optional shipping address — pass EITHER a single-line string (e.g. \"123 Main St, Austin, TX 78701, US\") OR structured fields. The buyer's saved default address is used automatically at approval, so only pass one here if they have none saved or want it shipped elsewhere; prefer a saved address_id. Passing a COMPLETE address here (with ZIP + state for US/CA/AU) lets execute return a REAL carrier rate up front instead of the flat placeholder. street1 + city are always required; state + zip are also required for US/CA/AU."),
+      // Permissive, forever-stable boundary: accept a string OR any object shape
+      // and NEVER reject for shape (an older/stale cached client that omits
+      // street1, or sends a JSON string, must still reach the server). Strictness
+      // lives server-side (the three-state normalizer + isRateable at pay time).
+      delivery_address: z.union([z.string(), z.record(z.string(), z.any())]).optional().describe("Optional shipping address — pass EITHER a single-line string (e.g. \"123 Main St, Austin, TX 78701, US\") OR an object { name?, street1, street2?, city, state?, zip?, country? } (country is an ISO code, e.g. US/TH; defaults to US). The buyer's saved default address is used automatically at approval, so only pass one here if they have none saved or want it shipped elsewhere; prefer a saved address_id. A COMPLETE address (ZIP + state for US/CA/AU) lets execute quote a REAL carrier rate up front instead of the flat placeholder; a partial or odd-shaped address is accepted anyway (never rejected for shape) and the response's `needs_more` names exactly what to collect."),
       address_id: z.string().optional().describe("A saved address id (addr_...) to ship to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Localizes search + shipping to that destination."),
       location: z
         .object({
@@ -959,19 +951,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
       option_id: z.string().optional().describe("Exact option id (e.g. 'opt_abc123') to approve, as returned in API errors or the execution resource. Takes precedence over selected_option."),
       address_id: z.string().optional().describe("A saved address id (addr_...) to ship this order to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Pass only to ship somewhere other than their default."),
-      delivery_address: z.union([
-        z.string().describe('A single-line address, e.g. "123 Main St, Austin, TX 78701, US". Comma-separated; include ZIP + state for US/CA/AU.'),
-        z.object({
-          name: z.string().optional(),
-          street1: z.string().describe("Street address"),
-          street2: z.string().optional(),
-          city: z.string(),
-          state: z.string().optional(),
-          zip: z.string().optional(),
-          country: z.string().optional().describe("ISO country code, e.g. US, TH. Defaults to US."),
-          phone: z.string().optional(),
-        }),
-      ]).optional().describe("Optional — pass EITHER a single-line string (e.g. \"123 Main St, Austin, TX 78701, US\") OR structured fields. The buyer's saved default address is used automatically; only pass a NEW address here to ship this order elsewhere, or when the buyer has no saved address. street1 + city are always required; state + zip are also required for US/CA/AU. On a first order with no saved address, the address you pass is saved as their default for next time."),
+      // Permissive, forever-stable boundary (see firestarter_execute): string OR
+      // any object, never rejected for shape; the server normalizes + gates.
+      delivery_address: z.union([z.string(), z.record(z.string(), z.any())]).optional().describe("Optional — pass EITHER a single-line string (e.g. \"123 Main St, Austin, TX 78701, US\") OR an object { name?, street1, street2?, city, state?, zip?, country? }. The buyer's saved default address is used automatically; only pass a NEW address here to ship this order elsewhere, or when the buyer has no saved address. A partial or odd-shaped address is accepted (never rejected for shape); a complete one (ZIP + state for US/CA/AU) is required only at the pay boundary. On a first order with no saved address, the address you pass is saved as their default for next time."),
       shipping_option_index: z.number().int().min(0).optional().describe("0-based index of the delivery speed to use, taken from the numbered 'Delivery options' menu shown for the option (in firestarter_execute / firestarter_status output, or firestarter_shipping_options). Omit to use the cheapest rate; the order total is recalculated server-side for the chosen speed and included in what the buyer approves."),
       confirm_total: z.number().nonnegative().optional().describe("Exact updated total in USD from a prior PRICE_CHANGED response. Pass only after showing that total to the buyer and receiving a new explicit confirmation; never guess or pre-fill it on the first approval."),
     },
