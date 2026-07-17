@@ -41,7 +41,7 @@ export function mcpApiBase(): string {
 export function buildMcpServer(apiKey: string, apiBase: string): McpServer {
   const server = new McpServer({
     name: "firestarter",
-    version: "1.0.0",
+    version: "1.1.0",
   });
 
   registerTools(server, apiKey, apiBase);

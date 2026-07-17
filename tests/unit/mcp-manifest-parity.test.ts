@@ -29,6 +29,40 @@ function registeredToolNames(): string[] {
   return names.sort();
 }
 
+/**
+ * Phase 4 (C9): capture each tool's REQUIRED param set from the live Zod schema
+ * so the manifest's inputSchema.required can be diffed against it — the exact
+ * drift (advertised-required vs actually-required) that made stale connectors
+ * reject valid delivery_address args.
+ */
+function registeredToolRequired(): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  const reqOf = (shape: any): string[] | null => {
+    if (!shape || typeof shape !== "object" || Array.isArray(shape)) return null;
+    const keys = Object.keys(shape);
+    if (keys.length && !keys.every((k) => shape[k] && typeof shape[k] === "object")) return null;
+    return keys.filter((k) => {
+      const zt = shape[k];
+      return typeof zt.isOptional === "function" ? !zt.isOptional() : true;
+    }).sort();
+  };
+  const capture = (name: string, a2?: any, a3?: any) => {
+    // server.tool(name, description, shape, handler): shape = a3
+    // registerTool(name, config, handler): shape = config.inputSchema
+    const shape = a3 && typeof a3 === "object" && !Array.isArray(a3) ? a3
+      : a2 && typeof a2 === "object" && a2.inputSchema ? a2.inputSchema : undefined;
+    const req = reqOf(shape);
+    if (req !== null) out[name] = req;
+  };
+  const stub = {
+    tool: (name: string, a2?: any, a3?: any) => capture(name, a2, a3),
+    registerTool: (name: string, config?: any) => capture(name, config, undefined),
+  } as any;
+  delete process.env.ATTRIBUTION_SELF_SERVE_ENABLED;
+  registerTools(stub, "fs_test_parity", "http://local");
+  return out;
+}
+
 function registeredPromptNames(): string[] {
   const names: string[] = [];
   // registerPrompts only calls server.prompt(name, ...).
@@ -105,5 +139,21 @@ describe("MCP prompt + resource registration parity (#570)", () => {
     if (advertised !== null) {
       expect(advertised, "manifest description 'N resources' is stale vs registered resources").toBe(resources.length);
     }
+  });
+});
+
+describe("MCP manifest param drift (#Phase4/C9)", () => {
+  it("mcp.json inputSchema.required matches the live Zod required params for each tool", () => {
+    const runtimeReq = registeredToolRequired();
+    const drifts: string[] = [];
+    for (const t of ((manifest as any).tools || [])) {
+      const rt = runtimeReq[t.name];
+      const manifestReq: string[] | undefined = t.inputSchema?.required;
+      if (!rt || manifestReq === undefined) continue; // compare only where both sides declare it
+      const a = [...rt].sort().join(",");
+      const b = [...manifestReq].sort().join(",");
+      if (a !== b) drifts.push(`${t.name}: manifest [${b}] != runtime [${a}]`);
+    }
+    expect(drifts, `mcp.json required params drifted from the live Zod schema:\n${drifts.join("\n")}`).toEqual([]);
   });
 });
