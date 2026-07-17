@@ -2,7 +2,7 @@
   "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 51 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
@@ -551,12 +551,7 @@
         },
         "required": [
           "product_name",
-          "base_price",
-          "image_urls",
-          "street1",
-          "city",
-          "state",
-          "zip"
+          "base_price"
         ]
       }
     },
@@ -576,9 +571,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "photo_urls"
-        ]
+        "required": []
       }
     },
     {
@@ -900,8 +893,7 @@
           }
         },
         "required": [
-          "listing_id",
-          "image_urls"
+          "listing_id"
         ]
       }
     },
@@ -926,9 +918,7 @@
         },
         "required": [
           "listing_id",
-          "mode",
-          "countries",
-          "exclude"
+          "mode"
         ]
       }
     },

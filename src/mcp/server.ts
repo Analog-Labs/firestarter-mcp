@@ -19,7 +19,7 @@ if (!API_KEY) {
 
 const server = new McpServer({
   name: "firestarter",
-  version: "1.0.0",
+  version: "1.1.0",
 });
 
 registerTools(server, API_KEY, API_BASE);
