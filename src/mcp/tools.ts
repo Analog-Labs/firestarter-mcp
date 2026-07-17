@@ -945,7 +945,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value. If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
@@ -956,8 +956,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       delivery_address: z.union([z.string(), z.record(z.string(), z.any())]).optional().describe("Optional — pass EITHER a single-line string (e.g. \"123 Main St, Austin, TX 78701, US\") OR an object { name?, street1, street2?, city, state?, zip?, country? }. The buyer's saved default address is used automatically; only pass a NEW address here to ship this order elsewhere, or when the buyer has no saved address. A partial or odd-shaped address is accepted (never rejected for shape); a complete one (ZIP + state for US/CA/AU) is required only at the pay boundary. On a first order with no saved address, the address you pass is saved as their default for next time."),
       shipping_option_index: z.number().int().min(0).optional().describe("0-based index of the delivery speed to use, taken from the numbered 'Delivery options' menu shown for the option (in firestarter_execute / firestarter_status output, or firestarter_shipping_options). Omit to use the cheapest rate; the order total is recalculated server-side for the chosen speed and included in what the buyer approves."),
       confirm_total: z.number().nonnegative().optional().describe("Exact updated total in USD from a prior PRICE_CHANGED response. Pass only after showing that total to the buyer and receiving a new explicit confirmation; never guess or pre-fill it on the first approval."),
+      consent_nonce: z.string().optional().describe("The single-use consent_nonce string from a prior PRICE_CHANGED response. Pass it VERBATIM together with confirm_total when re-approving a price change. It is one-time-use and cannot be guessed — never fabricate it; only echo the exact value the last PRICE_CHANGED returned."),
     },
-    async ({ execution_id, selected_option, option_id, delivery_address, address_id, shipping_option_index, confirm_total }) => {
+    async ({ execution_id, selected_option, option_id, delivery_address, address_id, shipping_option_index, confirm_total, consent_nonce }) => {
       try {
         // Bare "approve" (no execution_id): resolve the pending purchase so a
         // user replying just "approve" in chat doesn't dead-end with "nothing
@@ -1016,6 +1017,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (address_id) body.address_id = address_id;
         if (shipping_option_index != null) body.shipping_option_index = shipping_option_index;
         if (confirm_total != null) body.confirm_total = confirm_total;
+        if (consent_nonce != null) body.consent_nonce = consent_nonce;
         if (option_id) {
           body.option_id = option_id;
         } else if (selected_option !== undefined) {
@@ -1064,11 +1066,21 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const newTotal = Number(err.body?.new_total);
           const oldLabel = Number.isFinite(oldTotal) ? `$${oldTotal.toFixed(2)}` : "the quoted amount";
           const newLabel = Number.isFinite(newTotal) ? `$${newTotal.toFixed(2)}` : "the updated amount";
+          const nonce = typeof err.body?.consent_nonce === "string" ? err.body.consent_nonce : null;
+          const newArg = Number.isFinite(newTotal) ? newTotal.toFixed(2) : "<new total>";
           return {
             content: [{
               type: "text" as const,
-              text: `Shipping changed the order total from ${oldLabel} to ${newLabel}. Nothing was charged. Show the buyer ${newLabel} and ask for a new explicit confirmation. Only after they confirm, call firestarter_approve again with confirm_total: ${Number.isFinite(newTotal) ? newTotal.toFixed(2) : "<new total>"}.`,
+              text: `Shipping changed the order total from ${oldLabel} to ${newLabel}. Nothing was charged. Show the buyer ${newLabel} and ask for a new explicit confirmation. Only after they confirm, call firestarter_approve again with confirm_total: ${newArg}${nonce ? ` and consent_nonce: "${nonce}"` : ""}.`,
             }],
+            isError: true,
+          };
+        }
+        // Fail-closed shipping: a live carrier rate could not be obtained — surface
+        // the retry so the agent can try again rather than charging a placeholder.
+        if (err instanceof ApiError && err.code === "SHIPPING_UNAVAILABLE") {
+          return {
+            content: [{ type: "text" as const, text: "Couldn't get a live shipping rate for this address just now, so nothing was charged. Try firestarter_approve again in a moment; if it keeps failing, the address may be outside the carriers' service area." }],
             isError: true,
           };
         }
