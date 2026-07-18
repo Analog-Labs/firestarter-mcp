@@ -437,6 +437,27 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
     }
   }
 
+  // A dispute freezes escrow and changes what "shipping"/"delivered" actually
+  // means for this order, so surface it prominently on every status/tracking
+  // read. `active_dispute` is populated by GET /v1/executions/:id. Without this
+  // banner the order looked like a normal in-flight purchase and a buyer asking
+  // "is there a dispute?" was silently answered "no". An awaiting_approval order
+  // can't be disputed, so this never collides with the approval-confirmation view.
+  const activeDispute = exec.active_dispute;
+  if (activeDispute) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`⚠️ **Dispute open** (${activeDispute.id}) — status: ${String(activeDispute.status || "open").replace(/_/g, " ")}`);
+    if (activeDispute.reason) {
+      const typeLabel = activeDispute.dispute_type ? ` (${String(activeDispute.dispute_type).replace(/_/g, " ")})` : "";
+      lines.push(`Reason: ${activeDispute.reason}${typeLabel}`);
+    }
+    const pendingOffer = activeDispute.pending_offer;
+    if (pendingOffer && pendingOffer.offered_by === "seller") {
+      lines.push(`The seller proposed a split: **${pendingOffer.buyer_pct}% refund to you / ${pendingOffer.seller_pct}% to the seller** — you can accept, reject, or counter it.`);
+    }
+    lines.push("Use `firestarter_disputes` (with this order's ID) to see the full thread and respond.");
+  }
+
   // Order approved but no payment method on file — relay the no-login setup
   // link so the buyer can finish (the order resumes automatically once a card
   // is added). Without this the link never reached chat buyers and orders
@@ -3033,7 +3054,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // an explicit action), so the tool must translate the seller's intent here.
   server.tool(
     "firestarter_seller_disputes",
-    "View and resolve disputes on the seller's orders. Call with NO arguments to list open disputes (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return.",
+    "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
     {
       dispute_id: z.string().optional().describe("Dispute ID to act on (disp_...). Omit to list all disputes."),
       action: z.enum(["refund", "contest", "split"]).optional().describe("What to do with the dispute: 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."),
@@ -3065,7 +3086,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const data = await apiRequest("GET", "/v1/sellers/disputes");
         const disputes = data.disputes || [];
         if (disputes.length === 0) {
-          return { content: [{ type: "text" as const, text: "No disputes. All orders are in good standing." }] };
+          // Never claim "all orders in good standing" from a seller-only query —
+          // that global-sounding assurance is exactly what mislabeled a BUYER's
+          // dispute question as "no dispute". Say the seller-scoped truth, and if
+          // the caller isn't a registered seller at all, don't imply zero
+          // disputes — point them at the buyer tool.
+          const text = data.is_seller === false
+            ? "You're not registered as a seller, so there are no seller-side disputes to show. If you're asking about an order you BOUGHT, use `firestarter_disputes` instead."
+            : "No open disputes on your sales right now. (This only covers orders you're selling — for something you bought, use `firestarter_disputes`.)";
+          return { content: [{ type: "text" as const, text }] };
         }
         const lines = [`**Disputes** (${disputes.length})\n`];
         for (const d of disputes) {
@@ -3078,6 +3107,221 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     }
   );
+
+  // Tool: firestarter_disputes (BUYER side)
+  // The buyer counterpart to firestarter_seller_disputes. Buyers open, track, and
+  // resolve disputes on orders THEY bought. Execution-centric (exec_… ids) so it
+  // lines up with how firestarter_status / firestarter_track_order name orders.
+  // This tool is why a buyer asking "is there a dispute on my order?" now gets a
+  // real, buyer-scoped answer instead of the seller tool's false "all clear".
+  {
+    // Newest-first (the API orders buyer disputes by created_at DESC), so the
+    // first execution_id match is the latest dispute on that order.
+    const findBuyerDispute = async (executionId: string): Promise<any | null> => {
+      const list = await apiRequest("GET", "/buyer/disputes");
+      const rows = Array.isArray(list.disputes) ? list.disputes : [];
+      return rows.find((d: any) => d.execution_id === executionId) || null;
+    };
+
+    // Resolve the dispute id an action targets: an explicit disp_… wins; otherwise
+    // look it up from the order id. Returns null when neither is usable.
+    const resolveDisputeId = async (disputeId?: string, executionId?: string): Promise<string | null> => {
+      if (disputeId) return cleanListingId(disputeId);
+      if (executionId) return (await findBuyerDispute(cleanListingId(executionId)))?.id ?? null;
+      return null;
+    };
+
+    const statusLabel = (s: unknown) => String(s ?? "").replace(/_/g, " ");
+    const OPEN_STATES = new Set(["open", "seller_responded", "negotiating", "escalated"]);
+    const textBlock = (text: string, isError = false) =>
+      ({ content: [{ type: "text" as const, text }], ...(isError ? { isError: true } : {}) });
+
+    server.tool(
+      "firestarter_disputes",
+      "For BUYERS: open, check, and resolve disputes on orders the user BOUGHT. Use this whenever a buyer asks 'is there a dispute on my order?', wants to open a dispute (item never arrived, arrived damaged / wrong / not as described), or needs to respond to one — post a note or photo, accept / reject / counter the seller's partial-refund offer, withdraw, or escalate to Firestarter. Call with NO arguments to list the buyer's disputes; pass an order's execution_id (exec_…) to check whether THAT order has a dispute; pass a dispute_id (disp_…) to see the full thread. This is the BUYER side — for disputes on orders the user is SELLING, use firestarter_seller_disputes instead.",
+      {
+        action: z.enum(["open", "message", "accept", "reject", "counter", "withdraw", "escalate"]).optional().describe("What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."),
+        execution_id: z.string().optional().describe("Order / execution id (exec_…). Required for 'open'. With no action, pass this to check whether a specific order has a dispute. May also stand in for dispute_id on actions — the dispute on that order is looked up."),
+        dispute_id: z.string().optional().describe("Dispute id (disp_…). Identifies which dispute to view or act on for message / accept / reject / counter / withdraw / escalate."),
+        reason: z.string().optional().describe("For 'open': what went wrong, in the buyer's words (e.g. 'Package never arrived, tracking stuck for two weeks'). Also used as the optional note on a 'counter' or 'escalate'."),
+        type: z.enum(["not_received", "not_as_described", "damaged", "missing_item", "wrong_item", "other"]).optional().describe("For 'open': the category of problem. Use 'not_received' when the order never arrived. Defaults to 'not_as_described'."),
+        message: z.string().optional().describe("For 'message': the text to post to the dispute thread."),
+        image_base64: z.string().optional().describe("For 'message': an optional evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). It is uploaded and attached to the message."),
+        offer_id: z.string().optional().describe("For 'accept' / 'reject': the specific offer id to respond to. Omit to act on the latest pending seller offer."),
+        buyer_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent YOU (the buyer) would be refunded. buyer_pct + seller_pct must equal 100."),
+        seller_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent the seller keeps. buyer_pct + seller_pct must equal 100."),
+      },
+      async ({ action, execution_id, dispute_id, reason, type, message, image_base64, offer_id, buyer_pct, seller_pct }) => {
+        try {
+          // ── OPEN a new dispute ─────────────────────────────────────────────
+          if (action === "open") {
+            if (!execution_id) return textBlock("To open a dispute I need the order id (exec_…). Check the order with firestarter_status if you're not sure which one.", true);
+            const execId = cleanListingId(execution_id);
+            // Don't open a second dispute on an order that already has an open one.
+            const existing = await findBuyerDispute(execId);
+            if (existing && existing.is_open) {
+              return textBlock(`This order already has an open dispute (${existing.id}, status: ${statusLabel(existing.status)}). View or respond to it with firestarter_disputes dispute_id "${existing.id}" — I won't open a second one.`);
+            }
+            if (!reason || !reason.trim()) return textBlock("To open a dispute, tell me briefly what went wrong (e.g. 'never arrived' or 'arrived damaged').", true);
+            const res = await apiRequest("POST", `/v1/executions/${execId}/dispute`, { reason: reason.trim(), type: type || "not_as_described" });
+            if (!res.dispute_id) {
+              // The escrow was frozen but the dispute row didn't materialize — say
+              // so honestly rather than implying a live, timed dispute exists.
+              return textBlock(`The escrow hold on order ${execution_id} was frozen, but the dispute record couldn't be created. ${res.message || ""} Please retry, or contact support so this doesn't sit frozen.`.trim());
+            }
+            return textBlock(`**Dispute opened** (${res.dispute_id}) on order ${execution_id}. ${res.message || "Funds are frozen in escrow pending review; the seller has 48 hours to respond."}\n\nAdd a photo or note anytime with action "message". I'll surface the seller's response when it comes.`);
+          }
+
+          // ── MESSAGE (optionally with a photo) ──────────────────────────────
+          if (action === "message") {
+            const did = await resolveDisputeId(dispute_id, execution_id);
+            if (!did) return textBlock("I need the dispute id (disp_…) or the order id to post to. List your disputes by calling firestarter_disputes with no arguments.", true);
+            if ((!message || !message.trim()) && !image_base64) return textBlock("Add a note (message) or a photo (image_base64) to post to the dispute.", true);
+            let attachmentUrls: string[] = [];
+            if (image_base64) {
+              const up = await apiRequest("POST", `/buyer/disputes/${did}/attachments`, { image_base64 }, VERIFY_TIMEOUT_MS);
+              if (up?.url) attachmentUrls = [up.url];
+              else if (!message || !message.trim()) return textBlock("I couldn't attach that photo (it may be an unsupported format or too large). Try another image, or send a text note instead.", true);
+            }
+            await apiRequest("POST", `/buyer/disputes/${did}/messages`, {
+              message: (message && message.trim()) || "",
+              attachment_urls: attachmentUrls,
+            });
+            return textBlock(`Posted to dispute ${did}.${attachmentUrls.length ? " Photo attached." : ""} The seller will see it.`);
+          }
+
+          // ── ACCEPT / REJECT a seller's split offer ─────────────────────────
+          if (action === "accept" || action === "reject") {
+            const did = await resolveDisputeId(dispute_id, execution_id);
+            if (!did) return textBlock("I need the dispute id (disp_…) or the order id to respond to. List your disputes with firestarter_disputes.", true);
+            let oid = offer_id ? cleanListingId(offer_id) : undefined;
+            if (!oid) {
+              const detail = await apiRequest("GET", `/buyer/disputes/${did}`);
+              const offers = detail?.dispute?.offers || [];
+              const pending = offers.find((o: any) => o.offered_by === "seller" && !o.accepted_at && !o.rejected_at);
+              if (!pending) return textBlock(`There's no pending seller offer to ${action} on dispute ${did}. You can send a message, counter with your own split, or escalate.`, true);
+              oid = pending.id;
+            }
+            if (action === "accept") {
+              await apiRequest("POST", `/buyer/disputes/${did}/offers/${oid}/accept`);
+              return textBlock(`Offer accepted on dispute ${did}. The agreed split is applied and the escrow is settled — the dispute is now resolved.`);
+            }
+            await apiRequest("POST", `/buyer/disputes/${did}/offers/${oid}/reject`);
+            return textBlock(`Offer rejected on dispute ${did}. You can counter with action "counter" (buyer_pct + seller_pct), keep messaging, or escalate to Firestarter.`);
+          }
+
+          // ── COUNTER with the buyer's own split ─────────────────────────────
+          if (action === "counter") {
+            const did = await resolveDisputeId(dispute_id, execution_id);
+            if (!did) return textBlock("I need the dispute id (disp_…) or the order id to counter on. List your disputes with firestarter_disputes.", true);
+            if (buyer_pct == null || seller_pct == null) return textBlock("To counter, give both buyer_pct and seller_pct (they must add up to 100).", true);
+            if (Math.round(buyer_pct + seller_pct) !== 100) return textBlock(`buyer_pct + seller_pct must equal 100 (you gave ${buyer_pct} + ${seller_pct} = ${buyer_pct + seller_pct}).`, true);
+            await apiRequest("POST", `/buyer/disputes/${did}/counter`, { buyer_pct, seller_pct, reasoning: reason });
+            return textBlock(`Counter-offer sent on dispute ${did}: **${buyer_pct}% refund to you / ${seller_pct}% to the seller**. The seller can accept, reject, or counter back.`);
+          }
+
+          // ── WITHDRAW the dispute ───────────────────────────────────────────
+          if (action === "withdraw") {
+            const did = await resolveDisputeId(dispute_id, execution_id);
+            if (!did) return textBlock("I need the dispute id (disp_…) or the order id to withdraw. List your disputes with firestarter_disputes.", true);
+            await apiRequest("POST", `/buyer/disputes/${did}/withdraw`);
+            return textBlock(`Dispute ${did} withdrawn. The escrow hold is unfrozen and the order goes back to normal processing (the usual release timer resumes).`);
+          }
+
+          // ── ESCALATE to Firestarter ────────────────────────────────────────
+          if (action === "escalate") {
+            const did = await resolveDisputeId(dispute_id, execution_id);
+            if (!did) return textBlock("I need the dispute id (disp_…) or the order id to escalate. List your disputes with firestarter_disputes.", true);
+            await apiRequest("POST", `/buyer/disputes/${did}/escalate`, reason && reason.trim() ? { reason: reason.trim() } : {});
+            return textBlock(`Dispute ${did} escalated to Firestarter for review. The funds stay frozen until a decision is recorded on the dispute.`);
+          }
+
+          // ── VIEW a specific dispute (dispute_id, or the one on an order) ────
+          let viewId = dispute_id ? cleanListingId(dispute_id) : undefined;
+          if (!viewId && execution_id) {
+            const found = await findBuyerDispute(cleanListingId(execution_id));
+            if (!found) {
+              return textBlock(`No dispute on order ${execution_id} — it's in good standing on your side. If it never arrived or arrived wrong, open one with action "open" (plus a short reason).`);
+            }
+            viewId = found.id;
+          }
+          if (viewId) {
+            const detail = await apiRequest("GET", `/buyer/disputes/${viewId}`);
+            const d = detail?.dispute;
+            if (!d) return textBlock(`Dispute ${viewId} not found among your orders.`, true);
+
+            const lines: string[] = [];
+            lines.push(`**Dispute ${d.id}** — status: ${statusLabel(d.status)}`);
+            if (d.execution_id) lines.push(`Order: ${d.execution_id}`);
+            if (d.reason) lines.push(`Reason: ${d.reason}${d.dispute_type ? ` (${statusLabel(d.dispute_type)})` : ""}`);
+            if (OPEN_STATES.has(d.status) && d.seller_deadline_at) lines.push(`Seller must respond by ${new Date(d.seller_deadline_at).toUTCString()}.`);
+            if (!OPEN_STATES.has(d.status)) {
+              const pct = typeof d.buyer_refund_pct === "number" ? ` — you were refunded ${d.buyer_refund_pct}%` : "";
+              lines.push(`Resolved${d.resolution_type ? ` (${statusLabel(d.resolution_type)})` : ""}${pct}.`);
+            }
+
+            const offers = Array.isArray(d.offers) ? d.offers : [];
+            if (offers.length > 0) {
+              lines.push("", "**Offers:**");
+              for (const o of offers) {
+                const state = o.accepted_at ? "accepted" : o.rejected_at ? "rejected" : "pending";
+                const who = o.offered_by === "seller" ? "Seller" : "You";
+                lines.push(`- ${who}: **${o.buyer_pct}% refund to you / ${o.seller_pct}% to seller** — ${state}${o.reasoning ? ` — "${o.reasoning}"` : ""}`);
+              }
+            }
+
+            const messages = Array.isArray(d.messages) ? d.messages : [];
+            if (messages.length > 0) {
+              lines.push("", "**Messages:**");
+              for (const m of messages) {
+                const who = m.sender_role === "buyer" ? "You" : m.sender_role === "seller" ? "Seller" : "Firestarter";
+                const nAtt = Array.isArray(m.attachment_urls) ? m.attachment_urls.length : 0;
+                lines.push(`- **${who}:** ${m.message}${nAtt ? ` _(${nAtt} photo${nAtt > 1 ? "s" : ""})_` : ""}`);
+              }
+            }
+
+            // Status-aware next step. Withdraw/counter need an open, pre-escalation
+            // dispute; escalate only works after the seller has engaged.
+            const pendingSellerOffer = offers.find((o: any) => o.offered_by === "seller" && !o.accepted_at && !o.rejected_at);
+            lines.push("");
+            if (pendingSellerOffer) {
+              lines.push(`The seller is offering you a **${pendingSellerOffer.buyer_pct}% refund**. Accept (action "accept"), reject (action "reject"), or counter (action "counter" with buyer_pct + seller_pct).`);
+            } else if (d.status === "open") {
+              lines.push(`Waiting on the seller. You can add a message or photo (action "message"), or withdraw (action "withdraw").`);
+            } else if (d.status === "seller_responded" || d.status === "negotiating") {
+              lines.push(`You can counter (action "counter"), keep messaging, escalate to Firestarter (action "escalate"), or withdraw (action "withdraw").`);
+            } else if (d.status === "escalated") {
+              lines.push(`This dispute is with Firestarter for review. You can still add messages or photos while it's reviewed.`);
+            }
+
+            const imageUrls = [
+              ...(Array.isArray(d.evidence_urls) ? d.evidence_urls : []),
+              ...(Array.isArray(d.seller_evidence_urls) ? d.seller_evidence_urls : []),
+              ...messages.flatMap((m: any) => (Array.isArray(m.attachment_urls) ? m.attachment_urls : [])),
+            ];
+            const imageBlocks = await inlineImageBlocks(imageUrls);
+            return { content: [{ type: "text" as const, text: lines.join("\n") }, ...imageBlocks] };
+          }
+
+          // ── LIST the buyer's disputes ──────────────────────────────────────
+          const list = await apiRequest("GET", "/buyer/disputes");
+          const disputes = Array.isArray(list.disputes) ? list.disputes : [];
+          if (disputes.length === 0) {
+            return textBlock("You have no disputes — all your orders are in good standing. If an order hasn't arrived or arrived wrong, open one with action \"open\" and the order id (exec_…).");
+          }
+          const openCount = disputes.filter((d: any) => d.is_open).length;
+          const outLines = [`**Your disputes** (${disputes.length}${openCount ? `, ${openCount} open` : ", all resolved"})\n`];
+          for (const d of disputes) {
+            outLines.push(`- **${d.product || "Order"}** — ${d.id} — ${statusLabel(d.status)}${d.is_open ? "" : " (closed)"}${d.execution_id ? ` — order ${d.execution_id}` : ""}`);
+          }
+          outLines.push(`\nSee one in full: firestarter_disputes with its dispute_id (or the order's execution_id).`);
+          return textBlock(outLines.join("\n"));
+        } catch (err: any) {
+          return textBlock(`Error with disputes: ${toErrorMessage(err)}`, true);
+        }
+      }
+    );
+  }
 
   // ── Community attribution / self-serve "markets" (agentic spin-up) ──
   // These let ANY agent (Cole, Claude, Cursor, a community's own bot) stand up

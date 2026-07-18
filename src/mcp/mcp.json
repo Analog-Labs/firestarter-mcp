@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 51 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 52 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -1013,7 +1013,7 @@
     },
     {
       "name": "firestarter_seller_disputes",
-      "description": "View and resolve disputes on the seller's orders. Call with NO arguments to list open disputes (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return.",
+      "description": "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1037,6 +1037,58 @@
           "reasoning": {
             "type": "string",
             "description": "Optional note explaining the decision, recorded on the dispute and shown to the buyer."
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_disputes",
+      "description": "For BUYERS: open, check, and resolve disputes on orders the user BOUGHT. Use this whenever a buyer asks 'is there a dispute on my order?', wants to open a dispute (item never arrived, arrived damaged / wrong / not as described), or needs to respond to one — post a note or photo, accept / reject / counter the seller's partial-refund offer, withdraw, or escalate to Firestarter. Call with NO arguments to list the buyer's disputes; pass an order's execution_id (exec_...) to check whether THAT order has a dispute; pass a dispute_id (disp_...) to see the full thread. This is the BUYER side — for disputes on orders the user is SELLING, use firestarter_seller_disputes instead.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["open", "message", "accept", "reject", "counter", "withdraw", "escalate"],
+            "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo (needs dispute_id or execution_id, plus message and/or image_base64). 'accept'/'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
+          },
+          "execution_id": {
+            "type": "string",
+            "description": "Order/execution id (exec_...). Required for 'open'. With no action, pass this to check whether a specific order has a dispute. May also stand in for dispute_id on actions."
+          },
+          "dispute_id": {
+            "type": "string",
+            "description": "Dispute id (disp_...). Identifies which dispute to view or act on."
+          },
+          "reason": {
+            "type": "string",
+            "description": "For 'open': what went wrong, in the buyer's words. Also used as the optional note on a 'counter' or 'escalate'."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["not_received", "not_as_described", "damaged", "missing_item", "wrong_item", "other"],
+            "description": "For 'open': the category of problem. Use 'not_received' when the order never arrived. Defaults to 'not_as_described'."
+          },
+          "message": {
+            "type": "string",
+            "description": "For 'message': the text to post to the dispute thread."
+          },
+          "image_base64": {
+            "type": "string",
+            "description": "For 'message': an optional evidence photo as a base64 data-URI ('data:image/jpeg;base64,...'). Uploaded and attached to the message."
+          },
+          "offer_id": {
+            "type": "string",
+            "description": "For 'accept'/'reject': the specific offer id. Omit to act on the latest pending seller offer."
+          },
+          "buyer_pct": {
+            "type": "number",
+            "description": "For 'counter': the percent YOU (the buyer) would be refunded. buyer_pct + seller_pct must equal 100."
+          },
+          "seller_pct": {
+            "type": "number",
+            "description": "For 'counter': the percent the seller keeps. buyer_pct + seller_pct must equal 100."
           }
         },
         "required": []

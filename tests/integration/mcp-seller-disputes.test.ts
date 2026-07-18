@@ -154,4 +154,30 @@ describe("firestarter_seller_disputes", () => {
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/Error with disputes/i);
   });
+
+  // The empty-list copy is the exact text that mislabeled a BUYER's dispute
+  // question. It must never claim a global "all orders in good standing", and a
+  // non-seller must be told to use the buyer tool — not that there are no disputes.
+  it("empty list for a NON-seller points to the buyer tool, never 'good standing'", async () => {
+    const tools = captureTools();
+    installFetch(() => ({ status: 200, json: { disputes: [], is_seller: false } }));
+
+    const res = await tools.firestarter_seller_disputes({});
+    const text = textOf(res);
+
+    expect(text).not.toMatch(/good standing/i);
+    expect(text).toMatch(/not registered as a seller/i);
+    expect(text).toMatch(/firestarter_disputes/);
+  });
+
+  it("empty list for an ACTIVE seller says so seller-scoped, never 'good standing'", async () => {
+    const tools = captureTools();
+    installFetch(() => ({ status: 200, json: { disputes: [], is_seller: true } }));
+
+    const text = textOf(await tools.firestarter_seller_disputes({}));
+
+    expect(text).not.toMatch(/good standing/i);
+    expect(text).toMatch(/your sales/i);
+    expect(text).toMatch(/firestarter_disputes/);
+  });
 });
