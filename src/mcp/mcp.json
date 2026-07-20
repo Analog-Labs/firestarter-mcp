@@ -1183,8 +1183,8 @@
           },
           "handle": {
             "type": "string",
-            "pattern": "^[a-z0-9][a-z0-9-]{1,30}$",
-            "description": "Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: lowercase letters, digits and hyphens, must start with a letter or digit. Must be unique; reserved words and share-code-shaped strings are rejected, and a taken handle fails the whole create."
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{1,30}$",
+            "description": "Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase). Must be unique; reserved words and share-code-shaped strings are rejected, and a taken handle fails the whole create."
           }
         },
         "required": [
@@ -1228,8 +1228,8 @@
           },
           "handle": {
             "type": "string",
-            "pattern": "^[a-z0-9][a-z0-9-]{1,30}$",
-            "description": "Vanity handle for the community URL — firestarter.network/m/<handle>. 2-31 chars: lowercase letters, digits and hyphens, must start with a letter or digit. Must be unique; reserved words and share-code-shaped strings are rejected."
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{1,30}$",
+            "description": "Vanity handle for the community URL — firestarter.network/m/<handle>. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase). Must be unique; reserved words and share-code-shaped strings are rejected."
           }
         },
         "required": [

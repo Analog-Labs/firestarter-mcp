@@ -130,6 +130,20 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     expect(text).toContain("firestarter.network/m/analog");
   });
 
+  it("firestarter_create_market accepts a mixed-case handle and normalizes it to lowercase (matches the server)", async () => {
+    // The server lowercases before validating, so 'Analog' is valid there; the
+    // tool must not reject it client-side. It is sent as 'analog'.
+    vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
+      expect(JSON.parse(init.body).slug).toBe("analog");
+      return new Response(
+        JSON.stringify({ program: { id: "apg_x", override_bps: 1000, slug: "analog" }, override_bps_capped: false }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    }));
+    const text = textOf(await captureTools().firestarter_create_market({ share_bps: 1000, handle: "Analog" }));
+    expect(text).toContain("firestarter.network/m/analog");
+  });
+
   it("firestarter_create_market reports a taken handle without creating the market", async () => {
     vi.stubGlobal("fetch", vi.fn(async () =>
       new Response(JSON.stringify({ error: "That handle is already in use", code: "SLUG_TAKEN" }), { status: 409, headers: { "Content-Type": "application/json" } }),

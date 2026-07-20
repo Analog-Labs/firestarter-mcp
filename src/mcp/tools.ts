@@ -3423,11 +3423,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         share_bps: z.number().int().min(0).max(10000).describe("Cut of Firestarter's platform fee in basis points (1000 = 10%). Capped at the platform self-serve max; the response returns the effective value."),
         type: z.enum(["community", "developer"]).optional().describe("Program type. Default 'community'."),
         display_name: z.string().max(60).optional().describe("Buyer-facing community name, e.g. 'Analog'. Displayed on join/browse/community surfaces."),
-        handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/, "handle must be 2-31 chars: lowercase letters, digits and hyphens, starting with a letter or digit").optional().describe("Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: lowercase letters, digits and hyphens, must start with a letter or digit. Must be unique; the API rejects handles that are reserved or shaped like a share code. If it's taken the whole create fails, so retry with a different handle (or omit it and claim one later with firestarter_set_market_handle)."),
+        handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/i, "handle must be 2-31 chars: letters, digits and hyphens, starting with a letter or digit").optional().describe("Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase), so 'Analog' and 'analog' are the same handle. Must be unique; the API rejects handles that are reserved or shaped like a share code. If it's taken the whole create fails, so retry with a different handle (or omit it and claim one later with firestarter_set_market_handle)."),
       },
       async ({ share_bps, type, display_name, handle }) => {
         try {
-          const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps, display_name, slug: handle });
+          const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps, display_name, slug: handle?.toLowerCase() });
           const p = res.program ?? {};
           let text = `**Market created.**${p.display_name ? ` ${p.display_name}.` : ""} Program id: \`${p.id}\`. Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee`;
           if (res.override_bps_capped) text += ` (capped from your request to the platform max of ${(Number(res.max_self_serve_bps ?? 0) / 100).toFixed(2)}%)`;
@@ -3472,12 +3472,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "Claim or change the vanity handle for a market you already own (from firestarter_create_market), so its URL is firestarter.network/m/<handle> instead of a random share code. Use when an owner wants a memorable community link, or to rename an existing handle. The handle is stable even if the underlying share code is rotated, and resolves to the same market as the code. It must be unique across Firestarter; the API rejects one that is already taken, reserved, or shaped like a share code.",
       {
         program_id: z.string().describe("The market/program id from firestarter_create_market."),
-        handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/, "handle must be 2-31 chars: lowercase letters, digits and hyphens, starting with a letter or digit").describe("Vanity handle for the community URL — firestarter.network/m/<handle>. 2-31 chars: lowercase letters, digits and hyphens, must start with a letter or digit. Must be unique; reserved words and share-code-shaped strings are rejected."),
+        handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/i, "handle must be 2-31 chars: letters, digits and hyphens, starting with a letter or digit").describe("Vanity handle for the community URL — firestarter.network/m/<handle>. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase). Must be unique; reserved words and share-code-shaped strings are rejected."),
       },
       async ({ program_id, handle }) => {
         try {
-          const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, { slug: handle });
-          const slug = res.program?.slug ?? handle;
+          const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, { slug: handle.toLowerCase() });
+          const slug = res.program?.slug ?? handle.toLowerCase();
           return { content: [{ type: "text" as const, text: `**Handle set.** Your community URL is now ${MARKET_LINK_BASE}/${slug}\n\nShare it anywhere — it resolves to the same market as your share code and stays stable if you rotate the code.` }] };
         } catch (err: any) {
           if (err instanceof ApiError && err.code === "SLUG_TAKEN") {
