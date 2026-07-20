@@ -375,16 +375,18 @@ export async function inlineImageBlocks(urls: Array<string | null | undefined>):
  * for purchasable options carrying a real choice (>= 2 methods).
  */
 export function renderDeliveryOptions(opt: any, dm: any): string[] {
+  if (opt.purchasable === false) return [];
   const methods: any[] = Array.isArray(opt.shipping_options) ? opt.shipping_options : [];
-  if (opt.purchasable === false || methods.length < 2) return [];
+  if (methods.length === 0) return [];
 
   const subtotalCents = Math.round(Number(opt.subtotal ?? 0) * 100);
   const taxCents = Math.round(Number(opt.tax ?? 0) * 100);
   const marginBps = dm && typeof dm.margin_bps === "number" ? dm.margin_bps : 0;
   const capCents = dm && typeof dm.per_transaction_cap_cents === "number" ? dm.per_transaction_cap_cents : undefined;
 
-  const lines: string[] = ["  Delivery options — pick a speed, or approve to use the cheapest:"];
-  methods.forEach((m: any, i: number) => {
+  // Describe one delivery method: its service label + price · eta · all-in (incl.
+  // the app margin, computed the exact way the charge path does so shown == paid).
+  const describe = (m: any): { label: string; parts: string[]; tags: string[] } => {
     const priceCents = Number(m.price_cents);
     const price = !Number.isFinite(priceCents) ? "price at checkout" : priceCents === 0 ? "free" : `$${(priceCents / 100).toFixed(2)}`;
     const eta = typeof m.delivery_range === "string" && m.delivery_range.trim()
@@ -396,8 +398,6 @@ export function renderDeliveryOptions(opt: any, dm: any): string[] {
       || [m.carrier, m.service].filter(Boolean).join(" ")
       || m.method_type
       || "Shipping";
-    // All-in incl. the app margin, computed the exact way the charge path does,
-    // so the number shown is the number the buyer pays for that speed.
     let allIn: string | null = null;
     if (Number.isFinite(priceCents)) {
       const baseCents = subtotalCents + priceCents + taxCents;
@@ -407,12 +407,62 @@ export function renderDeliveryOptions(opt: any, dm: any): string[] {
     const tags: string[] = [];
     if (Array.isArray(m.badges)) tags.push(...m.badges.filter((b: unknown) => typeof b === "string" && b));
     if (m.is_estimated) tags.push("estimate");
-    const parts = [`[${i}] ${label}`, price];
+    const parts = [price];
     if (eta) parts.push(eta);
     if (allIn) parts.push(allIn);
-    lines.push(`   ${parts.join(" · ")}${tags.length ? ` — ${tags.join(", ")}` : ""}`);
+    return { label, parts, tags };
+  };
+
+  // Single delivery method: still NAME the service + speed (there is no choice to
+  // make, so no [index]) — so shipping is never invisible on a one-option order.
+  if (methods.length === 1) {
+    const d = describe(methods[0]);
+    return [`  Delivery: ${d.label} · ${d.parts.join(" · ")}${d.tags.length ? ` — ${d.tags.join(", ")}` : ""}`];
+  }
+
+  // Two or more services: the numbered menu whose indices ARE shipping_option_index.
+  const lines: string[] = ["  Delivery options — pick a speed, or approve to use the cheapest:"];
+  methods.forEach((m: any, i: number) => {
+    const d = describe(m);
+    lines.push(`   [${i}] ${d.label} · ${d.parts.join(" · ")}${d.tags.length ? ` — ${d.tags.join(", ")}` : ""}`);
   });
   lines.push("  To choose one, approve with shipping_option_index set to its [number].");
+  return lines;
+}
+
+/**
+ * Restate the chosen delivery SERVICE + the shipping-inclusive all-in for a
+ * just-approved / pay-ready order, so the buyer always sees exactly what they'll
+ * be charged BEFORE the payment/card step — the fix for "no shipping info before
+ * payment". baseCents is the frozen item all-in (subtotal+shipping+tax); dm adds
+ * the per-API-key app margin the same way the option display does, so the number
+ * shown equals the number charged. Returns [] when nothing is known.
+ */
+export function renderPayReadySummary(opts: { baseCents: number | null; shipping: any; dm: any }): string[] {
+  const lines: string[] = [];
+  const s = opts.shipping;
+  if (s && typeof s === "object") {
+    const label =
+      (typeof s.label === "string" && s.label.trim()) ||
+      [s.carrier, s.service].filter(Boolean).join(" ") ||
+      s.method_type ||
+      "Shipping";
+    const priceCents = Number(s.price_cents);
+    const price = !Number.isFinite(priceCents) ? null : priceCents === 0 ? "free" : `$${(priceCents / 100).toFixed(2)}`;
+    const days = Number(s.delivery_days);
+    const eta =
+      (typeof s.delivery_range === "string" && s.delivery_range.trim()) ||
+      (Number.isFinite(days) ? `~${days} day${days === 1 ? "" : "s"}` : null);
+    lines.push(`Shipping: ${[label, price, eta].filter(Boolean).join(" · ")}`);
+  }
+  const base = opts.baseCents;
+  if (base != null && Number.isFinite(base)) {
+    const dm = opts.dm;
+    const marginBps = dm && typeof dm.margin_bps === "number" ? dm.margin_bps : 0;
+    const capCents = dm && typeof dm.per_transaction_cap_cents === "number" ? dm.per_transaction_cap_cents : undefined;
+    const allIn = marginBps > 0 ? base + marginCentsFor(base, marginBps, capCents) : base;
+    lines.push(`Total: $${(allIn / 100).toFixed(2)} all-in — this is what will be charged.`);
+  }
   return lines;
 }
 
@@ -446,15 +496,28 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
   // across lines in Slack/WhatsApp/Telegram. Early-return with a concise
   // message — the full options/steps dump is redundant post-approval.
   if (exec.status === "awaiting_payment_method") {
+    // Restate what ships and the exact all-in BEFORE asking for a card, so the
+    // buyer is never asked to pay with the shipping/total out of view.
+    const payReady = renderPayReadySummary({
+      baseCents: (exec.selected_option?.total_cents ?? null) as number | null,
+      shipping: exec.selected_shipping ?? (exec.selected_option?.shipping_method ?? null),
+      dm: exec.developer_margin,
+    });
     if (exec.setup_url) {
       lines.push("");
-      lines.push("**Action needed:** Add a payment method to finish this order (no login needed):");
+      lines.push("Order approved.");
+      if (payReady.length) lines.push(...payReady);
+      lines.push("");
+      lines.push("**Last step — add a payment method to place the order** (no login needed):");
       lines.push(exec.setup_url);
       lines.push("");
-      lines.push("The order completes automatically once a card is added.");
+      lines.push("The order completes automatically once a card is added — you'll be charged the all-in above.");
     } else {
       lines.push("");
-      lines.push("**Action needed:** this order is approved and waiting on a payment method. Ask the buyer to add a card from their dashboard billing settings; the order resumes automatically once added.");
+      lines.push("Order approved.");
+      if (payReady.length) lines.push(...payReady);
+      lines.push("");
+      lines.push("**Last step:** this order is waiting on a payment method. Ask the buyer to add a card from their dashboard billing settings; the order resumes automatically once added.");
     }
     blocks.push({ type: "text", text: lines.join("\n") });
     return blocks;
@@ -524,7 +587,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       if (opt.total != null) {
         const costParts: string[] = [];
         if (opt.subtotal != null) costParts.push(`$${opt.subtotal} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`);
+        // Always state shipping — a silently-dropped shipping line makes shipping
+        // look unresolved. >0 shows the amount, 0 shows "free shipping", and a
+        // genuinely-unknown shipping (browse-only / not rated) shows "shipping
+        // calculated at checkout" instead of nothing (mirrors firestarter_preview).
         if (opt.shipping != null && Number(opt.shipping) > 0) costParts.push(`$${opt.shipping} shipping`);
+        else if (opt.shipping != null && Number(opt.shipping) === 0) costParts.push("free shipping");
+        else if (opt.shipping == null && (opt.metadata as any)?.shipping_known === false) costParts.push("shipping calculated at checkout");
         const taxPhrase = opt.tax != null && Number(opt.tax) > 0 ? `$${opt.tax} tax` : "no tax";
         const breakdown = costParts.length > 0 ? `${costParts.join(" + ")}, ${taxPhrase}` : taxPhrase;
         optLines.push(`  **$${opt.total} all-in** - ${breakdown}`);
@@ -650,7 +719,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total). You do NOT need a budget or address to call this. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
@@ -730,7 +799,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
                 ? (allFsStores
                   ? "\n\n**Note:** these are Firestarter stores that haven't enabled checkout yet - none can be bought here yet. Share the listing links so the buyer can view them, or use `firestarter_message` to refine toward checkout-ready listings. `firestarter_cancel` to stop."
                   : "\n\n**Note:** none of these can be purchased through Firestarter - they're external results and/or stores that haven't enabled checkout yet. You can share the URLs so the buyer can view them, refine the search with `firestarter_message`, or `firestarter_cancel`.")
-                : `\n\n**Action needed:** the user can reply "confirm" to place the order for the best option, or use \`firestarter_approve\` (execution \`${exec.id}\`) for a specific option; \`firestarter_cancel\` to cancel.${purchasableCount < opts.length ? " Browse-only options can't be purchased here - share their links instead." : ""}`,
+                : `\n\n**Action needed:** show the buyer the delivery options above and confirm which speed they want — don't silently take the cheapest. Then they can reply "confirm" to place the order at that speed, or use \`firestarter_approve\` (execution \`${exec.id}\`) with shipping_option_index for a specific speed; \`firestarter_cancel\` to cancel. No card is needed until the order is placed.${purchasableCount < opts.length ? " Browse-only options can't be purchased here - share their links instead." : ""}`,
           });
         } else if (exec.status === "failed" || !Array.isArray(exec.options) || exec.options.length === 0) {
           // Location-aware empty state: the #1 cause of an empty catalog for a
@@ -1039,26 +1108,39 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }
           body.option_id = chosen.id;
         }
-        await apiRequest("POST", `/v1/executions/${execution_id}/approve`, body);
+        const approveRes = await apiRequest("POST", `/v1/executions/${execution_id}/approve`, body);
         const exec = await pollExecution(apiRequest, execution_id, 30_000);
+
+        // Restate the chosen delivery SERVICE + the exact shipping-inclusive
+        // all-in the pay step will charge — from the authoritative approve
+        // response, falling back to the polled execution — so the buyer always
+        // sees shipping + total BEFORE the payment/card step.
+        const payReady = renderPayReadySummary({
+          baseCents: (approveRes?.total_cents ?? exec.selected_option?.total_cents ?? null) as number | null,
+          shipping: approveRes?.shipping ?? exec.selected_shipping ?? null,
+          dm: exec.developer_margin,
+        });
 
         // #272: when approval transitions to awaiting_payment_method, return a
         // concise one-shot message instead of the full execution dump (which
-        // caused repetitive/duplicated output in Slack).
+        // caused repetitive/duplicated output in Slack) — now WITH the shipping
+        // service + all-in shown next to the card link.
         if (exec.status === "awaiting_payment_method" && exec.setup_url) {
           const text = [
-            "Order approved! Just needs a card to finish.",
+            "Order approved.",
+            ...payReady,
             "",
-            "Add a payment method (no login needed):",
+            "**Last step — add a payment method to place the order** (no login needed):",
             exec.setup_url,
             "",
-            "The order completes automatically once a card is added.",
+            "The order completes automatically once a card is added — you'll be charged the all-in above.",
           ].join("\n");
           return { content: [{ type: "text" as const, text }] };
         }
 
         const blocks = await formatExecution(exec);
-        blocks.unshift({ type: "text", text: "Execution approved.\n" });
+        const head = payReady.length ? `Order approved.\n${payReady.join("\n")}\n` : "Execution approved.\n";
+        blocks.unshift({ type: "text", text: head });
         return { content: blocks };
       } catch (err: any) {
         if (err instanceof ApiError && err.code === "PRICE_CHANGED") {
@@ -1267,7 +1349,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payment_method
   server.tool(
     "firestarter_payment_method",
-    "Check the buyer's payment method status and get a link to add or update their card. Use this when a buyer asks about payment, wants to add a card before purchasing, or when an order is stuck at awaiting_payment_method. Returns a no-login Stripe setup link (works from any channel - WhatsApp, Slack, Telegram) plus a dashboard link as an alternative.",
+    "Check the buyer's payment method status and get a link to add or update their card. IMPORTANT — the card is the LAST step of a purchase, NOT a precondition: run firestarter_execute first and let the buyer see the shipping estimate and pick a delivery speed (shipping_option_index) BEFORE any card is collected. A card is only genuinely needed once an order is parked at awaiting_payment_method (after approval), or when the buyer explicitly asks to add one now. Do NOT collect a card up front just to browse, quote, or compare shipping — none of those need one. Use this tool when the buyer asks about payment or an order is waiting on a card. Returns a no-login Stripe setup link (works from any channel - WhatsApp, Slack, Telegram) plus a dashboard link.",
     {},
     async () => {
       try {
@@ -1284,10 +1366,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         // No payment method - get a setup link
         const setup = await apiRequest("POST", "/v1/billing/setup-payment");
-        let text = "**No payment method on file.** A card is needed before any purchase can complete.\n\n";
-        text += `Add a card (no login needed, works from any device):\n${setup.short_url || setup.url}\n\n`;
+        let text = "**No payment method on file.** A card is only needed at the FINAL payment step — after the buyer has run firestarter_execute, seen the shipping estimate, and picked a delivery speed. Browsing, quoting, and comparing shipping never require one.\n\n";
+        text += `If an order is already approved and waiting on payment, add a card here to finish it (no login needed, works from any device):\n${setup.short_url || setup.url}\n\n`;
         text += `Or add one from your dashboard settings: https://firestarter.network/dashboard?tab=settings\n\n`;
-        text += `Once added, any pending orders resume automatically.`;
+        text += `Once added, any pending orders resume automatically. If the buyer is not mid-purchase, start with firestarter_execute instead — no card required.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error checking payment methods: ${toErrorMessage(err)}` }], isError: true };
