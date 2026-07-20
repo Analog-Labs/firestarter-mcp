@@ -5,8 +5,9 @@
  * that they were never SHOWN, so the agent silently used the cheapest and the
  * buyer never got to pick a speed. These tests lock the surfaced menu: it lists
  * every method with its index (= approve's shipping_option_index), price, ETA,
- * and an all-in total that includes the app margin, and it stays out of the way
- * when there is no real choice to make.
+ * and an all-in total that includes the app margin. When there is only ONE
+ * method it still NAMES that service (no index — nothing to choose), and it
+ * stays out of the way entirely for browse-only options.
  */
 import { describe, it, expect } from "vitest";
 import { renderDeliveryOptions } from "../../src/mcp/tools.js";
@@ -54,8 +55,15 @@ describe("renderDeliveryOptions", () => {
     expect(lines).toContain("$53.03 all-in");
   });
 
-  it("returns nothing when there is no real choice (single method)", () => {
-    expect(renderDeliveryOptions(purchasableOpt({ shipping_options: [METHODS[0]] }), null)).toEqual([]);
+  it("names the single delivery service (no [index]) when there is no speed choice", () => {
+    const lines = renderDeliveryOptions(purchasableOpt({ shipping_options: [METHODS[0]] }), null);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/Delivery: USPS Ground/);
+    expect(lines[0]).toContain("$6.99");
+    expect(lines[0]).toContain("~6 business days");
+    expect(lines[0]).toContain("$51.99 all-in");
+    // a single service has no choice to make — no numbered index, no menu header
+    expect(lines[0]).not.toMatch(/\[0\]/);
   });
 
   it("returns nothing for browse-only options", () => {
