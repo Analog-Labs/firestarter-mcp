@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 52 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 53 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -1160,7 +1160,7 @@
     },
     {
       "name": "firestarter_create_market",
-      "description": "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use this WHENEVER a user asks to create, set up, or start a community market, affiliate program, or 'store for my audience' (e.g. Discord/Telegram/X following) — call this tool directly; do NOT route them through seller onboarding or ask about their country. Creating a market does NOT require being a Firestarter seller, connecting Stripe, or living in a payout-supported country — it works from ANY country, including ones where seller payouts aren't yet available. (A payout method is only needed LATER to withdraw accrued earnings, and can be connected any time.) Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Then call firestarter_market_link to get a share code for the community.",
+      "description": "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use this WHENEVER a user asks to create, set up, or start a community market, affiliate program, or 'store for my audience' (e.g. Discord/Telegram/X following) — call this tool directly; do NOT route them through seller onboarding or ask about their country. Creating a market does NOT require being a Firestarter seller, connecting Stripe, or living in a payout-supported country — it works from ANY country, including ones where seller payouts aren't yet available. (A payout method is only needed LATER to withdraw accrued earnings, and can be connected any time.) Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Optionally claim a `handle` now for a memorable community URL (firestarter.network/m/<handle>); you can also set or change it later with firestarter_set_market_handle. Then call firestarter_market_link to get a share code for the community.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1180,6 +1180,11 @@
             "type": "string",
             "maxLength": 60,
             "description": "Buyer-facing community name, e.g. 'Analog'. Displayed on join/browse/community surfaces."
+          },
+          "handle": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{1,30}$",
+            "description": "Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: lowercase letters, digits and hyphens, must start with a letter or digit. Must be unique; reserved words and share-code-shaped strings are rejected, and a taken handle fails the whole create."
           }
         },
         "required": [
@@ -1189,7 +1194,7 @@
     },
     {
       "name": "firestarter_market_link",
-      "description": "Mint a shareable join code for a market you own (from firestarter_create_market). Give the code to your community — when a member redeems it (firestarter_join_market) they are attributed to your program (first-touch, ~90-day lock) so you earn on their activity. Optionally tag a channel/campaign for tracking.",
+      "description": "Mint a shareable join link + code for a market you own (from firestarter_create_market). Give it to your community — when a member opens the link or redeems the code (firestarter_join_market) they are attributed to your program (first-touch, ~90-day lock) so you earn on their activity. For a memorable URL, claim a handle with firestarter_set_market_handle. Optionally tag a channel/campaign for tracking.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1208,6 +1213,28 @@
         },
         "required": [
           "program_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_set_market_handle",
+      "description": "Claim or change the vanity handle for a market you already own (from firestarter_create_market), so its URL is firestarter.network/m/<handle> instead of a random share code. Use when an owner wants a memorable community link, or to rename an existing handle. The handle is stable even if the share code is rotated, and resolves to the same market as the code. It must be unique across Firestarter; the API rejects one that is already taken, reserved, or shaped like a share code.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id from firestarter_create_market."
+          },
+          "handle": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{1,30}$",
+            "description": "Vanity handle for the community URL — firestarter.network/m/<handle>. 2-31 chars: lowercase letters, digits and hyphens, must start with a letter or digit. Must be unique; reserved words and share-code-shaped strings are rejected."
+          }
+        },
+        "required": [
+          "program_id",
+          "handle"
         ]
       }
     },

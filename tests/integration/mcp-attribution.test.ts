@@ -109,6 +109,57 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     expect(text).toContain("ABCD1234");
   });
 
+  it("static MCP manifest advertises the vanity handle on create + the set-handle tool", () => {
+    const createProps = staticManifestTool("firestarter_create_market").inputSchema.properties;
+    expect(createProps.handle).toMatchObject({ type: "string" });
+
+    const setHandle = staticManifestTool("firestarter_set_market_handle");
+    expect(setHandle.inputSchema.required.sort()).toEqual(["handle", "program_id"]);
+  });
+
+  it("firestarter_create_market claims a handle and surfaces the vanity URL", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
+      expect(String(url)).toContain("/v1/attribution/programs");
+      expect(JSON.parse(init.body).slug).toBe("analog");
+      return new Response(
+        JSON.stringify({ program: { id: "apg_x", override_bps: 1000, slug: "analog" }, override_bps_capped: false }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    }));
+    const text = textOf(await captureTools().firestarter_create_market({ share_bps: 1000, handle: "analog" }));
+    expect(text).toContain("firestarter.network/m/analog");
+  });
+
+  it("firestarter_create_market reports a taken handle without creating the market", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ error: "That handle is already in use", code: "SLUG_TAKEN" }), { status: 409, headers: { "Content-Type": "application/json" } }),
+    ));
+    const res = await captureTools().firestarter_create_market({ share_bps: 1000, handle: "analog" });
+    expect(textOf(res)).toContain("already taken");
+    expect(textOf(res)).toContain("not created");
+    expect(res.isError).toBe(true);
+  });
+
+  it("firestarter_set_market_handle PATCHes the slug and surfaces the vanity URL", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
+      expect(String(url)).toContain("/v1/attribution/programs/apg_x");
+      expect(init.method).toBe("PATCH");
+      expect(JSON.parse(init.body).slug).toBe("analog");
+      return new Response(JSON.stringify({ program: { id: "apg_x", slug: "analog" } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const text = textOf(await captureTools().firestarter_set_market_handle({ program_id: "apg_x", handle: "analog" }));
+    expect(text).toContain("firestarter.network/m/analog");
+  });
+
+  it("firestarter_set_market_handle reports a taken handle as a clear, actionable error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ error: "That handle is already in use", code: "SLUG_TAKEN" }), { status: 409, headers: { "Content-Type": "application/json" } }),
+    ));
+    const res = await captureTools().firestarter_set_market_handle({ program_id: "apg_x", handle: "analog" });
+    expect(textOf(res)).toContain("already taken");
+    expect(res.isError).toBe(true);
+  });
+
   it("firestarter_join_market redeems a code (first-touch)", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
       expect(String(url)).toContain("/v1/attribution/redeem");

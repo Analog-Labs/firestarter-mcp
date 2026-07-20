@@ -26,6 +26,10 @@ const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 
 // machine-readable purchase instructions, chat apps unfurl a preview card.
 const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.network/l";
 
+// Community-market join pages (GET /m/:handle) — resolves either a random share
+// code or a claimed vanity handle to the same market.
+const MARKET_LINK_BASE = process.env.MARKET_LINK_BASE || "https://firestarter.network/m";
+
 // Where a seller uploads a product photo and gets back a hosted image URL.
 // MCP clients (e.g. Claude Desktop) that forward user-attached images as base64
 // can use the firestarter_upload_image tool directly. The dashboard URL is kept
@@ -3414,21 +3418,30 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   {
     server.tool(
       "firestarter_create_market",
-      "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use this WHENEVER a user asks to create, set up, or start a community market, affiliate program, or 'store for my audience' (e.g. Discord/Telegram/X following) — call this tool directly; do NOT route them through seller onboarding or ask about their country. Creating a market does NOT require being a Firestarter seller, connecting Stripe, or living in a payout-supported country — it works from ANY country, including ones where seller payouts aren't yet available. (A payout method is only needed LATER to withdraw accrued earnings, and can be connected any time.) Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Then call firestarter_market_link to get a share code for the community.",
+      "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use this WHENEVER a user asks to create, set up, or start a community market, affiliate program, or 'store for my audience' (e.g. Discord/Telegram/X following) — call this tool directly; do NOT route them through seller onboarding or ask about their country. Creating a market does NOT require being a Firestarter seller, connecting Stripe, or living in a payout-supported country — it works from ANY country, including ones where seller payouts aren't yet available. (A payout method is only needed LATER to withdraw accrued earnings, and can be connected any time.) Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Optionally claim a `handle` now for a memorable community URL (firestarter.network/m/<handle>); you can also set or change it later with firestarter_set_market_handle. Then call firestarter_market_link to get a share code for the community.",
       {
         share_bps: z.number().int().min(0).max(10000).describe("Cut of Firestarter's platform fee in basis points (1000 = 10%). Capped at the platform self-serve max; the response returns the effective value."),
         type: z.enum(["community", "developer"]).optional().describe("Program type. Default 'community'."),
         display_name: z.string().max(60).optional().describe("Buyer-facing community name, e.g. 'Analog'. Displayed on join/browse/community surfaces."),
+        handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/, "handle must be 2-31 chars: lowercase letters, digits and hyphens, starting with a letter or digit").optional().describe("Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: lowercase letters, digits and hyphens, must start with a letter or digit. Must be unique; the API rejects handles that are reserved or shaped like a share code. If it's taken the whole create fails, so retry with a different handle (or omit it and claim one later with firestarter_set_market_handle)."),
       },
-      async ({ share_bps, type, display_name }) => {
+      async ({ share_bps, type, display_name, handle }) => {
         try {
-          const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps, display_name });
+          const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps, display_name, slug: handle });
           const p = res.program ?? {};
           let text = `**Market created.**${p.display_name ? ` ${p.display_name}.` : ""} Program id: \`${p.id}\`. Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee`;
           if (res.override_bps_capped) text += ` (capped from your request to the platform max of ${(Number(res.max_self_serve_bps ?? 0) / 100).toFixed(2)}%)`;
-          text += `.\n\nNext: firestarter_market_link with program_id \`${p.id}\` to get a share code. Members who join through it have their purchases (and, when enabled, their sales) attributed to you. Earnings: firestarter_market_earnings.`;
+          text += ".";
+          if (p.slug) text += `\n\nYour community URL: ${MARKET_LINK_BASE}/${p.slug}`;
+          text += `\n\nNext: firestarter_market_link with program_id \`${p.id}\` to get a share code. Members who join through it have their purchases (and, when enabled, their sales) attributed to you. Earnings: firestarter_market_earnings.`;
           return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
+          if (err instanceof ApiError && err.code === "SLUG_TAKEN") {
+            return { content: [{ type: "text" as const, text: `That handle (\`${handle}\`) is already taken. Pick a different one and try again — the market was not created.` }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "INVALID_SLUG") {
+            return { content: [{ type: "text" as const, text: `That handle isn't valid: ${toErrorMessage(err)}. The market was not created — retry with a valid handle, or omit it.` }], isError: true };
+          }
           return { content: [{ type: "text" as const, text: `Error creating market: ${toErrorMessage(err)}` }], isError: true };
         }
       }
@@ -3447,9 +3460,36 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const res = await apiRequest("POST", "/v1/attribution/links", { program_id, channel, campaign });
           const code = res.link?.code;
           if (!code) return { content: [{ type: "text" as const, text: "Link created but no code was returned." }], isError: true };
-          return { content: [{ type: "text" as const, text: `**Share code:** \`${code}\`\n\nGive this to your community. Each member redeems it once (first-touch, locks ~90 days). They can paste it to their Firestarter agent (firestarter_join_market) to join your market.` }] };
+          return { content: [{ type: "text" as const, text: `**Share link:** ${MARKET_LINK_BASE}/${code}\n(share code: \`${code}\`)\n\nGive this to your community. Each member joins once (first-touch, locks ~90 days) — opening the link, or pasting the code to their Firestarter agent (firestarter_join_market), joins your market. Prefer a memorable URL? Claim a handle with firestarter_set_market_handle and ${MARKET_LINK_BASE}/<handle> resolves to the same market.` }] };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Error creating share link: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_set_market_handle",
+      "Claim or change the vanity handle for a market you already own (from firestarter_create_market), so its URL is firestarter.network/m/<handle> instead of a random share code. Use when an owner wants a memorable community link, or to rename an existing handle. The handle is stable even if the underlying share code is rotated, and resolves to the same market as the code. It must be unique across Firestarter; the API rejects one that is already taken, reserved, or shaped like a share code.",
+      {
+        program_id: z.string().describe("The market/program id from firestarter_create_market."),
+        handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/, "handle must be 2-31 chars: lowercase letters, digits and hyphens, starting with a letter or digit").describe("Vanity handle for the community URL — firestarter.network/m/<handle>. 2-31 chars: lowercase letters, digits and hyphens, must start with a letter or digit. Must be unique; reserved words and share-code-shaped strings are rejected."),
+      },
+      async ({ program_id, handle }) => {
+        try {
+          const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, { slug: handle });
+          const slug = res.program?.slug ?? handle;
+          return { content: [{ type: "text" as const, text: `**Handle set.** Your community URL is now ${MARKET_LINK_BASE}/${slug}\n\nShare it anywhere — it resolves to the same market as your share code and stays stable if you rotate the code.` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "SLUG_TAKEN") {
+            return { content: [{ type: "text" as const, text: `That handle (\`${handle}\`) is already taken. Pick a different one and try again.` }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "INVALID_SLUG") {
+            return { content: [{ type: "text" as const, text: `That handle isn't valid: ${toErrorMessage(err)}.` }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No market on your account has that program id. Create one first with firestarter_create_market, then set its handle." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't set the handle: ${toErrorMessage(err)}` }], isError: true };
         }
       }
     );
