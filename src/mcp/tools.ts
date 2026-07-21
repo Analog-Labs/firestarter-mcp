@@ -76,6 +76,71 @@ function cleanListingId(id: string): string {
   return id.replace(/\\/g, "");
 }
 
+// ─── Community-market shelf (agent-facing) ───────────────────────────────────
+// The buyer-facing web page (/m/<handle>) shows a community's curated shelf —
+// the owner's product picks with their notes. The public marketplace endpoint
+// already returns that shelf, so the market tools can surface it too instead of
+// a flat "Joined." confirmation with no next step. Shared here so join / preview
+// / my_market render the shelf identically.
+
+/** How many shelf picks to render in one chat message — enough to be useful,
+ *  few enough to stay scannable. Matches the join-page "taste" framing. */
+const SHELF_RENDER_LIMIT = 6;
+
+/**
+ * Fetch a community's PUBLIC view (name, tagline, curated shelf, social proof)
+ * by share code or vanity handle. Uses the unauthenticated marketplace endpoint,
+ * so it returns exactly what a signed-out human sees on /m/<handle>. Best-effort:
+ * resolves to null on any failure, so callers can degrade to their status-only
+ * message rather than failing the whole tool over branding.
+ */
+async function fetchPublicCommunity(
+  apiRequest: ReturnType<typeof makeApiRequest>,
+  code: string,
+): Promise<any | null> {
+  try {
+    const res = await apiRequest("GET", `/marketplace/community/${encodeURIComponent(code)}`);
+    return res?.community ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Render a community's curated shelf as chat text, or null when there is nothing
+ * to show. Each pick carries its `listing_id` (lst_…) so the agent can pass it
+ * straight to firestarter_execute — the shelf is an actionable next step, not
+ * just a list.
+ *
+ * Framing is deliberate and must not overpromise: the buyer gets NO discount or
+ * cashback. The community earns a share of Firestarter's fee "at no extra cost
+ * to you, never from the seller's payout"; the buyer's benefit is curation and
+ * supporting the community. Never phrase this as a buyer perk/benefit.
+ */
+function formatCommunityShelf(community: any): string | null {
+  const picks: any[] = Array.isArray(community?.picks) ? community.picks : [];
+  if (picks.length === 0) return null;
+  const name =
+    typeof community?.name === "string" && community.name.trim() ? community.name.trim() : "this community";
+
+  const lines: string[] = [`**What ${name} recommends:**`];
+  for (const p of picks.slice(0, SHELF_RENDER_LIMIT)) {
+    const nm = typeof p?.product_name === "string" && p.product_name.trim() ? p.product_name.trim() : "Untitled";
+    const price = Number.isFinite(Number(p?.price)) ? `$${Number(p.price).toFixed(2)}` : "price at checkout";
+    const note = typeof p?.note === "string" && p.note.trim() ? ` — "${p.note.trim()}"` : "";
+    const id = typeof p?.listing_id === "string" && p.listing_id ? ` (listing_id: \`${p.listing_id}\`)` : "";
+    lines.push(`• ${nm} — ${price}${note}${id}`);
+  }
+  if (picks.length > SHELF_RENDER_LIMIT) {
+    lines.push(`…and ${picks.length - SHELF_RENDER_LIMIT} more.`);
+  }
+  lines.push(
+    `\nBuy any of these and ${name} earns a share of Firestarter's fee — at no extra cost to you. ` +
+    `Want one? I can price it for checkout: pass its listing_id to firestarter_execute.`,
+  );
+  return lines.join("\n");
+}
+
 /**
  * Keep external links readable in chat: suppress noisy query strings (notably
  * Google Shopping tracking params) while preserving a clickable URL.
@@ -3509,8 +3574,37 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     );
 
     server.tool(
+      "firestarter_market_preview",
+      "Preview a community market BEFORE joining — read-only, no join, no lock. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend' before committing — show the picks, then let them choose to join (firestarter_join_market) or just buy a pick. Joining is first-touch and locks ~90 days, so previewing first avoids a premature lock. IMPORTANT framing: the buyer gets NO discount or cashback — the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. Do not promise a buyer perk.",
+      {
+        code: z.string().describe("The community's share code or vanity handle (e.g. the <code> in firestarter.network/m/<code>)."),
+      },
+      async ({ code }) => {
+        const cleaned = code.trim();
+        const community = await fetchPublicCommunity(apiRequest, cleaned);
+        if (!community) {
+          return { content: [{ type: "text" as const, text: `Couldn't find a community market for \`${cleaned}\`. Double-check the code or link.` }], isError: true };
+        }
+        const name = typeof community.name === "string" && community.name.trim() ? community.name.trim() : "This community";
+        const parts: string[] = [`**${name}**`];
+        if (typeof community.tagline === "string" && community.tagline.trim()) parts.push(community.tagline.trim());
+        if (community.active === false) {
+          parts.push("\n_This community link isn't accepting new members right now._");
+        }
+        const shelf = formatCommunityShelf(community);
+        parts.push("\n" + (shelf ?? `${name} hasn't curated a shelf yet — you can still shop the full Firestarter catalog while supporting them.`));
+        if (community.active !== false) {
+          parts.push(
+            `\nTo join: firestarter_join_market with code \`${cleaned}\`. First-touch — your first join locks ~90 days, and your future buys then credit ${name} at no extra cost to you (your price is unchanged; the value is the curation and supporting them).`,
+          );
+        }
+        return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+      }
+    );
+
+    server.tool(
       "firestarter_join_market",
-      "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. First-touch: the first market joined locks for ~90 days. Use when a user pastes a Firestarter join/market code or asks to join a community's market.",
+      "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. First-touch: the first market joined locks for ~90 days. Use when a user pastes a Firestarter join/market code or asks to join a community's market. Tip: to show the community's picks BEFORE committing to the lock, call firestarter_market_preview first.",
       {
         code: z.string().describe("The market share code the community gave you."),
         force: z.boolean().optional().describe("Set true only after the buyer explicitly confirms switching from another locked community."),
@@ -3518,9 +3612,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       async ({ code, force }) => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/redeem", { code, force: force === true });
-          if (res.idempotent) return { content: [{ type: "text" as const, text: "You're already in this market — nothing changed." }] };
-          if (res.replaced) return { content: [{ type: "text" as const, text: `Joined — your attribution moved to this market${force ? " after your explicit switch confirmation" : " (the previous lock had expired)"}.` }] };
-          return { content: [{ type: "text" as const, text: "**Joined the market.** Your future buys (and sells, when that's enabled) credit this community." }] };
+          let text =
+            res.idempotent
+              ? "You're already in this market — nothing changed."
+              : res.replaced
+                ? `Joined — your attribution moved to this market${force ? " after your explicit switch confirmation" : " (the previous lock had expired)"}.`
+                : "**Joined the market.** Your future buys (and sells, when that's enabled) credit this community.";
+          // Best-effort next step: show what the community recommends so a join
+          // isn't a dead-end confirmation. Never fail the join over branding.
+          const community = await fetchPublicCommunity(apiRequest, code.trim());
+          const shelf = community ? formatCommunityShelf(community) : null;
+          if (shelf) text += `\n\n${shelf}`;
+          return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
           const msg = toErrorMessage(err);
           if (/locked/i.test(msg)) return { content: [{ type: "text" as const, text: "You're locked to another market right now. Ask the buyer to confirm the switch, then call this tool again with `force: true`." }] };
@@ -3531,7 +3634,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_my_market",
-      "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, and how long the first-touch lock lasts. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', or before joining/leaving so you can confirm the current state. Read-only.",
+      "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, how long the first-touch lock lasts, AND what the community recommends (its curated shelf, each pick buyable via firestarter_execute). Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
       {},
       async () => {
         try {
@@ -3548,7 +3651,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             community.attributed_at ? `Joined: ${new Date(community.attributed_at).toISOString().slice(0, 10)}` : null,
             "\nYour buys (and sells, when enabled) credit this community. To leave, use firestarter_leave_market.",
           ].filter(Boolean);
-          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+          // Re-discovery: append the community's current shelf so "what market am
+          // I in?" also answers "what can I buy here?". Best-effort — the status
+          // above stands on its own if the public view can't be fetched.
+          const publicView = community.code ? await fetchPublicCommunity(apiRequest, community.code) : null;
+          const shelf = publicView ? formatCommunityShelf(publicView) : null;
+          const text = lines.join("\n") + (shelf ? `\n\n${shelf}` : "");
+          return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Couldn't check your market: ${toErrorMessage(err)}` }], isError: true };
         }
