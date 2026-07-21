@@ -473,6 +473,62 @@ export function renderPayReadySummary(opts: { baseCents: number | null; shipping
   return lines;
 }
 
+/**
+ * Render a PRE-PURCHASE shipping estimate (POST /v1/shipping/estimate) for the
+ * buyer. Exported for unit tests. This is the standalone listing+destination
+ * estimator the web listing page already had — before this tool, an agent's
+ * only path to a real rated shipping cost was to START an execution. Two rules
+ * shape the output: (1) rows are bulleted, never numbered — these are not
+ * shipping_option_index values (no execution exists yet), and a numbered menu
+ * here trains agents to approve with an index that means nothing; (2) the
+ * soft-ask (SHIPPING_ESTIMATE_NEEDS_FIELDS) and not-shippable cases relay the
+ * server's actionable message rather than erroring.
+ */
+export function renderShippingEstimate(data: any): string[] {
+  // Soft ask: the destination was parseable but has no usable locality — relay
+  // the server's own "what to collect" message (never a hard error).
+  if (data?.code === "SHIPPING_ESTIMATE_NEEDS_FIELDS") {
+    const missing = Array.isArray(data.missing) && data.missing.length ? ` (missing: ${data.missing.join(", ")})` : "";
+    return [`${data.message || "Need a bit more of the destination to estimate shipping."}${missing}`];
+  }
+  if (data?.shippable === false) {
+    return [`This item can't ship to that destination${data.reason ? `: ${data.reason}` : "."}`];
+  }
+  const options: any[] = Array.isArray(data?.options) ? data.options : [];
+  if (options.length === 0) {
+    return ["No shipping rates are available for that destination yet — try a more specific locality (country + ZIP), or start the purchase and rates will be quoted at approval."];
+  }
+
+  const lines: string[] = ["Shipping estimate (pre-purchase — informational, nothing is bought):"];
+  for (const m of options) {
+    const cur = typeof m.currency === "string" && m.currency && m.currency !== "USD" ? m.currency : null;
+    const price = m.price_cents == null
+      ? "price at checkout"
+      : m.price_cents === 0
+        ? "free"
+        : cur ? `${(m.price_cents / 100).toFixed(2)} ${cur}` : `$${(m.price_cents / 100).toFixed(2)}`;
+    const eta = m.delivery_range || (m.delivery_days != null ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}` : null);
+    const label = m.label || [m.carrier, m.service].filter(Boolean).join(" ") || m.method_type || "Shipping";
+    // Same carrier-naming rule as renderDeliveryOptions: only tag "via <carrier>"
+    // when the label doesn't already lead with it; an estimate tier has no
+    // carrier until fulfillment — say so instead of implying one.
+    const carrierName = typeof m.carrier === "string" && m.carrier.trim() ? m.carrier.trim() : null;
+    const tags = [
+      ...(Array.isArray(m.badges) ? m.badges : []),
+      carrierName && !label.toLowerCase().startsWith(carrierName.toLowerCase()) ? `via ${carrierName}` : null,
+      m.is_estimated ? (carrierName ? "estimate" : "estimate · carrier assigned at fulfillment") : null,
+    ].filter(Boolean);
+    const parts = [`- ${label}`, price];
+    if (eta) parts.push(eta);
+    lines.push(`  ${parts.join(" · ")}${tags.length ? ` — ${tags.join(", ")}` : ""}`);
+  }
+  if (data.fallback_used) {
+    lines.push("  (Estimated tiers — live carrier rates are quoted at approval.)");
+  }
+  lines.push("", "To buy at one of these speeds: firestarter_execute with the listing_id, then pick the speed at approval (shipping_option_index). These estimate rows are NOT approve indices.");
+  return lines;
+}
+
 async function formatExecution(exec: any): Promise<ContentBlock[]> {
   const blocks: ContentBlock[] = [];
   const lines: string[] = [];
@@ -773,7 +829,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
@@ -1238,7 +1294,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // index into approve. Non-blocking: approving without a pick uses the cheapest.
   server.tool(
     "firestarter_shipping_options",
-    "Show and compare the delivery speeds for an order awaiting approval, and preview the re-priced total for a chosen speed — before paying. Returns the numbered 'Delivery options' menu (Standard / Express / Same-Day, each with its price, ETA, and all-in total); the buyer picks one and you place the order by calling firestarter_approve with shipping_option_index set to that [number]. Use this when the buyer asks about delivery speed/cost, wants it faster, or you want to show the trade-off before they approve — otherwise firestarter_execute already lists these inline and approving without a pick uses the cheapest rate. Pass refresh:true to re-fetch live carrier rates (e.g. if the quote is stale), and select_index to preview one speed's new total.",
+    "Show and compare the delivery speeds for an order awaiting approval, and preview the re-priced total for a chosen speed — before paying. Returns the numbered 'Delivery options' menu (Standard / Express / Same-Day, each with its price, ETA, and all-in total); the buyer picks one and you place the order by calling firestarter_approve with shipping_option_index set to that [number]. Use this when the buyer asks about delivery speed/cost, wants it faster, or you want to show the trade-off before they approve — otherwise firestarter_execute already lists these inline and approving without a pick uses the cheapest rate. Pass refresh:true to re-fetch live carrier rates (e.g. if the quote is stale), and select_index to preview one speed's new total. For a listing the buyer hasn't started buying yet (no execution), use firestarter_shipping_estimate instead.",
     {
       execution_id: z.string().describe("The execution ID (exec_...) to show delivery options for — an order that is awaiting approval."),
       option_id: z.string().optional().describe("Which option's delivery methods to show (opt_...). Omit to use the pre-selected option (the one the buyer is about to approve)."),
@@ -1317,6 +1373,55 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const msg = err instanceof ApiError ? err.message : err?.message || String(err);
         return {
           content: [{ type: "text" as const, text: `Couldn't load delivery options: ${msg}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool: firestarter_shipping_estimate
+  // Pre-purchase parity with the web listing page: POST /v1/shipping/estimate
+  // rates a listing+destination pair WITHOUT creating an execution. Before this
+  // tool, everything shipping-rich on the MCP surface was execution-bound
+  // (firestarter_shipping_options requires an exec_ id), so an agent could not
+  // answer "how much is shipping?" while the buyer was still browsing.
+  server.tool(
+    "firestarter_shipping_estimate",
+    "Estimate shipping for a listing BEFORE starting a purchase — read-only: no execution is created, no approval, nothing is bought. Given a listing id (lst_...) and a destination — a saved address_id, or just a country + ZIP (or city); a full street address is NOT needed — returns the rated delivery options (price, ETA, carrier when known) the buyer would see at checkout. Use it to answer \"how much is shipping?\" or \"can this ship to me?\" while the buyer is still browsing, e.g. from firestarter_preview / firestarter_catalog_search results or a firestarter.network/l/<id> share link. The rows are informational, NOT a menu to approve from: to actually buy at a speed, run firestarter_execute with the listing_id and pick the speed at approval via shipping_option_index (or firestarter_shipping_options once the order exists). Street-less destinations may get estimate tiers; exact carrier rates are re-quoted at approval.",
+    {
+      listing_id: z.string().describe("The listing to estimate shipping for (lst_..., from firestarter_preview, firestarter_catalog_search, firestarter_listings, or a firestarter.network/l/<id> share link)."),
+      address_id: z.string().optional().describe("A saved buyer address id (addr_..., from firestarter_addresses) to estimate delivery to. Prefer this when the buyer has one on file — no need to ask where they live."),
+      country: z.string().optional().describe("Destination country — ISO code or common name (e.g. 'US', 'Thailand'). Pair it with zip or city; used only when address_id is not passed."),
+      zip: z.string().optional().describe("Destination ZIP/postal code. Country + ZIP is enough for a real estimate — no street needed."),
+      city: z.string().optional().describe("Destination city — an alternative locality when the buyer has no ZIP handy."),
+    },
+    async ({ listing_id, address_id, country, zip, city }) => {
+      try {
+        const body: any = { listing_id: cleanListingId(listing_id) };
+        if (address_id) {
+          body.address_id = address_id;
+        } else {
+          const addr: any = {};
+          if (zip) addr.zip = zip;
+          if (city) addr.city = city;
+          if (country) addr.country = country;
+          if (Object.keys(addr).length > 0) body.delivery_address = addr;
+        }
+        if (!body.address_id && !body.delivery_address) {
+          // Preempt the API's 400 with the actionable ask (soft-ask style).
+          return {
+            content: [{
+              type: "text" as const,
+              text: "Need a destination to estimate shipping — pass a saved address_id (see firestarter_addresses), or a country plus ZIP or city. No street address needed.",
+            }],
+          };
+        }
+        const data = await apiRequest("POST", "/v1/shipping/estimate", body);
+        return { content: [{ type: "text" as const, text: renderShippingEstimate(data).join("\n") }] };
+      } catch (err: any) {
+        const msg = err instanceof ApiError ? err.message : err?.message || String(err);
+        return {
+          content: [{ type: "text" as const, text: `Couldn't estimate shipping: ${msg}` }],
           isError: true,
         };
       }

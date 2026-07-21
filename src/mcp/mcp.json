@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 52 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 53 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -300,6 +300,33 @@
         },
         "required": [
           "execution_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_shipping_estimate",
+      "description": "Estimate shipping for a listing BEFORE starting a purchase — read-only, no execution is created and nothing is bought. Given a listing id (lst_...) and a destination (a saved address_id, or just country + ZIP or city — no street needed), returns the rated delivery options (price, ETA, carrier when known) the buyer would see at checkout. Use it to answer 'how much is shipping?' or 'can this ship to me?' while the buyer is still browsing. The rows are informational, not a menu to approve from — to buy at a speed, run firestarter_execute and pick it at approval via shipping_option_index.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listing_id": {
+            "type": "string"
+          },
+          "address_id": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "listing_id"
         ]
       }
     },
