@@ -481,10 +481,15 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
   // checks, post-purchase tracking) keeps it as the track/dispute reference
   // the spec explicitly allows.
   const isApprovalConfirmation = exec.status === "awaiting_approval" && hasOptions;
+  const displayStatus = exec.order_status || exec.display_status || exec.status;
 
   if (!isApprovalConfirmation) {
-    lines.push(`**Execution ${exec.id}** — Status: ${exec.status}`);
+    lines.push(`**Execution ${exec.id}** — Status: ${displayStatus}`);
     lines.push(`Request: ${exec.request_text}`);
+
+    if (exec.order_status && exec.status !== exec.order_status) {
+      lines.push(`Workflow state: ${exec.status}`);
+    }
 
     if (exec.current_step) {
       lines.push(`Current step: ${exec.current_step}`);
@@ -1244,12 +1249,28 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
         const lines: string[] = [];
         lines.push(`Delivery options${data.product_title ? ` for ${data.product_title}` : ""} — pick a speed, or approve to use the cheapest:`);
+        if (data.ship_from) {
+          const from = [data.ship_from.city, data.ship_from.state, data.ship_from.country].filter(Boolean).join(", ");
+          if (from) lines.push(`Ships from: ${from}`);
+        }
+        if (data.ship_to) {
+          const to = [data.ship_to.city, data.ship_to.state, data.ship_to.country].filter(Boolean).join(", ");
+          if (to) lines.push(`Ships to: ${to}`);
+        }
+        if (data.fee_breakdown) {
+          lines.push(`Item subtotal: ${fmt(data.fee_breakdown.subtotal_cents || 0)} · Tax: ${fmt(data.fee_breakdown.tax_cents || 0)} · Shipping: shown per option below`);
+        }
         for (const m of methods) {
           const price = m.price_cents == null ? "price at checkout" : m.price_cents === 0 ? "free" : fmt(m.price_cents);
           const eta = m.delivery_range || (m.delivery_days != null ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}` : null);
           const label = m.label || [m.carrier, m.service].filter(Boolean).join(" ") || m.method_type || "Shipping";
           const allIn = m.all_in_cents != null ? `${fmt(allInCents(m.all_in_cents))} all-in` : null;
-          const tags = [...(Array.isArray(m.badges) ? m.badges : []), m.is_estimated ? "estimate" : null].filter(Boolean);
+          const tags = [
+            ...(Array.isArray(m.badges) ? m.badges : []),
+            m.provider ? `provider: ${m.provider}` : null,
+            m.carrier ? `carrier: ${m.carrier}` : null,
+            m.is_estimated ? "estimate" : null,
+          ].filter(Boolean);
           const parts = [`[${m.index}] ${label}`, price];
           if (eta) parts.push(eta);
           if (allIn) parts.push(allIn);
@@ -1437,18 +1458,31 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // JWT/dashboard-only and 401s an API key (mis-reported as a revoked key).
         const data = await apiRequest("GET", `/v1/executions/${execution_id}/tracking`);
         if (!data.tracking_number) {
-          return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — No tracking info yet. The seller may not have shipped it yet, or tracking hasn't been added. Use \`firestarter_status\` to check the order's current state.` }] };
+          const status = data.order_status || data.display_status || data.status;
+          return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — Status: ${status || "pending"}. No tracking info yet. The seller may not have shipped it yet, or tracking hasn't been added. Use \`firestarter_status\` to check the order's current state.` }] };
         }
         let text = `**Order ${execution_id} — Shipping**\n`;
+        if (data.ship_from) {
+          text += `Ships from: ${[data.ship_from.city, data.ship_from.state, data.ship_from.country].filter(Boolean).join(", ")}\n`;
+        }
         text += `Carrier: ${data.carrier || "Unknown"}\n`;
+        if (data.shipping_method?.provider) text += `Provider: ${data.shipping_method.provider}\n`;
+        if (data.shipping_method?.service) text += `Service: ${data.shipping_method.service}\n`;
         text += `Tracking: ${data.tracking_number}\n`;
         if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
         if (data.estimated_delivery) text += `Estimated delivery: ${data.estimated_delivery}\n`;
         text += `Status: ${data.status || "in_transit"}\n`;
+        if (data.fee_breakdown) {
+          const f = data.fee_breakdown;
+          const money = (cents: number) => `$${(Number(cents || 0) / 100).toFixed(2)}`;
+          text += `Fees: item ${money(f.subtotal_cents)} + shipping ${money(f.shipping_cents)} + tax ${money(f.tax_cents)} = ${money(f.total_cents)}\n`;
+        }
         if (data.events?.length > 0) {
           text += `\n**Recent events:**\n`;
           for (const e of data.events.slice(-5)) {
-            text += `  ${e.datetime || e.date}: ${e.description || e.message}\n`;
+            const eventDate = e.datetime || e.date || "Update";
+            const eventDetail = e.description || e.message || e.detail || e.status || "Shipping update";
+            text += `  ${eventDate}: ${eventDetail}\n`;
           }
         }
         return { content: [{ type: "text" as const, text }] };
@@ -3518,9 +3552,40 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       async ({ code, force }) => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/redeem", { code, force: force === true });
-          if (res.idempotent) return { content: [{ type: "text" as const, text: "You're already in this market — nothing changed." }] };
-          if (res.replaced) return { content: [{ type: "text" as const, text: `Joined — your attribution moved to this market${force ? " after your explicit switch confirmation" : " (the previous lock had expired)"}.` }] };
-          return { content: [{ type: "text" as const, text: "**Joined the market.** Your future buys (and sells, when that's enabled) credit this community." }] };
+          let lead = "**Joined the market.** Your future buys (and sells, when that's enabled) credit this community.";
+          if (res.idempotent) lead = "You're already in this market — nothing changed.";
+          if (res.replaced) lead = `Joined — your attribution moved to this market${force ? " after your explicit switch confirmation" : " (the previous lock had expired)"}.`;
+
+          // PR #337 made the public community contract stable enough to turn a
+          // successful join into an actionable onboarding response. Best effort:
+          // a public-page miss must never undo or misreport a completed join.
+          try {
+            const publicView = await apiRequest("GET", `/marketplace/community/${encodeURIComponent(code)}`);
+            const community = publicView?.community;
+            if (community?.name) {
+              const lines = [lead, "", `**Welcome to ${community.name}.**`];
+              if (community.tagline) lines.push(community.tagline);
+
+              const picks = Array.isArray(community.picks) ? community.picks.slice(0, 3) : [];
+              if (picks.length > 0) {
+                lines.push("", "A few community picks:");
+                for (const pick of picks) {
+                  const price = Number.isFinite(Number(pick.price)) ? ` — $${Number(pick.price).toFixed(2)}` : "";
+                  lines.push(`- ${pick.product_name}${price} (listing_id: ${pick.listing_id})`);
+                }
+                lines.push("", `Next: choose a pick and call firestarter_execute with its exact listing_id (for example, ${picks[0].listing_id}).`);
+              } else {
+                const categories = Array.isArray(community.top_categories) ? community.top_categories.slice(0, 3) : [];
+                if (categories.length > 0) lines.push("", `Popular here: ${categories.join(", ")}.`);
+                lines.push("", "Next: search this market for something you need, then review the quote before approving a purchase.");
+              }
+              lead = lines.join("\n");
+            }
+          } catch {
+            /* onboarding enrichment is best-effort after a successful join */
+          }
+
+          return { content: [{ type: "text" as const, text: lead }] };
         } catch (err: any) {
           const msg = toErrorMessage(err);
           if (/locked/i.test(msg)) return { content: [{ type: "text" as const, text: "You're locked to another market right now. Ask the buyer to confirm the switch, then call this tool again with `force: true`." }] };

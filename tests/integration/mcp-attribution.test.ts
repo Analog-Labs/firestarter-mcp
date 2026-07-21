@@ -176,19 +176,34 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
 
   it("firestarter_join_market redeems a code (first-touch)", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
-      expect(String(url)).toContain("/v1/attribution/redeem");
-      expect(JSON.parse(init.body)).toMatchObject({ code: "ABCD1234", force: false });
-      return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (String(url).includes("/v1/attribution/redeem")) {
+        expect(JSON.parse(init.body)).toMatchObject({ code: "ABCD1234", force: false });
+        return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      expect(String(url)).toContain("/marketplace/community/ABCD1234");
+      return new Response(JSON.stringify({
+        community: {
+          name: "Analog Builders",
+          tagline: "Tools chosen by people building agent commerce.",
+          top_categories: ["Developer tools"],
+          picks: [{ listing_id: "lst_builder_1", product_name: "Agent Toolkit", price: 49, image: null, note: null }],
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const text = textOf(await captureTools().firestarter_join_market({ code: "ABCD1234" }));
     expect(text).toContain("Joined the market");
+    expect(text).toContain("Welcome to Analog Builders");
+    expect(text).toContain("lst_builder_1");
+    expect(text).toContain("firestarter_execute");
   });
 
   it("firestarter_join_market can force only after explicit buyer confirmation", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
-      expect(String(url)).toContain("/v1/attribution/redeem");
-      expect(JSON.parse(init.body)).toMatchObject({ code: "WXYZ", force: true });
-      return new Response(JSON.stringify({ ok: true, replaced: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (String(url).includes("/v1/attribution/redeem")) {
+        expect(JSON.parse(init.body)).toMatchObject({ code: "WXYZ", force: true });
+        return new Response(JSON.stringify({ ok: true, replaced: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ community: { name: "New Market", top_categories: [], picks: [] } }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const text = textOf(await captureTools().firestarter_join_market({ code: "WXYZ", force: true }));
     expect(text).toContain("explicit switch confirmation");
