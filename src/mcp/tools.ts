@@ -500,6 +500,11 @@ export function renderShippingEstimate(data: any): string[] {
   }
 
   const lines: string[] = ["Shipping estimate (pre-purchase — informational, nothing is bought):"];
+  // From → to route (both coarse localities) so the delivery provider's origin
+  // and the buyer's destination are visible alongside the rates.
+  if (data.ship_from && data.ship_to) lines.push(`Ships from ${data.ship_from} → ${data.ship_to}`);
+  else if (data.ship_from) lines.push(`Ships from: ${data.ship_from}`);
+  else if (data.ship_to) lines.push(`Ships to: ${data.ship_to}`);
   for (const m of options) {
     const cur = typeof m.currency === "string" && m.currency && m.currency !== "USD" ? m.currency : null;
     const price = m.price_cents == null
@@ -702,10 +707,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
           optLines.push(`  Total with app margin: $${((itemCents + marginCents) / 100).toFixed(2)} (+$${(marginCents / 100).toFixed(2)})`);
         }
       }
-      // Where it ships FROM — coarse city/state/country only (never the seller's
-      // exact street/zip/phone). Present only for purchasable internal listings
-      // quoted after this was captured; silently omitted otherwise.
-      if (opt.ship_from) optLines.push(`  Ships from: ${opt.ship_from}`);
+      // Where it ships FROM → TO — coarse city/state/country only (never exact
+      // street/zip/phone). ship_from is present for purchasable internal listings
+      // quoted after this was captured; ship_to (the buyer's destination) is
+      // execution-level. Show the full route when both are known.
+      if (opt.ship_from && exec.ship_to) optLines.push(`  Ships from ${opt.ship_from} → ${exec.ship_to}`);
+      else if (opt.ship_from) optLines.push(`  Ships from: ${opt.ship_from}`);
+      else if (exec.ship_to) optLines.push(`  Ships to: ${exec.ship_to}`);
       // Delivery-options menu: show the real speed/carrier choices the buyer can
       // pick between (the numbers ARE the shipping_option_index for approve), so
       // shipping stops being an invisible auto-pick. Non-blocking — approving
@@ -1333,7 +1341,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
         const lines: string[] = [];
         lines.push(`Delivery options${data.product_title ? ` for ${data.product_title}` : ""} — pick a speed, or approve to use the cheapest:`);
-        if (data.ship_from) lines.push(`Ships from: ${data.ship_from}`);
+        // From → to route (both coarse localities), so the delivery provider's
+        // origin and destination are visible before any speed is chosen.
+        if (data.ship_from && data.ship_to) lines.push(`Ships from ${data.ship_from} → ${data.ship_to}`);
+        else if (data.ship_from) lines.push(`Ships from: ${data.ship_from}`);
+        else if (data.ship_to) lines.push(`Ships to: ${data.ship_to}`);
         for (const m of methods) {
           const price = m.price_cents == null ? "price at checkout" : m.price_cents === 0 ? "free" : fmt(m.price_cents);
           const eta = m.delivery_range || (m.delivery_days != null ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}` : null);
@@ -2103,7 +2115,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
-    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults — do NOT interrogate the seller for category, inventory, shipping, or ship-from. Create the listing immediately with what you have, then tell them what defaulted and how to refine it. Defaults when omitted: inventory unlimited, shipping = network default ($9.99, free over $50), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). If the seller already sent a photo in the conversation, reuse that URL in image_urls — never ask them to re-send it. The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
+    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults — do NOT interrogate the seller for category, inventory, shipping, or ship-from. Create the listing immediately with what you have, then tell them what defaulted and how to refine it. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). If the seller already sent a photo in the conversation, reuse that URL in image_urls — never ask them to re-send it. The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
     {
       product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
       base_price: z.number().describe("REQUIRED. Sale price in USD, e.g. 49.99."),
@@ -2113,7 +2125,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
       image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
-      shipping: z.number().optional().describe("Shipping price in USD. Omit to use the network default ($9.99, free over $50). Set to 0 for free shipping."),
+      shipping: z.number().optional().describe("Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."),
       ship_from: z.object({
         street1: z.string(),
         street2: z.string().optional(),
@@ -2137,7 +2149,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (image_urls?.length) body.images = image_urls;
-        if (shipping !== undefined) body.shipping = shipping;
+        // `shipping` is deprecated/ignored (always estimated live) — not forwarded.
+        void shipping;
         if (ship_from) body.ship_from = ship_from;
         if (shipping_policy) body.shipping_policy = shipping_policy;
         const listing = await apiRequest("POST", "/v1/listings", body);
@@ -2146,8 +2159,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
-        if (listing.shipping != null) text += `Shipping: $${listing.shipping.toFixed(2)} (seller-set)\n`;
-        else text += `Shipping: network default ($9.99, free over $50)\n`;
+        text += `Shipping: estimated at checkout by the delivery provider, based on the buyer's destination\n`;
         if (Array.isArray(listing.images) && listing.images.length) text += `Photos: ${listing.images.length} attached\n`;
         // Surface activation blocks so the seller knows WHY the listing is a
         // draft and what to do about it — without this the agent just says
@@ -2948,14 +2960,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_reprice
   server.tool(
     "firestarter_reprice",
-    "Adjust pricing, shipping, or rules for an existing listing. Update base price, floor/ceiling limits, shipping fee, dynamic pricing settings, or pricing rules.",
+    "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules. Shipping is always estimated live from a delivery service provider and can no longer be set per-listing.",
     {
       listing_id: z.string().describe("The listing ID to reprice"),
       base_price: z.number().optional().describe("New base price in USD"),
       floor_price: z.number().optional().describe("New floor price"),
       ceiling_price: z.number().optional().describe("New ceiling price"),
       dynamic_pricing: z.boolean().optional().describe("Enable/disable dynamic pricing"),
-      shipping: z.number().optional().describe("Shipping price in USD. 0 = free shipping. Omit to keep current value. Set to null to revert to network default ($9.99, free over $50)."),
+      shipping: z.number().optional().describe("Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination. Accepted for backward compatibility only."),
     },
     async ({ listing_id: rawListingId, base_price, floor_price, ceiling_price, dynamic_pricing, shipping }) => {
       const listing_id = cleanListingId(rawListingId);
@@ -2965,7 +2977,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (floor_price !== undefined) body.floor_price = floor_price;
         if (ceiling_price !== undefined) body.ceiling_price = ceiling_price;
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
-        if (shipping !== undefined) body.shipping = shipping;
+        // `shipping` is deprecated/ignored (always estimated live) — not forwarded.
+        void shipping;
         if (Object.keys(body).length === 0) {
           return { content: [{ type: "text" as const, text: "No pricing changes provided. Specify at least one field to update." }], isError: true };
         }
@@ -2975,7 +2988,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.floor_price !== undefined) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price !== undefined) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing !== undefined) text += `Dynamic pricing: ${listing.dynamic_pricing ? "enabled" : "disabled"}\n`;
-        if (listing.shipping != null) text += `Shipping: $${listing.shipping.toFixed(2)} (seller-set)\n`;
+        text += `Shipping: estimated at checkout by the delivery provider, based on the buyer's destination\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error repricing: ${toErrorMessage(err)}` }], isError: true };
