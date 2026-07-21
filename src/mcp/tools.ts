@@ -3499,7 +3499,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (res.override_bps_capped) text += ` (capped from your request to the platform max of ${(Number(res.max_self_serve_bps ?? 0) / 100).toFixed(2)}%)`;
           text += ".";
           if (p.slug) text += `\n\nYour community URL: ${MARKET_LINK_BASE}/${p.slug}`;
-          text += `\n\nNext: firestarter_market_link with program_id \`${p.id}\` to get a share code. Members who join through it have their purchases (and, when enabled, their sales) attributed to you. Earnings: firestarter_market_earnings.`;
+          text += `\n\nNext: firestarter_market_link with program_id \`${p.id}\` to get a share code your community joins through. Then curate what your community recommends with firestarter_set_market_picks — those picks are the first thing buyers see. Track earnings with firestarter_market_earnings; connect payouts (to withdraw) with firestarter_connect_payouts.`;
           return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
           if (err instanceof ApiError && err.code === "SLUG_TAKEN") {
@@ -3601,7 +3601,21 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/attribution/earnings");
-          return { content: [{ type: "text" as const, text: "```json\n" + JSON.stringify(res, null, 2) + "\n```" }] };
+          const usd = (cents?: number) => `$${((Number(cents) || 0) / 100).toFixed(2)}`;
+          const programs = Number(res?.programs ?? 0);
+          const txns = Number(res?.transactions ?? 0);
+          // Lifetime earned = pending + released (both already net of reversals),
+          // matching the owner dashboard's headline number.
+          const lifetime = (Number(res?.pending_cents) || 0) + (Number(res?.released_cents) || 0);
+          const lines = [
+            `**Your market earnings** (across ${programs} market${programs === 1 ? "" : "s"})`,
+            `Lifetime earned: ${usd(lifetime)} — from ${txns} order${txns === 1 ? "" : "s"} your communities drove`,
+            `Available to pay out: ${usd(res?.available_cents)}`,
+          ];
+          if (Number(res?.in_clearing_cents) > 0) lines.push(`Still clearing (not yet payable): ${usd(res?.in_clearing_cents)}`);
+          if (Number(res?.awaiting_connect_cents) > 0) lines.push(`Held until you connect payouts: ${usd(res?.awaiting_connect_cents)} — set up with firestarter_connect_payouts.`);
+          if (Number(res?.reversed_cents) > 0) lines.push(`Reversed (refunds/adjustments): ${usd(res?.reversed_cents)}`);
+          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Error fetching earnings: ${toErrorMessage(err)}` }], isError: true };
         }

@@ -59,6 +59,7 @@ let routes: {
   connectStatus?: () => Response;
   connectStart?: (body: any) => Response;
   communities?: () => Response;
+  earnings?: () => Response;
 };
 
 beforeEach(() => {
@@ -100,6 +101,9 @@ beforeEach(() => {
           return routes.putPicks ? routes.putPicks(id, body) : json(200, { picks: [], count: 0 });
         }
         return routes.getPicks ? routes.getPicks(id) : json(200, { picks: [], max_picks: 15 });
+      }
+      if (method === "GET" && u.endsWith("/v1/attribution/earnings")) {
+        return routes.earnings ? routes.earnings() : json(200, {});
       }
       if (method === "GET" && u.endsWith("/v1/attribution/programs")) {
         return routes.programs ? routes.programs() : json(200, { programs: [] });
@@ -370,5 +374,23 @@ describe("firestarter_discover_markets (buyer discovery)", () => {
     routes.communities = () => json(200, { communities: [] });
     const t = textOf(await captureTools()["firestarter_discover_markets"]({}));
     expect(t).toContain("No public community markets");
+  });
+});
+
+describe("firestarter_market_earnings (formatted, not raw JSON)", () => {
+  it("formats cents fields into a readable summary", async () => {
+    routes.earnings = () => json(200, {
+      programs: 2, transactions: 7,
+      pending_cents: 1234, released_cents: 5000,
+      available_cents: 4200, in_clearing_cents: 800,
+      awaiting_connect_cents: 1234, reversed_cents: 300,
+    });
+    const t = textOf(await captureTools()["firestarter_market_earnings"]({}));
+    expect(t).not.toContain("```json"); // no raw dump
+    expect(t).toContain("across 2 markets");
+    expect(t).toContain("$62.34"); // lifetime = pending 12.34 + released 50.00
+    expect(t).toContain("7 orders");
+    expect(t).toContain("$42.00"); // available
+    expect(t).toContain("firestarter_connect_payouts"); // prompted because awaiting_connect > 0
   });
 });
