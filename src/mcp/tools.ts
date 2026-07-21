@@ -734,6 +734,28 @@ function registerToolCompat(server: McpServer, name: string, config: any, handle
   }
 }
 
+/**
+ * "Account:" line for firestarter_status — who the configured API key belongs
+ * to (the org's owner user + the org), from GET /v1/me. Best-effort by design:
+ * identity is garnish on a status check, and an older API without the endpoint
+ * (rolling deploy) must not break it — any failure just drops the line.
+ */
+async function fetchAccountLine(apiRequest: ReturnType<typeof makeApiRequest>): Promise<string | null> {
+  try {
+    const me = await apiRequest("GET", "/v1/me");
+    const parts: string[] = [];
+    const person = [me?.user?.name, me?.user?.email ? `<${me.user.email}>` : null].filter(Boolean).join(" ");
+    if (person) parts.push(person);
+    if (me?.org?.id || me?.org?.name) {
+      const plan = me?.org?.plan ? `, ${me.org.plan} plan` : "";
+      parts.push(`org "${me.org.name || me.org.id}" (${me.org.id}${plan})`);
+    }
+    return parts.length ? `Account: ${parts.join(" — ")}` : null;
+  } catch {
+    return null;
+  }
+}
+
 export function registerTools(server: McpServer, apiKey: string, apiBase: string) {
   const apiRequest = makeApiRequest(apiKey, apiBase);
 
@@ -997,7 +1019,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_status
   server.tool(
     "firestarter_status",
-    "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live). Use this to check on orders, see what options were found, get tracking updates, or confirm whether you are in test/sandbox mode. Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
+    "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live) plus the ACCOUNT the configured API key belongs to (user + organization). Use this to check on orders, see what options were found, get tracking updates, confirm whether you are in test/sandbox mode, or answer 'which account/user am I operating as?' (call it with no arguments for the environment + account summary). Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
     {
       execution_id: z.string().optional().describe("Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."),
       status_filter: z.string().optional().describe("Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"),
@@ -1014,14 +1036,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const exec = await apiRequest("GET", `/v1/executions/${execution_id}`);
           return { content: await formatExecution(exec) };
         }
+        // In parallel with the list fetch; resolves to null on any failure.
+        const accountPromise = fetchAccountLine(apiRequest);
         let path = "/v1/executions";
         if (status_filter) path += `?status=${encodeURIComponent(status_filter)}`;
         const data = await apiRequest("GET", path);
+        const accountLine = await accountPromise;
+        const identity = accountLine ? `\n${accountLine}` : "";
         const executions = data.executions || data;
         if (!Array.isArray(executions) || executions.length === 0) {
-          return { content: [{ type: "text" as const, text: `Environment: ${environment}\n\nNo executions found.` }] };
+          return { content: [{ type: "text" as const, text: `Environment: ${environment}${identity}\n\nNo executions found.` }] };
         }
-        const lines = [`Environment: ${environment}\n`, `**Recent Executions** (${data.total || executions.length} total)\n`];
+        const lines = [`Environment: ${environment}${identity}\n`, `**Recent Executions** (${data.total || executions.length} total)\n`];
         for (const e of executions.slice(0, 10)) {
           lines.push(`- **${e.id}** [${e.status}] ${e.request_text?.slice(0, 60) || ""}${e.request_text?.length > 60 ? "..." : ""}`);
         }
