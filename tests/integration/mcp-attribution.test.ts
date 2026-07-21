@@ -197,6 +197,35 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     expect(text).toContain("firestarter_execute");
   });
 
+  it("firestarter_join_market suggests categories when the community has no curated picks", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+      if (String(url).includes("/v1/attribution/redeem")) {
+        return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        community: { name: "Analog Builders", top_categories: ["Developer tools", "Office"], picks: [] },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    const text = textOf(await captureTools().firestarter_join_market({ code: "ABCD1234" }));
+    expect(text).toContain("Joined the market");
+    expect(text).toContain("Popular here: Developer tools, Office");
+    expect(text).toContain("search this market");
+  });
+
+  it("firestarter_join_market keeps a completed join successful when onboarding enrichment fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+      if (String(url).includes("/v1/attribution/redeem")) {
+        return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error("community page unavailable");
+    }));
+
+    const result = await captureTools().firestarter_join_market({ code: "ABCD1234" });
+    expect(textOf(result)).toContain("Joined the market");
+    expect(result.isError).toBeUndefined();
+  });
+
   it("firestarter_join_market can force only after explicit buyer confirmation", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
       if (String(url).includes("/v1/attribution/redeem")) {
