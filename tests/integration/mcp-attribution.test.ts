@@ -210,7 +210,7 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     const text = textOf(await captureTools().firestarter_join_market({ code: "ABCD1234" }));
     expect(text).toContain("Joined the market");
     expect(text).toContain("Popular here: Developer tools, Office");
-    expect(text).toContain("search this market");
+    expect(text).toContain("Search this market");
   });
 
   it("firestarter_join_market keeps a completed join successful when onboarding enrichment fails", async () => {
