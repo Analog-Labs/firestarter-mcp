@@ -546,10 +546,15 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
   // checks, post-purchase tracking) keeps it as the track/dispute reference
   // the spec explicitly allows.
   const isApprovalConfirmation = exec.status === "awaiting_approval" && hasOptions;
+  const displayStatus = exec.order_status || exec.display_status || exec.status;
 
   if (!isApprovalConfirmation) {
-    lines.push(`**Execution ${exec.id}** — Status: ${exec.status}`);
+    lines.push(`**Execution ${exec.id}** — Status: ${displayStatus}`);
     lines.push(`Request: ${exec.request_text}`);
+
+    if (exec.order_status && exec.status !== exec.order_status) {
+      lines.push(`Workflow state: ${exec.status}`);
+    }
 
     if (exec.current_step) {
       lines.push(`Current step: ${exec.current_step}`);
@@ -1309,12 +1314,28 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
         const lines: string[] = [];
         lines.push(`Delivery options${data.product_title ? ` for ${data.product_title}` : ""} — pick a speed, or approve to use the cheapest:`);
+        if (data.ship_from) {
+          const from = [data.ship_from.city, data.ship_from.state, data.ship_from.country].filter(Boolean).join(", ");
+          if (from) lines.push(`Ships from: ${from}`);
+        }
+        if (data.ship_to) {
+          const to = [data.ship_to.city, data.ship_to.state, data.ship_to.country].filter(Boolean).join(", ");
+          if (to) lines.push(`Ships to: ${to}`);
+        }
+        if (data.fee_breakdown) {
+          lines.push(`Item subtotal: ${fmt(data.fee_breakdown.subtotal_cents || 0)} · Tax: ${fmt(data.fee_breakdown.tax_cents || 0)} · Shipping: shown per option below`);
+        }
         for (const m of methods) {
           const price = m.price_cents == null ? "price at checkout" : m.price_cents === 0 ? "free" : fmt(m.price_cents);
           const eta = m.delivery_range || (m.delivery_days != null ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}` : null);
           const label = m.label || [m.carrier, m.service].filter(Boolean).join(" ") || m.method_type || "Shipping";
           const allIn = m.all_in_cents != null ? `${fmt(allInCents(m.all_in_cents))} all-in` : null;
-          const tags = [...(Array.isArray(m.badges) ? m.badges : []), m.is_estimated ? "estimate" : null].filter(Boolean);
+          const tags = [
+            ...(Array.isArray(m.badges) ? m.badges : []),
+            m.provider ? `provider: ${m.provider}` : null,
+            m.carrier ? `carrier: ${m.carrier}` : null,
+            m.is_estimated ? "estimate" : null,
+          ].filter(Boolean);
           const parts = [`[${m.index}] ${label}`, price];
           if (eta) parts.push(eta);
           if (allIn) parts.push(allIn);
@@ -1502,18 +1523,31 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // JWT/dashboard-only and 401s an API key (mis-reported as a revoked key).
         const data = await apiRequest("GET", `/v1/executions/${execution_id}/tracking`);
         if (!data.tracking_number) {
-          return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — No tracking info yet. The seller may not have shipped it yet, or tracking hasn't been added. Use \`firestarter_status\` to check the order's current state.` }] };
+          const status = data.order_status || data.display_status || data.status;
+          return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — Status: ${status || "pending"}. No tracking info yet. The seller may not have shipped it yet, or tracking hasn't been added. Use \`firestarter_status\` to check the order's current state.` }] };
         }
         let text = `**Order ${execution_id} — Shipping**\n`;
+        if (data.ship_from) {
+          text += `Ships from: ${[data.ship_from.city, data.ship_from.state, data.ship_from.country].filter(Boolean).join(", ")}\n`;
+        }
         text += `Carrier: ${data.carrier || "Unknown"}\n`;
+        if (data.shipping_method?.provider) text += `Provider: ${data.shipping_method.provider}\n`;
+        if (data.shipping_method?.service) text += `Service: ${data.shipping_method.service}\n`;
         text += `Tracking: ${data.tracking_number}\n`;
         if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
         if (data.estimated_delivery) text += `Estimated delivery: ${data.estimated_delivery}\n`;
         text += `Status: ${data.status || "in_transit"}\n`;
+        if (data.fee_breakdown) {
+          const f = data.fee_breakdown;
+          const money = (cents: number) => `$${(Number(cents || 0) / 100).toFixed(2)}`;
+          text += `Fees: item ${money(f.subtotal_cents)} + shipping ${money(f.shipping_cents)} + tax ${money(f.tax_cents)} = ${money(f.total_cents)}\n`;
+        }
         if (data.events?.length > 0) {
           text += `\n**Recent events:**\n`;
           for (const e of data.events.slice(-5)) {
-            text += `  ${e.datetime || e.date}: ${e.description || e.message}\n`;
+            const eventDate = e.datetime || e.date || "Update";
+            const eventDetail = e.description || e.message || e.detail || e.status || "Shipping update";
+            text += `  ${eventDate}: ${eventDetail}\n`;
           }
         }
         return { content: [{ type: "text" as const, text }] };
@@ -3831,11 +3865,27 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               : res.replaced
                 ? `Joined — your attribution moved to this market${force ? " after your explicit switch confirmation" : " (the previous lock had expired)"}.`
                 : "**Joined the market.** Your future buys (and sells, when that's enabled) credit this community.";
-          // Best-effort next step: show what the community recommends so a join
-          // isn't a dead-end confirmation. Never fail the join over branding.
+          // Turn a successful join into an actionable welcome: greet the buyer,
+          // then lead with what the community recommends via the shared shelf
+          // renderer (so join / preview / my_market read identically, each pick
+          // carrying its listing_id for firestarter_execute). Best-effort — a
+          // public-page miss must never undo or misreport a completed join.
           const community = await fetchPublicCommunity(apiRequest, code.trim());
-          const shelf = community ? formatCommunityShelf(community) : null;
-          if (shelf) text += `\n\n${shelf}`;
+          if (community?.name) {
+            text += `\n\n**Welcome to ${community.name}.**`;
+            if (community.tagline) text += `\n${community.tagline}`;
+            const shelf = formatCommunityShelf(community);
+            if (shelf) {
+              text += `\n\n${shelf}`;
+            } else {
+              // No curated shelf yet: point at what the community deals in, or a
+              // generic next step, so the buyer still has somewhere to go.
+              const categories = Array.isArray(community.top_categories) ? community.top_categories.slice(0, 3) : [];
+              text += categories.length > 0
+                ? `\n\nPopular here: ${categories.join(", ")}. Search this market for something you need, then review the quote before approving.`
+                : "\n\nSearch this market for something you need, then review the quote before approving a purchase.";
+            }
+          }
           return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
           const msg = toErrorMessage(err);
