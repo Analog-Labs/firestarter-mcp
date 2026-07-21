@@ -52,6 +52,9 @@ let routes: {
   community?: (code: string) => Response;
   redeem?: () => Response;
   me?: () => Response;
+  programs?: () => Response;
+  getPicks?: (id: string) => Response;
+  putPicks?: (id: string, body: any) => Response;
 };
 
 beforeEach(() => {
@@ -70,6 +73,19 @@ beforeEach(() => {
       }
       if (method === "GET" && u.endsWith("/v1/attribution/me")) {
         return routes.me ? routes.me() : json(200, { community: null });
+      }
+      // Owner shelf: /v1/attribution/programs/:id/picks — checked before the plain
+      // programs list because the list path is a prefix of it.
+      if (u.includes("/v1/attribution/programs/") && u.endsWith("/picks")) {
+        const id = decodeURIComponent(u.split("/v1/attribution/programs/")[1].replace(/\/picks$/, ""));
+        if (method === "PUT") {
+          const body = init?.body ? JSON.parse(init.body) : undefined;
+          return routes.putPicks ? routes.putPicks(id, body) : json(200, { picks: [], count: 0 });
+        }
+        return routes.getPicks ? routes.getPicks(id) : json(200, { picks: [], max_picks: 15 });
+      }
+      if (method === "GET" && u.endsWith("/v1/attribution/programs")) {
+        return routes.programs ? routes.programs() : json(200, { programs: [] });
       }
       return json(404, { error: `unhandled ${method} ${u}` });
     }),
@@ -170,5 +186,95 @@ describe("firestarter_my_market", () => {
     const t = textOf(await captureTools()["firestarter_my_market"]({}));
     expect(t).toContain("not connected");
     expect(t).not.toContain("recommends");
+  });
+});
+
+describe("firestarter_my_markets (owner list)", () => {
+  it("lists owned markets with id, url, share code, share % and members", async () => {
+    routes.programs = () => json(200, {
+      programs: [
+        { id: "apg_1", display_name: "Analog", slug: "analog", status: "active", override_bps: 1500, type: "community", member_count: 12, links: [{ code: "ABCD123456" }] },
+        { id: "apg_2", display_name: null, slug: null, status: "paused", override_bps: 0, type: "community", member_count: 0, links: [] },
+      ],
+    });
+    const t = textOf(await captureTools()["firestarter_my_markets"]({}));
+    expect(t).toContain("apg_1");
+    expect(t).toContain("/m/analog");
+    expect(t).toContain("ABCD123456");
+    expect(t).toContain("15.00%");
+    expect(t).toContain("Members: 12");
+    expect(t).toContain("(unnamed market)"); // apg_2 has no display_name
+  });
+
+  it("says so when the owner has no markets", async () => {
+    routes.programs = () => json(200, { programs: [] });
+    const t = textOf(await captureTools()["firestarter_my_markets"]({}));
+    expect(t).toContain("don't own any markets");
+  });
+});
+
+describe("firestarter_set_market_picks (owner curation)", () => {
+  it("replace: sends the exact picks and shows the resulting shelf", async () => {
+    let putBody: any = null;
+    routes.putPicks = (_id, body) => {
+      putBody = body;
+      return json(200, {
+        count: 2,
+        picks: [
+          { listing_id: "lst_a", product_name: "Cool Sticker", price: 3, note: "love it" },
+          { listing_id: "lst_b", product_name: "Neat Mug", price: 12.5, note: null },
+        ],
+      });
+    };
+    const t = textOf(await captureTools()["firestarter_set_market_picks"]({
+      program_id: "apg_1",
+      picks: [{ listing_id: "lst_a", note: "love it" }, { listing_id: "lst_b" }],
+    }));
+    expect(putBody.picks).toEqual([
+      { listing_id: "lst_a", note: "love it" },
+      { listing_id: "lst_b", note: null },
+    ]);
+    expect(t).toContain("Shelf updated");
+    expect(t).toContain("Cool Sticker");
+    expect(t).toContain("$12.50");
+  });
+
+  it("add: merges the new picks onto the current shelf before replacing", async () => {
+    routes.getPicks = () => json(200, { picks: [{ listing_id: "lst_existing", note: "keep" }], max_picks: 15 });
+    let putBody: any = null;
+    routes.putPicks = (_id, body) => {
+      putBody = body;
+      return json(200, { count: body.picks.length, picks: body.picks.map((p: any, i: number) => ({ listing_id: p.listing_id, product_name: `P${i}`, price: 1, note: p.note })) });
+    };
+    await captureTools()["firestarter_set_market_picks"]({ program_id: "apg_1", action: "add", picks: [{ listing_id: "lst_new", note: "new" }] });
+    expect(putBody.picks).toEqual([
+      { listing_id: "lst_existing", note: "keep" },
+      { listing_id: "lst_new", note: "new" },
+    ]);
+  });
+
+  it("remove: drops the given ids from the current shelf", async () => {
+    routes.getPicks = () => json(200, { picks: [{ listing_id: "lst_a", note: "a" }, { listing_id: "lst_b", note: "b" }], max_picks: 15 });
+    let putBody: any = null;
+    routes.putPicks = (_id, body) => {
+      putBody = body;
+      return json(200, { count: body.picks.length, picks: body.picks.map((p: any) => ({ listing_id: p.listing_id, product_name: "X", price: 1, note: p.note })) });
+    };
+    await captureTools()["firestarter_set_market_picks"]({ program_id: "apg_1", action: "remove", picks: [{ listing_id: "lst_a" }] });
+    expect(putBody.picks).toEqual([{ listing_id: "lst_b", note: "b" }]);
+  });
+
+  it("reports a cleared shelf when the last pick is removed", async () => {
+    routes.getPicks = () => json(200, { picks: [{ listing_id: "lst_a", note: null }], max_picks: 15 });
+    routes.putPicks = () => json(200, { count: 0, picks: [] });
+    const t = textOf(await captureTools()["firestarter_set_market_picks"]({ program_id: "apg_1", action: "remove", picks: [{ listing_id: "lst_a" }] }));
+    expect(t).toContain("Shelf cleared");
+  });
+
+  it("explains clearly when a pick is the owner's own listing", async () => {
+    routes.putPicks = () => json(400, { error: "Your own listings already appear under what you sell: lst_x", code: "OWN_LISTING_PICK" });
+    const res = await captureTools()["firestarter_set_market_picks"]({ program_id: "apg_1", picks: [{ listing_id: "lst_x" }] });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("your OWN listings");
   });
 });

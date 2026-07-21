@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 54 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 56 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -1244,6 +1244,60 @@
       "inputSchema": {
         "type": "object",
         "properties": {}
+      }
+    },
+    {
+      "name": "firestarter_my_markets",
+      "description": "List the community markets you OWN: each one's program id, buyer-facing name, community URL/handle, share code, status, your fee share, and current member count. Use when an owner asks what markets they have or needs a market's program_id for another tool (firestarter_market_link, firestarter_set_market_handle, firestarter_set_market_picks). Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "firestarter_set_market_picks",
+      "description": "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent. Picks are OTHER sellers' listings you recommend (your own listings are rejected). Up to 15. action 'replace' (default), 'add', or 'remove'. Each pick may carry a short note buyers see.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id (from firestarter_create_market or firestarter_my_markets)."
+          },
+          "picks": {
+            "type": "array",
+            "description": "The picks to set/add/remove. For 'remove', only each listing_id is used.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "listing_id": {
+                  "type": "string",
+                  "description": "A listing id (lst_...) to feature — another seller's listing, not your own."
+                },
+                "note": {
+                  "type": "string",
+                  "description": "Optional short 'why I picked it' shown to buyers."
+                }
+              },
+              "required": [
+                "listing_id"
+              ]
+            }
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "replace",
+              "add",
+              "remove"
+            ],
+            "description": "replace (default): the picks become the exact shelf. add: append. remove: drop the given listing ids."
+          }
+        },
+        "required": [
+          "program_id",
+          "picks"
+        ]
       }
     },
     {

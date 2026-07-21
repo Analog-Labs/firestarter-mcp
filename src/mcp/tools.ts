@@ -3574,6 +3574,108 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     );
 
     server.tool(
+      "firestarter_my_markets",
+      "List the community markets you OWN (created with firestarter_create_market): each one's program id, buyer-facing name, community URL/handle, share code, status, your fee share, and current member count. Use when an owner asks 'what markets do I have?', needs a market's program_id for another tool (firestarter_market_link, firestarter_set_market_handle, firestarter_set_market_picks), or wants an at-a-glance view. Read-only. For earnings use firestarter_market_earnings; to preview a community's public shelf use firestarter_market_preview.",
+      {},
+      async () => {
+        try {
+          const res = await apiRequest("GET", "/v1/attribution/programs");
+          const programs: any[] = Array.isArray(res?.programs) ? res.programs : [];
+          if (programs.length === 0) {
+            return { content: [{ type: "text" as const, text: "You don't own any markets yet. Create one with firestarter_create_market." }] };
+          }
+          const blocks = programs.map((p) => {
+            const name = typeof p.display_name === "string" && p.display_name.trim() ? p.display_name.trim() : "(unnamed market)";
+            const code = Array.isArray(p.links) && p.links[0]?.code ? p.links[0].code : null;
+            const url = p.slug ? `${MARKET_LINK_BASE}/${p.slug}` : code ? `${MARKET_LINK_BASE}/${code}` : "(no share link yet — mint one with firestarter_market_link)";
+            return [
+              `**${name}**${p.type && p.type !== "community" ? ` (${p.type})` : ""}`,
+              `Program id: \`${p.id}\` · Status: ${p.status}`,
+              `URL: ${url}${code ? ` · Share code: \`${code}\`` : ""}`,
+              `Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee · Members: ${Number(p.member_count ?? 0)}`,
+            ].join("\n");
+          });
+          return { content: [{ type: "text" as const, text: `**Your markets (${programs.length}):**\n\n${blocks.join("\n\n")}` }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't list your markets: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_set_market_picks",
+      "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) — find them with firestarter_catalog_search. `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
+      {
+        program_id: z.string().describe("The market/program id (from firestarter_create_market or firestarter_my_markets)."),
+        picks: z.array(z.object({
+          listing_id: z.string().describe("A listing id (lst_...) to feature. Must be another seller's listing — not your own."),
+          note: z.string().max(140).optional().describe("Optional short 'why I picked it' shown to buyers."),
+        })).min(1).describe("The picks to set/add/remove. For 'remove', only each listing_id is used."),
+        action: z.enum(["replace", "add", "remove"]).optional().describe("replace (default): the picks become the exact shelf, in order. add: append to the current shelf. remove: drop the given listing ids."),
+      },
+      async ({ program_id, picks, action }) => {
+        const mode = action ?? "replace";
+        const incoming = picks.map((p) => ({
+          listing_id: cleanListingId(p.listing_id),
+          note: typeof p.note === "string" ? p.note : null,
+        }));
+        try {
+          // The PUT is a wholesale replace-set (matches the web). To offer natural
+          // add/remove, fetch the current owner shelf, merge, then replace — the
+          // GET is owner-scoped, so a non-owner 404s here just like the PUT would.
+          let desired: Array<{ listing_id: string; note: string | null }>;
+          if (mode === "replace") {
+            desired = incoming;
+          } else {
+            const cur = await apiRequest("GET", `/v1/attribution/programs/${encodeURIComponent(program_id)}/picks`);
+            const current: Array<{ listing_id: string; note: string | null }> = (Array.isArray(cur?.picks) ? cur.picks : [])
+              .map((p: any) => ({ listing_id: String(p.listing_id), note: typeof p.note === "string" ? p.note : null }));
+            if (mode === "add") {
+              const byId = new Map(current.map((p) => [p.listing_id, p]));
+              for (const p of incoming) {
+                const existing = byId.get(p.listing_id);
+                if (existing) { if (p.note != null) existing.note = p.note; }
+                else { const np = { ...p }; current.push(np); byId.set(p.listing_id, np); }
+              }
+              desired = current;
+            } else {
+              const drop = new Set(incoming.map((p) => p.listing_id));
+              desired = current.filter((p) => !drop.has(p.listing_id));
+            }
+          }
+          const res = await apiRequest("PUT", `/v1/attribution/programs/${encodeURIComponent(program_id)}/picks`, {
+            picks: desired.map((p) => ({ listing_id: p.listing_id, note: p.note })),
+          });
+          const shelf: any[] = Array.isArray(res?.picks) ? res.picks : [];
+          if (shelf.length === 0) {
+            return { content: [{ type: "text" as const, text: "**Shelf cleared.** Your market now recommends no products — buyers see the plain catalog framing. Add some with action:'add'." }] };
+          }
+          const lines = shelf.map((p) => {
+            const nm = typeof p.product_name === "string" && p.product_name.trim() ? p.product_name.trim() : "Untitled";
+            const price = Number.isFinite(Number(p.price)) ? `$${Number(p.price).toFixed(2)}` : "price at checkout";
+            const note = typeof p.note === "string" && p.note.trim() ? ` — "${p.note.trim()}"` : "";
+            return `• ${nm} — ${price}${note}`;
+          });
+          return { content: [{ type: "text" as const, text: `**Shelf updated — ${shelf.length} pick${shelf.length === 1 ? "" : "s"}** (buyers see these on your join page and in the agent):\n${lines.join("\n")}` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "OWN_LISTING_PICK") {
+            return { content: [{ type: "text" as const, text: `Those include your OWN listings — they already appear under what you sell, so they can't go on the recommends shelf. ${toErrorMessage(err)}` }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "UNPICKABLE_LISTING") {
+            return { content: [{ type: "text" as const, text: `Some listings can't be featured (inactive, sold out, or not found): ${toErrorMessage(err)}` }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "TOO_MANY_PICKS") {
+            return { content: [{ type: "text" as const, text: "A shelf holds at most 15 listings — trim the list and try again." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't update the shelf: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
       "firestarter_market_preview",
       "Preview a community market BEFORE joining — read-only, no join, no lock. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend' before committing — show the picks, then let them choose to join (firestarter_join_market) or just buy a pick. Joining is first-touch and locks ~90 days, so previewing first avoids a premature lock. IMPORTANT framing: the buyer gets NO discount or cashback — the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. Do not promise a buyer perk.",
       {
