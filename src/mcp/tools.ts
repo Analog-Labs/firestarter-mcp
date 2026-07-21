@@ -406,7 +406,14 @@ export function renderDeliveryOptions(opt: any, dm: any): string[] {
     }
     const tags: string[] = [];
     if (Array.isArray(m.badges)) tags.push(...m.badges.filter((b: unknown) => typeof b === "string" && b));
-    if (m.is_estimated) tags.push("estimate");
+    // Name the logistics CARRIER explicitly. A real carrier rate already leads
+    // the label with it ("USPS Priority") — only add a "via <carrier>" tag when
+    // the label doesn't (e.g. a seller flat rate labelled "Standard"). An
+    // estimate tier has no carrier until the label is bought — say so rather
+    // than leaving the buyer to guess.
+    const carrierName = typeof m.carrier === "string" && m.carrier.trim() ? m.carrier.trim() : null;
+    if (carrierName && !label.toLowerCase().startsWith(carrierName.toLowerCase())) tags.push(`via ${carrierName}`);
+    if (m.is_estimated) tags.push(carrierName ? "estimate" : "estimate · carrier assigned at fulfillment");
     const parts = [price];
     if (eta) parts.push(eta);
     if (allIn) parts.push(allIn);
@@ -639,6 +646,10 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
           optLines.push(`  Total with app margin: $${((itemCents + marginCents) / 100).toFixed(2)} (+$${(marginCents / 100).toFixed(2)})`);
         }
       }
+      // Where it ships FROM — coarse city/state/country only (never the seller's
+      // exact street/zip/phone). Present only for purchasable internal listings
+      // quoted after this was captured; silently omitted otherwise.
+      if (opt.ship_from) optLines.push(`  Ships from: ${opt.ship_from}`);
       // Delivery-options menu: show the real speed/carrier choices the buyer can
       // pick between (the numbers ARE the shipping_option_index for approve), so
       // shipping stops being an invisible auto-pick. Non-blocking — approving
@@ -1266,12 +1277,21 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
         const lines: string[] = [];
         lines.push(`Delivery options${data.product_title ? ` for ${data.product_title}` : ""} — pick a speed, or approve to use the cheapest:`);
+        if (data.ship_from) lines.push(`Ships from: ${data.ship_from}`);
         for (const m of methods) {
           const price = m.price_cents == null ? "price at checkout" : m.price_cents === 0 ? "free" : fmt(m.price_cents);
           const eta = m.delivery_range || (m.delivery_days != null ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}` : null);
           const label = m.label || [m.carrier, m.service].filter(Boolean).join(" ") || m.method_type || "Shipping";
           const allIn = m.all_in_cents != null ? `${fmt(allInCents(m.all_in_cents))} all-in` : null;
-          const tags = [...(Array.isArray(m.badges) ? m.badges : []), m.is_estimated ? "estimate" : null].filter(Boolean);
+          // Name the carrier explicitly (see renderDeliveryOptions): only add
+          // "via <carrier>" when the label doesn't already lead with it, and mark
+          // an estimate tier as having no carrier until the label is bought.
+          const carrierName = typeof m.carrier === "string" && m.carrier.trim() ? m.carrier.trim() : null;
+          const tags = [
+            ...(Array.isArray(m.badges) ? m.badges : []),
+            carrierName && !label.toLowerCase().startsWith(carrierName.toLowerCase()) ? `via ${carrierName}` : null,
+            m.is_estimated ? (carrierName ? "estimate" : "estimate · carrier assigned at fulfillment") : null,
+          ].filter(Boolean);
           const parts = [`[${m.index}] ${label}`, price];
           if (eta) parts.push(eta);
           if (allIn) parts.push(allIn);
