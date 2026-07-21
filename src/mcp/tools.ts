@@ -3882,8 +3882,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               // generic next step, so the buyer still has somewhere to go.
               const categories = Array.isArray(community.top_categories) ? community.top_categories.slice(0, 3) : [];
               text += categories.length > 0
-                ? `\n\nPopular here: ${categories.join(", ")}. Search this market for something you need, then review the quote before approving.`
-                : "\n\nSearch this market for something you need, then review the quote before approving a purchase.";
+                ? `\n\nPopular here: ${categories.join(", ")}. Next: search this market for something you need, then review the quote before approving.`
+                : "\n\nNext: search this market for something you need, then review the quote before approving a purchase.";
             }
           }
           return { content: [{ type: "text" as const, text }] };
