@@ -929,7 +929,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         })
         .optional()
         .describe("Where the buyer is. Pass this whenever you know it (from the conversation, profile, or a prior message) even without a full delivery address — it makes search location-aware so local marketplaces are shown first."),
-      priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated). Default quality."),
+      priority: z.enum(["cost", "speed", "quality"]).optional().describe("Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated). Default cost — shipping is quoted and shipped at the cheapest carrier rate unless the buyer asks for speed/quality."),
       auto_pay: z.boolean().optional().describe("If true, automatically pay for the best option within budget WITHOUT a confirmation step — only when the buyer explicitly pre-authorized it. If false (default), options are returned for approval."),
       requested_by: z
         .object({
@@ -945,7 +945,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       try {
         const body: any = {
           request,
-          preferences: { priority: priority || "quality", require_approval: !auto_pay },
+          preferences: { priority: priority || "cost", require_approval: !auto_pay },
         };
         if (listing_id) body.listing_id = listing_id;
         // Attribution rides the existing free-form metadata column — the REST
