@@ -3488,11 +3488,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         share_bps: z.number().int().min(0).max(10000).describe("Cut of Firestarter's platform fee in basis points (1000 = 10%). Capped at the platform self-serve max; the response returns the effective value."),
         type: z.enum(["community", "developer"]).optional().describe("Program type. Default 'community'."),
         display_name: z.string().max(60).optional().describe("Buyer-facing community name, e.g. 'Analog'. Displayed on join/browse/community surfaces."),
+        tagline: z.string().max(80).optional().describe("One-line 'what this community is about', shown under the name on the join page and in firestarter_market_preview. Change it later with firestarter_update_market."),
         handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/i, "handle must be 2-31 chars: letters, digits and hyphens, starting with a letter or digit").optional().describe("Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase), so 'Analog' and 'analog' are the same handle. Must be unique; the API rejects handles that are reserved or shaped like a share code. If it's taken the whole create fails, so retry with a different handle (or omit it and claim one later with firestarter_set_market_handle)."),
       },
-      async ({ share_bps, type, display_name, handle }) => {
+      async ({ share_bps, type, display_name, tagline, handle }) => {
         try {
-          const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps, display_name, slug: handle?.toLowerCase() });
+          const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps, display_name, tagline, slug: handle?.toLowerCase() });
           const p = res.program ?? {};
           let text = `**Market created.**${p.display_name ? ` ${p.display_name}.` : ""} Program id: \`${p.id}\`. Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee`;
           if (res.override_bps_capped) text += ` (capped from your request to the platform max of ${(Number(res.max_self_serve_bps ?? 0) / 100).toFixed(2)}%)`;
@@ -3555,6 +3556,40 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: "No market on your account has that program id. Create one first with firestarter_create_market, then set its handle." }], isError: true };
           }
           return { content: [{ type: "text" as const, text: `Couldn't set the handle: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_update_market",
+      "Update a community market you own: its buyer-facing display_name, its tagline (the one-line 'what this community is about' shown on the join page and in firestarter_market_preview), and/or whether it appears in the public 'Discover communities' list (discoverable). Pass at least one field. Pass an empty string for display_name or tagline to CLEAR it. To change the vanity handle/URL use firestarter_set_market_handle; to change the recommended products use firestarter_set_market_picks.",
+      {
+        program_id: z.string().describe("The market/program id (from firestarter_create_market or firestarter_my_markets)."),
+        display_name: z.string().max(60).optional().describe("Buyer-facing community name. Empty string clears it (buyers then see the owner org name)."),
+        tagline: z.string().max(80).optional().describe("One-line description shown under the name. Empty string clears it."),
+        discoverable: z.boolean().optional().describe("Whether this market appears in the public 'Discover communities' list (firestarter_discover_markets)."),
+      },
+      async ({ program_id, display_name, tagline, discoverable }) => {
+        const body: Record<string, unknown> = {};
+        if (display_name !== undefined) body.display_name = display_name === "" ? null : display_name;
+        if (tagline !== undefined) body.tagline = tagline === "" ? null : tagline;
+        if (discoverable !== undefined) body.discoverable = discoverable;
+        if (Object.keys(body).length === 0) {
+          return { content: [{ type: "text" as const, text: "Nothing to update — pass display_name, tagline, and/or discoverable." }], isError: true };
+        }
+        try {
+          const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, body);
+          const p = res?.program ?? {};
+          const lines = ["**Market updated.**"];
+          if ("display_name" in body) lines.push(`Name: ${p.display_name ? p.display_name : "(cleared — buyers see your org name)"}`);
+          if ("tagline" in body) lines.push(`Tagline: ${p.tagline ? p.tagline : "(cleared)"}`);
+          if ("discoverable" in body) lines.push(`Discoverable: ${p.discoverable === false ? "no (hidden from Discover)" : "yes (listed in Discover)"}`);
+          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't update the market: ${toErrorMessage(err)}` }], isError: true };
         }
       }
     );
@@ -3676,6 +3711,34 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     );
 
     server.tool(
+      "firestarter_connect_payouts",
+      "Connect a Stripe payout account so a community-market owner can WITHDRAW their accrued earnings. Earnings accrue with no Stripe needed — creating a market and earning a share works from any country — but PAYING OUT requires this. Returns a Stripe onboarding link for the owner to open in a browser; once they finish, payouts enable. Use when an owner asks to get paid, cash out, set up payouts, or connect Stripe. If already fully set up, it just says so. Optionally pass the owner's country (ISO-3166-1 alpha-2) if onboarding asks.",
+      {
+        country: z.string().length(2).optional().describe("Owner's 2-letter country code (ISO-3166-1 alpha-2), e.g. 'US', 'GB'. Only needed if onboarding asks."),
+      },
+      async ({ country }) => {
+        try {
+          const status = await apiRequest("GET", "/v1/attribution/connect/status");
+          if (status?.connected === true && status?.payouts_enabled === true) {
+            return { content: [{ type: "text" as const, text: "**Payouts are already set up.** Your accrued market earnings pay out to your connected account. See balances with firestarter_market_earnings." }] };
+          }
+          const res = await apiRequest("POST", "/v1/attribution/connect", country ? { country: country.toUpperCase() } : {});
+          const url = res?.onboarding_url;
+          if (!url) {
+            return { content: [{ type: "text" as const, text: "Started payout setup, but no onboarding link was returned. Try again shortly." }], isError: true };
+          }
+          const resuming = res?.existing === true;
+          return { content: [{ type: "text" as const, text: `**${resuming ? "Finish setting up payouts" : "Set up payouts"}:** open this link to ${resuming ? "complete" : "connect"} your Stripe account —\n${url}\n\nEarnings keep accruing meanwhile; once Stripe onboarding is complete, payouts enable automatically. Call this tool again to check status.` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "INVALID_COUNTRY") {
+            return { content: [{ type: "text" as const, text: "That country code isn't valid — use a 2-letter ISO code like 'US' or 'GB'." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't start payout setup: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
       "firestarter_market_preview",
       "Preview a community market BEFORE joining — read-only, no join, no lock. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend' before committing — show the picks, then let them choose to join (firestarter_join_market) or just buy a pick. Joining is first-touch and locks ~90 days, so previewing first avoids a premature lock. IMPORTANT framing: the buyer gets NO discount or cashback — the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. Do not promise a buyer perk.",
       {
@@ -3701,6 +3764,40 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           );
         }
         return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+      }
+    );
+
+    server.tool(
+      "firestarter_discover_markets",
+      "Browse public community markets a buyer can join (the 'Discover communities' list): each one's name, tagline, community URL/handle, join code, and social proof (members, orders driven). Use when a buyer asks what communities exist, wants to find one to support, or says 'discover community markets'. To see a specific community's curated shelf use firestarter_market_preview; to join one use firestarter_join_market with its code. Read-only, public — no sign-in needed.",
+      {
+        limit: z.number().int().min(1).max(24).optional().describe("Max communities to return (default 12, max 24)."),
+      },
+      async ({ limit }) => {
+        try {
+          const qs = limit ? `?limit=${Math.max(1, Math.min(24, Math.floor(limit)))}` : "";
+          const res = await apiRequest("GET", `/marketplace/communities${qs}`);
+          const communities: any[] = Array.isArray(res?.communities) ? res.communities : [];
+          if (communities.length === 0) {
+            return { content: [{ type: "text" as const, text: "No public community markets to show right now. If you have a specific share code, join it with firestarter_join_market." }] };
+          }
+          const blocks = communities.map((c) => {
+            const name = typeof c.name === "string" && c.name.trim() ? c.name.trim() : "A community";
+            const url = c.slug ? `${MARKET_LINK_BASE}/${c.slug}` : c.code ? `${MARKET_LINK_BASE}/${c.code}` : null;
+            const proof = [
+              c.member_count_bucket && c.member_count_bucket !== "0" ? `${c.member_count_bucket} members` : null,
+              c.order_count_bucket && c.order_count_bucket !== "0" ? `${c.order_count_bucket} orders driven` : null,
+            ].filter(Boolean).join(" · ");
+            const lines = [`**${name}**${c.tagline ? ` — ${c.tagline}` : ""}`];
+            if (url) lines.push(url);
+            if (c.code) lines.push(`Join code: \`${c.code}\``);
+            if (proof) lines.push(proof);
+            return lines.join("\n");
+          });
+          return { content: [{ type: "text" as const, text: `**Community markets (${communities.length}):**\n\n${blocks.join("\n\n")}\n\nPreview one with firestarter_market_preview, or join with firestarter_join_market and its code.` }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't load community markets: ${toErrorMessage(err)}` }], isError: true };
+        }
       }
     );
 

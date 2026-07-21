@@ -55,6 +55,10 @@ let routes: {
   programs?: () => Response;
   getPicks?: (id: string) => Response;
   putPicks?: (id: string, body: any) => Response;
+  patchProgram?: (id: string, body: any) => Response;
+  connectStatus?: () => Response;
+  connectStart?: (body: any) => Response;
+  communities?: () => Response;
 };
 
 beforeEach(() => {
@@ -64,9 +68,22 @@ beforeEach(() => {
     vi.fn(async (url: any, init?: any) => {
       const u = String(url);
       const method = init?.method || "GET";
+      if (u.includes("/marketplace/communities")) {
+        return routes.communities ? routes.communities() : json(200, { communities: [] });
+      }
       if (u.includes("/marketplace/community/")) {
         const code = decodeURIComponent(u.split("/marketplace/community/")[1]);
         return routes.community ? routes.community(code) : json(404, { error: "not found", code: "COMMUNITY_NOT_FOUND" });
+      }
+      if (method === "GET" && u.endsWith("/v1/attribution/connect/status")) {
+        return routes.connectStatus ? routes.connectStatus() : json(200, { connected: false, payouts_enabled: false, details_submitted: false });
+      }
+      if (method === "POST" && u.endsWith("/v1/attribution/connect")) {
+        return routes.connectStart ? routes.connectStart(init?.body ? JSON.parse(init.body) : {}) : json(201, { account_id: "acct_x", onboarding_url: "https://connect.stripe.test/x", existing: false });
+      }
+      if (method === "PATCH" && u.includes("/v1/attribution/programs/")) {
+        const id = decodeURIComponent(u.split("/v1/attribution/programs/")[1]);
+        return routes.patchProgram ? routes.patchProgram(id, init?.body ? JSON.parse(init.body) : undefined) : json(200, { program: { id } });
       }
       if (method === "POST" && u.endsWith("/v1/attribution/redeem")) {
         return routes.redeem ? routes.redeem() : json(200, {});
@@ -276,5 +293,82 @@ describe("firestarter_set_market_picks (owner curation)", () => {
     const res = await captureTools()["firestarter_set_market_picks"]({ program_id: "apg_1", picks: [{ listing_id: "lst_x" }] });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain("your OWN listings");
+  });
+});
+
+describe("firestarter_update_market (owner identity)", () => {
+  it("updates display_name/tagline/discoverable and reflects the result", async () => {
+    let patchBody: any = null;
+    routes.patchProgram = (_id, body) => { patchBody = body; return json(200, { program: { id: "apg_1", display_name: "Analog", tagline: "makers", discoverable: false } }); };
+    const t = textOf(await captureTools()["firestarter_update_market"]({ program_id: "apg_1", display_name: "Analog", tagline: "makers", discoverable: false }));
+    expect(patchBody).toEqual({ display_name: "Analog", tagline: "makers", discoverable: false });
+    expect(t).toContain("Market updated");
+    expect(t).toContain("Analog");
+    expect(t).toContain("hidden from Discover");
+  });
+
+  it("clears a field when passed an empty string", async () => {
+    let patchBody: any = null;
+    routes.patchProgram = (_id, body) => { patchBody = body; return json(200, { program: { id: "apg_1", tagline: null } }); };
+    const t = textOf(await captureTools()["firestarter_update_market"]({ program_id: "apg_1", tagline: "" }));
+    expect(patchBody).toEqual({ tagline: null });
+    expect(t).toContain("(cleared)");
+  });
+
+  it("errors when no field is provided", async () => {
+    const res = await captureTools()["firestarter_update_market"]({ program_id: "apg_1" });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("Nothing to update");
+  });
+});
+
+describe("firestarter_connect_payouts (owner Stripe)", () => {
+  it("returns a Stripe onboarding link when not yet set up", async () => {
+    routes.connectStatus = () => json(200, { connected: false, payouts_enabled: false, details_submitted: false });
+    routes.connectStart = () => json(201, { account_id: "acct_1", onboarding_url: "https://connect.stripe.test/onboard", existing: false });
+    const t = textOf(await captureTools()["firestarter_connect_payouts"]({}));
+    expect(t).toContain("Set up payouts");
+    expect(t).toContain("https://connect.stripe.test/onboard");
+  });
+
+  it("reports when payouts are already enabled and does NOT start onboarding", async () => {
+    routes.connectStatus = () => json(200, { connected: true, payouts_enabled: true, details_submitted: true });
+    let started = false;
+    routes.connectStart = () => { started = true; return json(200, {}); };
+    const t = textOf(await captureTools()["firestarter_connect_payouts"]({}));
+    expect(t).toContain("already set up");
+    expect(started).toBe(false);
+  });
+
+  it("forwards a normalized country code", async () => {
+    routes.connectStatus = () => json(200, { connected: false, payouts_enabled: false });
+    let body: any = null;
+    routes.connectStart = (b) => { body = b; return json(201, { onboarding_url: "https://x", existing: false }); };
+    await captureTools()["firestarter_connect_payouts"]({ country: "gb" });
+    expect(body).toEqual({ country: "GB" });
+  });
+});
+
+describe("firestarter_discover_markets (buyer discovery)", () => {
+  it("lists public markets with URL, join code and proof", async () => {
+    routes.communities = () => json(200, {
+      communities: [
+        { name: "Analog", slug: "analog", code: "ABCD123456", tagline: "makers", member_count_bucket: "10-49", order_count_bucket: "1-9" },
+        { name: "Solo", slug: null, code: "WXYZ987654", tagline: null, member_count_bucket: "0", order_count_bucket: "0" },
+      ],
+    });
+    const t = textOf(await captureTools()["firestarter_discover_markets"]({}));
+    expect(t).toContain("Analog");
+    expect(t).toContain("makers");
+    expect(t).toContain("/m/analog");
+    expect(t).toContain("ABCD123456");
+    expect(t).toContain("10-49 members");
+    expect(t).toContain("firestarter_join_market");
+  });
+
+  it("handles an empty discover list", async () => {
+    routes.communities = () => json(200, { communities: [] });
+    const t = textOf(await captureTools()["firestarter_discover_markets"]({}));
+    expect(t).toContain("No public community markets");
   });
 });

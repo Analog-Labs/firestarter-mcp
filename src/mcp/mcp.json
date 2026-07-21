@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 56 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 59 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -1181,6 +1181,11 @@
             "maxLength": 60,
             "description": "Buyer-facing community name, e.g. 'Analog'. Displayed on join/browse/community surfaces."
           },
+          "tagline": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "One-line 'what this community is about', shown under the name on the join page and in firestarter_market_preview. Change it later with firestarter_update_market."
+          },
           "handle": {
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{1,30}$",
@@ -1235,6 +1240,36 @@
         "required": [
           "program_id",
           "handle"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_update_market",
+      "description": "Update a community market you own: its buyer-facing display_name, tagline (shown on the join page and in firestarter_market_preview), and/or whether it appears in the public 'Discover communities' list (discoverable). Pass at least one field; an empty string clears display_name or tagline. To change the handle use firestarter_set_market_handle; to change the picks use firestarter_set_market_picks.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id (from firestarter_create_market or firestarter_my_markets)."
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Buyer-facing community name. Empty string clears it."
+          },
+          "tagline": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "One-line description shown under the name. Empty string clears it."
+          },
+          "discoverable": {
+            "type": "boolean",
+            "description": "Whether this market appears in the public 'Discover communities' list."
+          }
+        },
+        "required": [
+          "program_id"
         ]
       }
     },
@@ -1301,6 +1336,19 @@
       }
     },
     {
+      "name": "firestarter_connect_payouts",
+      "description": "Connect a Stripe payout account so a community-market owner can WITHDRAW their accrued earnings (earnings accrue without it; paying out needs it). Returns a Stripe onboarding link to open in a browser; once complete, payouts enable. If already set up, it says so. Optionally pass the owner's country (ISO-3166-1 alpha-2).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "type": "string",
+            "description": "Owner's 2-letter country code (ISO-3166-1 alpha-2), e.g. 'US', 'GB'. Only needed if onboarding asks."
+          }
+        }
+      }
+    },
+    {
       "name": "firestarter_market_preview",
       "description": "Preview a community market BEFORE joining — read-only, no join, no lock. Given a share code or vanity handle, returns the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use when a buyer pastes a market code/link or asks what a community recommends before committing to the ~90-day first-touch lock. The buyer gets no discount; the community earns a share of Firestarter's fee at no extra cost to the buyer.",
       "inputSchema": {
@@ -1314,6 +1362,19 @@
         "required": [
           "code"
         ]
+      }
+    },
+    {
+      "name": "firestarter_discover_markets",
+      "description": "Browse public community markets a buyer can join (the 'Discover communities' list): each one's name, tagline, community URL/handle, join code, and social proof. Use when a buyer asks what communities exist or wants to find one to support. Preview a specific one with firestarter_market_preview; join with firestarter_join_market. Read-only, public.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Max communities to return (default 12, max 24)."
+          }
+        }
       }
     },
     {
