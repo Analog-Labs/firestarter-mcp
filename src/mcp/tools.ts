@@ -2890,9 +2890,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
 
         const buyableCount = listings.filter((l) => l.buyable).length;
+        // The buyer's community, when they're in one. Named on its own line so
+        // the agent can attribute a pick ("Analog picks this") rather than
+        // showing an unexplained star.
+        const communityName: string | null =
+          typeof data.query?.community?.name === "string" ? data.query.community.name : null;
+        const pickCount = listings.filter((l) => l.picked_by_community).length;
         const lines = [
-          `**Firestarter catalog** — ${listings.length} result${listings.length === 1 ? "" : "s"} (${data.query?.environment || "live"} mode, ${buyableCount} buyable now)${data.has_more ? " · more available, narrow the search or raise `limit`" : ""}\n`,
+          `**Firestarter catalog** — ${listings.length} result${listings.length === 1 ? "" : "s"} (${data.query?.environment || "live"} mode, ${buyableCount} buyable now)${data.has_more ? " · more available, narrow the search or raise `limit`" : ""}`,
         ];
+        if (communityName && pickCount > 0) {
+          lines.push(`★ = picked by **${communityName}**, the community you're in (${pickCount} here).`);
+        }
+        lines.push("");
         for (const l of listings) {
           const price = `${l.currency || "USD"} ${Number(l.current_price).toFixed(2)}`;
           const tag = l.buyable ? "✅ buyable" : "👁 browse-only";
@@ -2900,8 +2910,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // clients auto-unfurl a preview and agents have a fetchable, CORS-open
           // image URL (the network image endpoint) instead of guessing a link.
           const img0 = Array.isArray(l.images) && typeof l.images[0] === "string" && /^https?:\/\//i.test(l.images[0]) ? l.images[0] : null;
+          // The curator's note is the whole point of a pick — a bare badge says
+          // "someone chose this", the note says why, which is what a buyer
+          // actually weighs. Rendered on its own line, quoted, when present.
+          const picked = l.picked_by_community === true;
+          const note = picked && typeof l.pick_note === "string" && l.pick_note.trim() ? l.pick_note.trim() : null;
           lines.push(
-            `- **${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}\n  id: \`${l.id}\` · ${l.share_url}${img0 ? `\n  ${img0}` : ""}`,
+            `- ${picked ? "★ " : ""}**${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}` +
+            `${note ? `\n  _"${note}"_${communityName ? ` — ${communityName}` : ""}` : ""}` +
+            `\n  id: \`${l.id}\` · ${l.share_url}${img0 ? `\n  ${img0}` : ""}`,
           );
         }
         lines.push(
