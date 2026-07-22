@@ -430,6 +430,36 @@ export async function inlineImageBlocks(urls: Array<string | null | undefined>):
 }
 
 /**
+ * Concrete arrival date for a transit-days ETA — "arrives ~Tue, Jul 28" beats
+ * "~5 days" for a buyer asking "when will it get here?". Business-day naive by
+ * design (carrier ETAs already are); null for missing/non-finite days. Exported
+ * for unit tests.
+ */
+export function arrivalDateFromDays(days: unknown, now: Date = new Date()): string | null {
+  if (days == null) return null; // Number(null) === 0 — don't turn "no ETA" into "today"
+  const d = Number(days);
+  if (!Number.isFinite(d) || d < 0) return null;
+  const arrival = new Date(now.getTime() + Math.ceil(d) * 86_400_000);
+  return arrival.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+/**
+ * One human line for a shipping_provenance value — makes "is this number a real
+ * carrier rate or a placeholder?" explicit to the buyer instead of an internal
+ * enum. Null for unknown/absent values (nothing worth saying). Exported for
+ * unit tests.
+ */
+export function provenanceLine(p: unknown): string | null {
+  switch (p) {
+    case "real": return "Rate source: live carrier rate";
+    case "seller": return "Rate source: seller's flat shipping price";
+    case "flat": return "Rate source: standard flat rate (no live carrier rate was available)";
+    case "unknown": return "Rate source: calculated at checkout";
+    default: return null;
+  }
+}
+
+/**
  * Render the buyer-facing delivery-options menu for one purchasable option.
  *
  * The rates already exist — the quote step rate-shops each purchasable option and
@@ -485,6 +515,11 @@ export function renderDeliveryOptions(opt: any, dm: any): string[] {
     if (m.is_estimated) tags.push(carrierName ? "estimate" : "estimate · carrier assigned at fulfillment");
     const parts = [price];
     if (eta) parts.push(eta);
+    // Concrete date next to the day count — "when will it arrive?" needs a date,
+    // not arithmetic. Skipped for estimate tiers (a fabricated date would imply
+    // a promise no carrier made).
+    const arrival = !m.is_estimated ? arrivalDateFromDays(m.delivery_days) : null;
+    if (arrival) parts.push(`arrives ~${arrival}`);
     if (allIn) parts.push(allIn);
     return { label, parts, tags };
   };
@@ -598,6 +633,16 @@ export function renderShippingEstimate(data: any): string[] {
   }
   if (data.fallback_used) {
     lines.push("  (Estimated tiers — live carrier rates are quoted at approval.)");
+  }
+  // Route class context (from the estimate's route_class): an international
+  // route means the buyer may owe import duties on delivery (DAP — the platform
+  // does not collect them), and a hyperlocal route means same-day courier
+  // options can appear at checkout. Both change the buying decision, so say so
+  // here rather than after approval.
+  if (data.route_class === "international") {
+    lines.push("  Note: international route — import duties/taxes may be due on delivery (not included above).");
+  } else if (data.route_class === "hyperlocal") {
+    lines.push("  Note: local route — same-day courier delivery may also be offered at checkout.");
   }
   lines.push("", "To buy at one of these speeds: firestarter_execute with the listing_id, then pick the speed at approval (shipping_option_index). These estimate rows are NOT approve indices.");
   return lines;
@@ -792,8 +837,14 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // pick between (the numbers ARE the shipping_option_index for approve), so
       // shipping stops being an invisible auto-pick. Non-blocking — approving
       // without a choice still uses the cheapest rate.
-      if (!browseOnly) {
+      if (!browseOnly) {                                                                                    
         for (const shipLine of renderDeliveryOptions(opt, dm)) optLines.push(shipLine);
+        // Cross-border DAP disclosure (stamped on the option at quote time, #332):
+        // import duties change what the buyer actually pays — they must hear it
+        // WITH the price, before approving, not at the border.
+        const duties = opt.metadata?.duties_disclosure;
+        if (typeof duties === "string" && duties.trim()) optLines.push(`  ⚠ ${duties.trim()}`);
+        else if (opt.metadata?.cross_border === true) optLines.push("  ⚠ International order — import duties/taxes may be due on delivery (not included in the total).");
       }
       // #256: surface the exact link the API returned. For a Firestarter
       // listing product_url is ALREADY the /l/<id> share link — use it verbatim
@@ -1428,6 +1479,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         if (data.fee_breakdown) {
           lines.push(`Item subtotal: ${fmt(data.fee_breakdown.subtotal_cents || 0)} · Tax: ${fmt(data.fee_breakdown.tax_cents || 0)} · Shipping: shown per option below`);
+          // "Is this a real carrier rate or a placeholder?" — answer it instead
+          // of leaving an internal enum invisible.
+          const prov = provenanceLine(data.fee_breakdown.shipping_provenance);
+          if (prov) lines.push(prov);
         }
         for (const m of methods) {
           const price = m.price_cents == null ? "price at checkout" : m.price_cents === 0 ? "free" : fmt(m.price_cents);
@@ -1444,8 +1499,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           ].filter(Boolean);
           const parts = [`[${m.index}] ${label}`, price];
           if (eta) parts.push(eta);
+          // Concrete arrival date next to the day count (real rates only — a
+          // fabricated date on an estimate tier would imply an unmade promise).
+          const arrival = !m.is_estimated ? arrivalDateFromDays(m.delivery_days) : null;
+          if (arrival) parts.push(`arrives ~${arrival}`);
           if (allIn) parts.push(allIn);
           lines.push(`  ${parts.join(" · ")}${tags.length ? ` — ${tags.join(", ")}` : ""}`);
+        }
+        // Cross-border DAP disclosure (stamped on the option at quote time): the
+        // buyer must hear about import duties BEFORE picking a speed/approving.
+        if (data.duties_disclosure) {
+          lines.push("", `⚠ ${data.duties_disclosure}`);
+        } else if (data.cross_border) {
+          lines.push("", "⚠ International order — import duties/taxes may be due on delivery (not included in the totals above).");
         }
 
         if (select_index != null) {
@@ -1678,8 +1744,24 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // JWT/dashboard-only and 401s an API key (mis-reported as a revoked key).
         const data = await apiRequest("GET", `/v1/executions/${execution_id}/tracking`);
         if (!data.tracking_number) {
+          // Not shipped yet — still answer "when will it arrive?" with everything
+          // known pre-shipment: the promised delivery date (from the rate adopted
+          // at quote/approval), the chosen service, and the route. A bare "no
+          // tracking yet" wastes information the read model already has.
           const status = data.order_status || data.display_status || data.status;
-          return { content: [{ type: "text" as const, text: `**Order ${execution_id}** — Status: ${status || "pending"}. No tracking info yet. The seller may not have shipped it yet, or tracking hasn't been added. Use \`firestarter_status\` to check the order's current state.` }] };
+          let text = `**Order ${execution_id}** — Status: ${status || "pending"}. No carrier tracking yet (not shipped, or tracking not added).\n`;
+          if (data.promised_delivery_date) text += `Expected delivery: ~${data.promised_delivery_date} (promised when the order was quoted)\n`;
+          if (data.shipping_method) {
+            const svc = [data.shipping_method.carrier, data.shipping_method.service].filter(Boolean).join(" ");
+            if (svc) text += `Shipping method: ${svc}${data.shipping_method.provider ? ` (via ${data.shipping_method.provider})` : ""}\n`;
+          }
+          const route = [
+            data.ship_from ? [data.ship_from.city, data.ship_from.country].filter(Boolean).join(", ") : null,
+            data.ship_to ? [data.ship_to.city, data.ship_to.country].filter(Boolean).join(", ") : null,
+          ].filter(Boolean);
+          if (route.length === 2) text += `Route: ${route[0]} → ${route[1]}\n`;
+          text += `\nUse \`firestarter_status\` for the full order state; tracking appears here once the label is bought/added.`;
+          return { content: [{ type: "text" as const, text }] };
         }
         let text = `**Order ${execution_id} — Shipping**\n`;
         if (data.ship_from) {
@@ -1690,12 +1772,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (data.shipping_method?.service) text += `Service: ${data.shipping_method.service}\n`;
         text += `Tracking: ${data.tracking_number}\n`;
         if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
+        // Carrier ETA when the shipment has one; else fall back to the date
+        // promised at quote time so "when will it arrive?" always has an answer.
         if (data.estimated_delivery) text += `Estimated delivery: ${data.estimated_delivery}\n`;
+        else if (data.promised_delivery_date) text += `Estimated delivery: ~${data.promised_delivery_date} (quoted at approval)\n`;
         text += `Status: ${data.status || "in_transit"}\n`;
         if (data.fee_breakdown) {
           const f = data.fee_breakdown;
           const money = (cents: number) => `$${(Number(cents || 0) / 100).toFixed(2)}`;
           text += `Fees: item ${money(f.subtotal_cents)} + shipping ${money(f.shipping_cents)} + tax ${money(f.tax_cents)} = ${money(f.total_cents)}\n`;
+          const prov = provenanceLine(f.shipping_provenance);
+          if (prov) text += `${prov}\n`;
         }
         if (data.events?.length > 0) {
           text += `\n**Recent events:**\n`;
