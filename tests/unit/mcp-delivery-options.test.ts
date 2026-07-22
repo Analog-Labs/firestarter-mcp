@@ -92,3 +92,54 @@ describe("renderDeliveryOptions", () => {
     expect(lines).toContain("[0] Standard · free");
   });
 });
+
+// Concrete arrival dates + the helpers behind them. "arrives ~Tue, Jul 28"
+// answers "when will it get here?" without making the buyer do date math;
+// estimate tiers get NO date (a fabricated date implies a promise no carrier
+// made). provenanceLine turns the internal shipping_provenance enum into a
+// human sentence.
+import { arrivalDateFromDays, provenanceLine } from "../../src/mcp/tools.js";
+
+describe("arrival dates on delivery options", () => {
+  it("appends a concrete arrival date to real carrier rows", () => {
+    const body = renderDeliveryOptions(purchasableOpt(), null).join("\n");
+    expect(body).toMatch(/arrives ~\w{3}, \w{3} \d{1,2}/);
+  });
+
+  it("never fabricates a date for an estimated tier", () => {
+    const est = purchasableOpt({
+      shipping_options: [
+        { method_type: "standard", label: "Standard Shipping", carrier: "Estimated", service: "standard", price_cents: 699, delivery_days: 5, is_estimated: true, badges: [] },
+        { method_type: "express", label: "Express Shipping", carrier: "Estimated", service: "express", price_cents: 2299, delivery_days: 1, is_estimated: true, badges: [] },
+      ],
+    });
+    expect(renderDeliveryOptions(est, null).join("\n")).not.toMatch(/arrives ~/);
+  });
+});
+
+describe("arrivalDateFromDays", () => {
+  it("computes now + days in en-US short form", () => {
+    const now = new Date("2026-07-22T12:00:00Z");
+    expect(arrivalDateFromDays(2, now)).toBe(new Date("2026-07-24T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }));
+  });
+  it("returns null for missing/invalid day counts", () => {
+    expect(arrivalDateFromDays(null)).toBeNull();
+    expect(arrivalDateFromDays(undefined)).toBeNull();
+    expect(arrivalDateFromDays(NaN)).toBeNull();
+    expect(arrivalDateFromDays(-1)).toBeNull();
+  });
+});
+
+describe("provenanceLine", () => {
+  it("maps each provenance to a human sentence", () => {
+    expect(provenanceLine("real")).toMatch(/live carrier rate/);
+    expect(provenanceLine("seller")).toMatch(/seller/);
+    expect(provenanceLine("flat")).toMatch(/flat rate/);
+    expect(provenanceLine("unknown")).toMatch(/checkout/);
+  });
+  it("stays silent on absent/unrecognized values", () => {
+    expect(provenanceLine(null)).toBeNull();
+    expect(provenanceLine(undefined)).toBeNull();
+    expect(provenanceLine("something-else")).toBeNull();
+  });
+});

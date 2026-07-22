@@ -116,3 +116,24 @@ describe("renderShippingEstimate", () => {
     expect(lines[0]).toMatch(/country \+ ZIP/);
   });
 });
+
+// Route-class context: an international route carries a duties warning and a
+// hyperlocal route advertises the same-day possibility — both change the buying
+// decision and must ride along with the estimate, not surface after approval.
+describe("renderShippingEstimate route context", () => {
+  it("notes import duties on an international route", () => {
+    const body = renderShippingEstimate(estimate({ route_class: "international" })).join("\n");
+    expect(body).toMatch(/international route/i);
+    expect(body).toMatch(/duties/i);
+  });
+
+  it("notes possible same-day courier on a hyperlocal route", () => {
+    const body = renderShippingEstimate(estimate({ route_class: "hyperlocal" })).join("\n");
+    expect(body).toMatch(/same-day/i);
+  });
+
+  it("adds no route note for a plain domestic route", () => {
+    const body = renderShippingEstimate(estimate({ route_class: "domestic" })).join("\n");
+    expect(body).not.toMatch(/duties|same-day/i);
+  });
+});
