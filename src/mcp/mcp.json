@@ -66,6 +66,9 @@
           "auto_pay": {
             "type": "boolean"
           },
+          "voucher_code": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
