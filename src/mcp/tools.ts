@@ -20,7 +20,10 @@ const VERIFY_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_VERIFY_TIMEOUT_MS |
 // Shopify + catalog). A cold cache can take ~25-30s - well past the 12s default -
 // so it needs its own budget, or every cold "what can you get me?" fails with a
 // spurious "Firestarter API timed out". Warm-cache hits are sub-second.
-const PREVIEW_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_PREVIEW_TIMEOUT_MS || 30_000);
+// Prod logs show server-side preview latency already peaking at 27s; adding the
+// agent -> MCP -> gateway -> API hops on top pushed occasional cold runs past a
+// 30s cap and surfaced intermittent aborts in the agent, so the budget is 45s.
+const PREVIEW_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_PREVIEW_TIMEOUT_MS || 45_000);
 const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 2_500);
 // Public share pages (GET /l/:id) — humans get a product card, agents get
 // machine-readable purchase instructions, chat apps unfurl a preview card.
