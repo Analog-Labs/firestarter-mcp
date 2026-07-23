@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 60 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 61 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -41,18 +41,36 @@
           "delivery_address": {
             "description": "A single-line string ('123 Main St, Austin, TX 78701, US') OR an object { name?, street1, street2?, city, state?, zip?, country? }. Accepted even if partial or odd-shaped (never rejected for shape); a complete address (ZIP + state for US/CA/AU) lets execute quote a real carrier rate before approval, and the response's needs_more names any missing field.",
             "anyOf": [
-              { "type": "string" },
+              {
+                "type": "string"
+              },
               {
                 "type": "object",
                 "properties": {
-                  "name": { "type": "string" },
-                  "street1": { "type": "string" },
-                  "street2": { "type": "string" },
-                  "city": { "type": "string" },
-                  "state": { "type": "string" },
-                  "zip": { "type": "string" },
-                  "country": { "type": "string" },
-                  "phone": { "type": "string" }
+                  "name": {
+                    "type": "string"
+                  },
+                  "street1": {
+                    "type": "string"
+                  },
+                  "street2": {
+                    "type": "string"
+                  },
+                  "city": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "zip": {
+                    "type": "string"
+                  },
+                  "country": {
+                    "type": "string"
+                  },
+                  "phone": {
+                    "type": "string"
+                  }
                 }
               }
             ]
@@ -1050,7 +1068,11 @@
           },
           "action": {
             "type": "string",
-            "enum": ["refund", "contest", "split"],
+            "enum": [
+              "refund",
+              "contest",
+              "split"
+            ],
             "description": "What to do with the dispute: 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."
           },
           "buyer_pct": {
@@ -1077,7 +1099,15 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["open", "message", "accept", "reject", "counter", "withdraw", "escalate"],
+            "enum": [
+              "open",
+              "message",
+              "accept",
+              "reject",
+              "counter",
+              "withdraw",
+              "escalate"
+            ],
             "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo (needs dispute_id or execution_id, plus message and/or image_base64). 'accept'/'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
           },
           "execution_id": {
@@ -1094,7 +1124,14 @@
           },
           "type": {
             "type": "string",
-            "enum": ["not_received", "not_as_described", "damaged", "missing_item", "wrong_item", "other"],
+            "enum": [
+              "not_received",
+              "not_as_described",
+              "damaged",
+              "missing_item",
+              "wrong_item",
+              "other"
+            ],
             "description": "For 'open': the category of problem. Use 'not_received' when the order never arrived. Defaults to 'not_as_described'."
           },
           "message": {
@@ -1317,6 +1354,51 @@
       }
     },
     {
+      "name": "firestarter_set_market_tiers",
+      "description": "Configure member tiers for a community market you own. Tiers reward members with ACCESS, never money or discounts — a higher tier sees picks you have staged early (firestarter_set_market_picks with min_tier). A member tier is derived from qualifying orders in your community over the last 12 months; nothing is stored per member. Every market already has working defaults (Member 0 / Regular 2 / Insider 5) — only call this to rename rungs, change thresholds, add a 4th rung, or switch tiers off. Raising a threshold never demotes an existing member for 30 days.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id (from firestarter_my_markets)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Set false to switch tiers off entirely for this market. Default true."
+          },
+          "tiers": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 4,
+            "description": "2-4 rungs, cheapest first. Omit to keep the platform defaults.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 20,
+                  "description": "What this rung is called, e.g. Regular. Shown to members."
+                },
+                "min_orders": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "Qualifying orders needed. Ignored for the first rung, which is always 0. Must increase down the list."
+                }
+              },
+              "required": [
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "program_id"
+        ]
+      }
+    },
+    {
       "name": "firestarter_set_market_picks",
       "description": "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent. Picks are OTHER sellers' listings you recommend (your own listings are rejected). Up to 15. action 'replace' (default), 'add', or 'remove'. Each pick may carry a short note buyers see.",
       "inputSchema": {
@@ -1339,6 +1421,12 @@
                 "note": {
                   "type": "string",
                   "description": "Optional short 'why I picked it' shown to buyers."
+                },
+                "min_tier": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3,
+                  "description": "Tier RUNG INDEX needed to see this pick. 0 (default) = everyone, including signed-out visitors. 1+ stages it as an early look for that rung and above."
                 }
               },
               "required": [

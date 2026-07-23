@@ -2980,9 +2980,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
 
         const buyableCount = listings.filter((l) => l.buyable).length;
+        // The buyer's community, when they're in one. Named on its own line so
+        // the agent can attribute a pick ("Analog picks this") rather than
+        // showing an unexplained star.
+        const communityName: string | null =
+          typeof data.query?.community?.name === "string" ? data.query.community.name : null;
+        const pickCount = listings.filter((l) => l.picked_by_community).length;
         const lines = [
-          `**Firestarter catalog** — ${listings.length} result${listings.length === 1 ? "" : "s"} (${data.query?.environment || "live"} mode, ${buyableCount} buyable now)${data.has_more ? " · more available, narrow the search or raise `limit`" : ""}\n`,
+          `**Firestarter catalog** — ${listings.length} result${listings.length === 1 ? "" : "s"} (${data.query?.environment || "live"} mode, ${buyableCount} buyable now)${data.has_more ? " · more available, narrow the search or raise `limit`" : ""}`,
         ];
+        if (communityName && pickCount > 0) {
+          lines.push(`★ = picked by **${communityName}**, the community you're in (${pickCount} here).`);
+        }
+        lines.push("");
         for (const l of listings) {
           const price = `${l.currency || "USD"} ${Number(l.current_price).toFixed(2)}`;
           const tag = l.buyable ? "✅ buyable" : "👁 browse-only";
@@ -2990,8 +3000,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // clients auto-unfurl a preview and agents have a fetchable, CORS-open
           // image URL (the network image endpoint) instead of guessing a link.
           const img0 = Array.isArray(l.images) && typeof l.images[0] === "string" && /^https?:\/\//i.test(l.images[0]) ? l.images[0] : null;
+          // The curator's note is the whole point of a pick — a bare badge says
+          // "someone chose this", the note says why, which is what a buyer
+          // actually weighs. Rendered on its own line, quoted, when present.
+          const picked = l.picked_by_community === true;
+          const note = picked && typeof l.pick_note === "string" && l.pick_note.trim() ? l.pick_note.trim() : null;
           lines.push(
-            `- **${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}\n  id: \`${l.id}\` · ${l.share_url}${img0 ? `\n  ${img0}` : ""}`,
+            `- ${picked ? "★ " : ""}**${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}` +
+            `${note ? `\n  _"${note}"_${communityName ? ` — ${communityName}` : ""}` : ""}` +
+            `\n  id: \`${l.id}\` · ${l.share_url}${img0 ? `\n  ${img0}` : ""}`,
           );
         }
         lines.push(
@@ -3932,6 +3949,37 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     );
 
     server.tool(
+      "firestarter_set_market_tiers",
+      "Configure member tiers for a community market you own. Tiers reward members with ACCESS, never money or discounts — a higher tier sees picks you've staged early (firestarter_set_market_picks with min_tier). A member's tier is derived from their qualifying orders in your community over the last 12 months; nothing is stored per member, so there is no balance to top up and nothing expires. Every market already has working defaults (Member 0 / Regular 2 / Insider 5) — only call this to rename rungs, change how many orders each needs, add a 4th rung, or switch tiers off. Raising a threshold never demotes an existing member for 30 days.",
+      {
+        program_id: z.string().describe("The market/program id (from firestarter_my_markets)."),
+        enabled: z.boolean().optional().describe("Set false to switch tiers off entirely for this market. Default true."),
+        tiers: z.array(z.object({
+          name: z.string().max(20).describe("What this rung is called, e.g. 'Regular'. Shown to members."),
+          min_orders: z.number().int().min(0).max(100).optional().describe("Qualifying orders needed. Ignored for the first rung, which is always 0 (everyone who joins). Must increase down the list."),
+        })).min(2).max(4).optional().describe("2-4 rungs, cheapest first. Omit to keep the platform defaults."),
+      },
+      async ({ program_id, enabled, tiers }) => {
+        try {
+          const tier_config = tiers
+            ? { enabled: enabled !== false, tiers: tiers.map((t) => ({ name: t.name, min_orders: t.min_orders ?? 0 })) }
+            : { enabled: enabled !== false };
+          const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, { tier_config });
+          const saved = res?.program?.tier_config;
+          if (!saved?.enabled) {
+            return { content: [{ type: "text" as const, text: "**Tiers switched off.** Members see your shelf with no rungs, and any picks staged behind a tier are now hidden from everyone — drop their min_tier to 0 to publish them." }] };
+          }
+          const ladder = (saved.tiers ?? []).map((t: any, i: number) =>
+            i === 0 ? `• ${t.name} — everyone who joins` : `• ${t.name} — ${t.min_orders} qualifying order${t.min_orders === 1 ? "" : "s"}`,
+          );
+          return { content: [{ type: "text" as const, text: `**Tiers updated.**\n${ladder.join("\n")}\n\nA qualifying order is a delivered, non-refunded order over the platform minimum — that part isn't configurable, so status means the same thing across every community. Stage a pick for a rung with firestarter_set_market_picks (min_tier).` }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't update tiers: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
       "firestarter_set_market_picks",
       "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) — find them with firestarter_catalog_search. `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
       {
@@ -3939,6 +3987,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         picks: z.array(z.object({
           listing_id: z.string().describe("A listing id (lst_...) to feature. Must be another seller's listing — not your own."),
           note: z.string().max(140).optional().describe("Optional short 'why I picked it' shown to buyers."),
+          min_tier: z.number().int().min(0).max(3).optional().describe("Tier RUNG INDEX needed to see this pick. 0 (default) = everyone, including signed-out visitors. 1+ stages it as an early look for that rung and above — this is how 'members get first look at new picks' works. Set tiers up first with firestarter_set_market_tiers."),
         })).min(1).describe("The picks to set/add/remove. For 'remove', only each listing_id is used."),
         action: z.enum(["replace", "add", "remove"]).optional().describe("replace (default): the picks become the exact shelf, in order. add: append to the current shelf. remove: drop the given listing ids."),
       },
@@ -3947,24 +3996,35 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const incoming = picks.map((p) => ({
           listing_id: cleanListingId(p.listing_id),
           note: typeof p.note === "string" ? p.note : null,
+          min_tier: typeof p.min_tier === "number" ? p.min_tier : 0,
         }));
         try {
           // The PUT is a wholesale replace-set (matches the web). To offer natural
           // add/remove, fetch the current owner shelf, merge, then replace — the
           // GET is owner-scoped, so a non-owner 404s here just like the PUT would.
-          let desired: Array<{ listing_id: string; note: string | null }>;
+          type Pick = { listing_id: string; note: string | null; min_tier: number };
+          let desired: Pick[];
           if (mode === "replace") {
             desired = incoming;
           } else {
             const cur = await apiRequest("GET", `/v1/attribution/programs/${encodeURIComponent(program_id)}/picks`);
-            const current: Array<{ listing_id: string; note: string | null }> = (Array.isArray(cur?.picks) ? cur.picks : [])
-              .map((p: any) => ({ listing_id: String(p.listing_id), note: typeof p.note === "string" ? p.note : null }));
+            const current: Pick[] = (Array.isArray(cur?.picks) ? cur.picks : [])
+              .map((p: any) => ({
+                listing_id: String(p.listing_id),
+                note: typeof p.note === "string" ? p.note : null,
+                min_tier: Number.isFinite(Number(p.min_tier)) ? Number(p.min_tier) : 0,
+              }));
             if (mode === "add") {
               const byId = new Map(current.map((p) => [p.listing_id, p]));
               for (const p of incoming) {
                 const existing = byId.get(p.listing_id);
-                if (existing) { if (p.note != null) existing.note = p.note; }
-                else { const np = { ...p }; current.push(np); byId.set(p.listing_id, np); }
+                // An `add` that names an existing pick updates only what was
+                // actually supplied — re-adding to fix a note must not silently
+                // un-stage a pick the owner had gated to a tier.
+                if (existing) {
+                  if (p.note != null) existing.note = p.note;
+                  if (p.min_tier > 0) existing.min_tier = p.min_tier;
+                } else { const np = { ...p }; current.push(np); byId.set(p.listing_id, np); }
               }
               desired = current;
             } else {
@@ -3973,7 +4033,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             }
           }
           const res = await apiRequest("PUT", `/v1/attribution/programs/${encodeURIComponent(program_id)}/picks`, {
-            picks: desired.map((p) => ({ listing_id: p.listing_id, note: p.note })),
+            picks: desired.map((p) => ({ listing_id: p.listing_id, note: p.note, min_tier: p.min_tier })),
           });
           const shelf: any[] = Array.isArray(res?.picks) ? res.picks : [];
           if (shelf.length === 0) {
@@ -3983,7 +4043,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             const nm = typeof p.product_name === "string" && p.product_name.trim() ? p.product_name.trim() : "Untitled";
             const price = Number.isFinite(Number(p.price)) ? `$${Number(p.price).toFixed(2)}` : "price at checkout";
             const note = typeof p.note === "string" && p.note.trim() ? ` — "${p.note.trim()}"` : "";
-            return `• ${nm} — ${price}${note}`;
+            // Name the gate explicitly: an owner who staged a pick and then can't
+            // see it on the public page should be told why, not left guessing.
+            const gate = Number(p.min_tier) > 0 ? ` [tier ${p.min_tier}+ only]` : "";
+            return `• ${nm} — ${price}${note}${gate}`;
           });
           return { content: [{ type: "text" as const, text: `**Shelf updated — ${shelf.length} pick${shelf.length === 1 ? "" : "s"}** (buyers see these on your join page and in the agent):\n${lines.join("\n")}` }] };
         } catch (err: any) {
@@ -4152,10 +4215,26 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (!community || community.connected !== true) {
             return { content: [{ type: "text" as const, text: "You're not connected to any community market. Paste a share code and I can join one for you (firestarter_join_market)." }] };
           }
+          // Standing in this community. Best-effort and rendered only when the
+          // owner has tiers on — a community that hasn't turned them on should
+          // read exactly as it did before, with no empty "Tier: —" line.
+          let tier: any = null;
+          try {
+            tier = (await apiRequest("GET", "/v1/attribution/tier"))?.tier ?? null;
+          } catch { /* standing is a bonus; the status below stands alone */ }
+
           const lines = [
             `**Connected to:** ${community.name}`,
             community.code ? `Join code: \`${community.code}\`` : null,
             `Status: ${community.program_status}`,
+            tier
+              ? `**Tier: ${tier.name}** · ${tier.qualifying_orders} qualifying order${tier.qualifying_orders === 1 ? "" : "s"} in the last 12 months`
+              : null,
+            tier?.next
+              ? `${tier.next.orders_needed} more to reach ${tier.next.name}`
+              : tier
+                ? "Top tier — nothing above this one."
+                : null,
             community.locked_until ? `Locked until: ${new Date(community.locked_until).toISOString().slice(0, 10)} (first-touch lock)` : null,
             community.attributed_at ? `Joined: ${new Date(community.attributed_at).toISOString().slice(0, 10)}` : null,
             "\nYour buys (and sells, when enabled) credit this community. To leave, use firestarter_leave_market.",
