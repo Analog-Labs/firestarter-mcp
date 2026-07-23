@@ -2662,7 +2662,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: "To set up PayPal payouts, call `firestarter_payouts` with `provider: \"paypal\"` and `paypal_email: \"seller@email.com\"`. The seller will receive payouts to that PayPal account." }] };
           }
           const result = await apiRequest("POST", "/v1/sellers/payout-method/paypal", { email: paypal_email });
-          return { content: [{ type: "text" as const, text: `**PayPal payouts configured!**\nEmail: ${paypal_email}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
+          return { content: [{ type: "text" as const, text: `**PayPal payouts connected!**\nEmail: ${paypal_email}\nStatus: connected — verified on your first payout\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
         }
 
         if (provider === "wise") {

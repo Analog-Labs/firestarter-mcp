@@ -264,14 +264,15 @@ describe("firestarter_payouts — multi-provider status + setup", () => {
   it("setup paypal: configures email", async () => {
     installFetch(() => ({
       status: 200,
-      json: { ok: true, provider: "paypal", email: "seller@test.com", status: "active", message: "PayPal payouts are now active." },
+      json: { ok: true, provider: "paypal", email: "seller@test.com", status: "connected", verified: false, message: "PayPal saved — your listings can now sell." },
     }));
     const tools = captureTools();
 
     const res = await tools.firestarter_payouts({ provider: "paypal", paypal_email: "seller@test.com" });
 
     const text = textOf(res);
-    expect(text).toContain("PayPal payouts configured");
+    // Honest copy (#281): "connected — verified on first payout", not "configured/active".
+    expect(text).toContain("PayPal payouts connected");
     expect(text).toContain("seller@test.com");
   });
 
