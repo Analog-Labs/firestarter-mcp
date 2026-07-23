@@ -522,8 +522,10 @@ export function renderDeliveryOptions(opt: any, dm: any): string[] {
     // Name the logistics CARRIER explicitly. A real carrier rate already leads
     // the label with it ("USPS Priority") — only add a "via <carrier>" tag when
     // the label doesn't (e.g. a seller flat rate labelled "Standard"). An
-    // estimate tier has no carrier until the label is bought — say so rather
-    // than leaving the buyer to guess.
+    // estimate tier carries a carrier only when the ship step will
+    // deterministically use one (expectedShipCarrier — e.g. DHL Express
+    // cross-border); otherwise it has none until the label is bought — say so
+    // rather than leaving the buyer to guess.
     const carrierName = typeof m.carrier === "string" && m.carrier.trim() ? m.carrier.trim() : null;
     if (carrierName && !label.toLowerCase().startsWith(carrierName.toLowerCase())) tags.push(`via ${carrierName}`);
     if (m.is_estimated) tags.push(carrierName ? "estimate" : "estimate · carrier assigned at fulfillment");
@@ -633,8 +635,10 @@ export function renderShippingEstimate(data: any): string[] {
     const eta = m.delivery_range || (m.delivery_days != null ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}` : null);
     const label = m.label || [m.carrier, m.service].filter(Boolean).join(" ") || m.method_type || "Shipping";
     // Same carrier-naming rule as renderDeliveryOptions: only tag "via <carrier>"
-    // when the label doesn't already lead with it; an estimate tier has no
-    // carrier until fulfillment — say so instead of implying one.
+    // when the label doesn't already lead with it; an estimate tier names a
+    // carrier only when fulfillment will deterministically use it
+    // (expectedShipCarrier), otherwise it has none until the label is bought —
+    // say so instead of implying one.
     const carrierName = typeof m.carrier === "string" && m.carrier.trim() ? m.carrier.trim() : null;
     const tags = [
       ...(Array.isArray(m.badges) ? m.badges : []),
