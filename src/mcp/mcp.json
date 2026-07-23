@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings, connect Shopify & TikTok Shop, monitor prices. 61 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 64 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -83,6 +83,9 @@
           },
           "auto_pay": {
             "type": "boolean"
+          },
+          "voucher_code": {
+            "type": "string"
           },
           "name": {
             "type": "string"
@@ -877,6 +880,54 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "firestarter_create_voucher",
+      "description": "Create a voucher (coupon / promo code / discount code) buyers can apply to your listings. Percentage off, fixed amount off, or free shipping, with optional start and end dates, usage cap, per-buyer limit, minimum order value, and scoping to one listing. The seller funds the discount. Dates accept natural language such as 'next Friday'. Discounts above 50% require confirm_deep_discount.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string" },
+          "discount_percent": { "type": "integer" },
+          "discount_amount_cents": { "type": "integer" },
+          "free_shipping": { "type": "boolean" },
+          "max_uses": { "type": "integer" },
+          "per_buyer_limit": { "type": "integer" },
+          "min_order_cents": { "type": "integer" },
+          "listing_id": { "type": "string" },
+          "starts_at": { "type": "string" },
+          "expires_at": { "type": "string" },
+          "discoverable": { "type": "boolean" },
+          "confirm_deep_discount": { "type": "boolean" }
+        },
+        "required": ["code"]
+      }
+    },
+    {
+      "name": "firestarter_vouchers",
+      "description": "List your vouchers (coupons / promo codes / discount codes) with status — active, scheduled, expired, exhausted or paused — redemption counts, and what each has cost you.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_update_voucher",
+      "description": "Pause, resume, extend, or adjust limits on an existing voucher. The code and discount value are immutable; pause and create a new one to change the offer.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "voucher_id": { "type": "string" },
+          "active": { "type": "boolean" },
+          "discoverable": { "type": "boolean" },
+          "expires_at": { "type": "string" },
+          "max_uses": { "type": "integer" },
+          "per_buyer_limit": { "type": "integer" },
+          "min_order_cents": { "type": "integer" }
+        },
+        "required": ["voucher_id"]
       }
     },
     {

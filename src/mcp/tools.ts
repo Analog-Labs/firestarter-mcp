@@ -79,6 +79,17 @@ function cleanListingId(id: string): string {
   return id.replace(/\\/g, "");
 }
 
+/** One-line human description of what a voucher takes off. */
+function describeVoucherValue(v: {
+  discount_type?: string;
+  discount_percent?: number | null;
+  discount_amount_cents?: number | null;
+}): string {
+  if (v.discount_type === "free_shipping") return "free shipping";
+  if (v.discount_type === "fixed") return `$${((v.discount_amount_cents ?? 0) / 100).toFixed(2)} off`;
+  return `${v.discount_percent ?? 0}% off`;
+}
+
 // ─── Community-market shelf (agent-facing) ───────────────────────────────────
 // The buyer-facing web page (/m/<handle>) shows a community's curated shelf —
 // the owner's product picks with their notes. The public marketplace endpoint
@@ -969,6 +980,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
+      voucher_code: z.string().optional().describe("A discount code the buyer already has (voucher / coupon / promo code). Pass it ONLY when the buyer gave you one — you do NOT need to hunt for codes, since the best publicly available voucher is applied automatically. Use this for a private or targeted code, which auto-apply cannot find. If the code can't be used the order still proceeds at the best price available, and the response explains why it didn't apply so you can tell the buyer."),
       budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
       // Permissive, forever-stable boundary: accept a string OR any object shape
       // and NEVER reject for shape (an older/stale cached client that omits
@@ -994,7 +1006,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .optional()
         .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
-    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by, voucher_code }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
@@ -1002,6 +1014,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           preferences: { priority: priority || "cost", require_approval: !auto_pay },
         };
         if (listing_id) body.listing_id = listing_id;
+        if (voucher_code?.trim()) body.voucher_code = voucher_code.trim();
         // Attribution rides the existing free-form metadata column — the REST
         // API stores body.metadata verbatim and the list endpoint echoes it.
         if (requested_by && (requested_by.name || requested_by.id)) {
@@ -3155,6 +3168,118 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error checking demand: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // ── Vouchers ──────────────────────────────────────────────────────────────
+  //
+  // Sellers can run every other part of their store through an agent — list,
+  // reprice, ship, read analytics — but not discounts, which were reachable
+  // only from the dashboard. These close that gap.
+  //
+  // Synonyms live in the descriptions ("voucher, coupon, promo code, discount
+  // code") on purpose: tool selection is semantic, and a seller may say any of
+  // them. The schema and API say "voucher" so there is one canonical name.
+
+  // Tool: firestarter_create_voucher
+  server.tool(
+    "firestarter_create_voucher",
+    "Create a voucher (also called a coupon, promo code, or discount code) that buyers can apply to your listings. Supports percentage off, a fixed amount off, or free shipping, with an optional start/end date, usage cap, per-buyer limit, minimum order value, and scoping to a single listing. YOU FUND THE DISCOUNT: it comes out of your proceeds, and the platform fee is charged on the discounted total. Dates accept natural language — 'next Friday', 'in 2 weeks' — as well as ISO dates. A discount above 50% requires confirm_deep_discount, so confirm the number with the seller before re-sending. If the voucher would leave the seller's cheapest orders below the payable minimum the call is rejected with an explanation rather than creating something whose orders would fail at payment.",
+    {
+      code: z.string().describe("The code buyers type, e.g. 'SUMMER20'. 2-64 characters: letters, numbers, dashes or underscores. Case-insensitive; stored uppercase."),
+      discount_percent: z.number().int().min(1).max(100).optional().describe("Percent off, 1-100. Use this OR discount_amount_cents, not both."),
+      discount_amount_cents: z.number().int().min(1).optional().describe("Fixed amount off in cents (e.g. 500 = $5 off). Use instead of discount_percent."),
+      free_shipping: z.boolean().optional().describe("Set true for a free-shipping voucher instead of a discount off the item price."),
+      max_uses: z.number().int().min(1).optional().describe("Total redemptions allowed across all buyers. Omit for unlimited."),
+      per_buyer_limit: z.number().int().min(1).optional().describe("How many times one buyer may use it. Omit for unlimited."),
+      min_order_cents: z.number().int().min(0).optional().describe("Minimum order subtotal in cents before the voucher applies."),
+      listing_id: z.string().optional().describe("Restrict the voucher to one of your listings (lst_...). Omit to apply across all of them."),
+      starts_at: z.string().optional().describe("When it becomes usable. Natural language ('tomorrow') or ISO. Omit to start immediately."),
+      expires_at: z.string().optional().describe("When it stops working. Natural language ('next Friday') or ISO. Omit for no expiry."),
+      discoverable: z.boolean().optional().describe("Default true: buyer agents can find and auto-apply it. Set false for a targeted code usable only by someone you give it to."),
+      confirm_deep_discount: z.boolean().optional().describe("Required to create a discount above 50%. Only pass it after the seller has confirmed that exact number."),
+    },
+    async ({ code, discount_percent, discount_amount_cents, free_shipping, ...rest }) => {
+      try {
+        const body: any = { code, ...rest };
+        if (free_shipping) body.discount_type = "free_shipping";
+        else if (discount_amount_cents !== undefined) {
+          body.discount_type = "fixed";
+          body.discount_amount_cents = discount_amount_cents;
+        } else {
+          body.discount_type = "percent";
+          body.discount_percent = discount_percent;
+        }
+
+        const { voucher } = await apiRequest("POST", "/v1/sellers/vouchers", body);
+        let text = `**Voucher ${voucher.code} created**\n`;
+        text += `${describeVoucherValue(voucher)}\n`;
+        if (voucher.listing_id) text += `Applies to listing ${voucher.listing_id} only\n`;
+        if (voucher.min_order_cents) text += `Minimum order: $${(voucher.min_order_cents / 100).toFixed(2)}\n`;
+        if (voucher.max_uses) text += `Limited to ${voucher.max_uses} uses\n`;
+        if (voucher.expires_at) text += `Expires ${new Date(voucher.expires_at).toUTCString()}\n`;
+        if (voucher.discoverable === false) text += `Targeted: buyer agents won't surface it automatically.\n`;
+        text += `\nYou fund this discount — it comes out of your proceeds.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Could not create the voucher: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_vouchers
+  server.tool(
+    "firestarter_vouchers",
+    "List your vouchers (coupons / promo codes / discount codes) with their status and what each one has cost you so far. Status is one of active, scheduled (start date not reached), expired, exhausted (hit its usage cap), or paused. Use this to answer 'what discounts am I running?' or 'how is SUMMER20 doing?'.",
+    {},
+    async () => {
+      try {
+        const { vouchers } = await apiRequest("GET", "/v1/sellers/vouchers");
+        if (!vouchers?.length) {
+          return { content: [{ type: "text" as const, text: "You have no vouchers yet. Create one with firestarter_create_voucher." }] };
+        }
+        let text = `**Your vouchers** (${vouchers.length})\n\n`;
+        for (const v of vouchers) {
+          text += `- **${v.code}** — ${describeVoucherValue(v)} · ${v.state}\n`;
+          const used = v.max_uses ? `${v.redemption_count}/${v.max_uses} used` : `${v.redemption_count} used`;
+          text += `  ${used} · you've funded $${((v.total_discount_funded_cents || 0) / 100).toFixed(2)}\n`;
+          if (v.expires_at) text += `  expires ${new Date(v.expires_at).toUTCString()}\n`;
+        }
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Could not list vouchers: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_update_voucher
+  server.tool(
+    "firestarter_update_voucher",
+    "Pause, resume, extend, or adjust the limits on an existing voucher. Pausing (active=false) stops it being redeemed without deleting it, so its history is kept. The code and the discount VALUE cannot be changed — buyers may already hold the code, and repricing an offer someone was given is a different voucher, so pause this one and create another instead.",
+    {
+      voucher_id: z.string().describe("The voucher id (promo_...) from firestarter_vouchers."),
+      active: z.boolean().optional().describe("false pauses it, true resumes it."),
+      discoverable: z.boolean().optional().describe("Whether buyer agents may surface and auto-apply it."),
+      expires_at: z.string().optional().describe("New expiry. Natural language ('next Friday') or ISO."),
+      max_uses: z.number().int().min(1).optional().describe("New total redemption cap."),
+      per_buyer_limit: z.number().int().min(1).optional().describe("New per-buyer cap."),
+      min_order_cents: z.number().int().min(0).optional().describe("New minimum order subtotal in cents."),
+    },
+    async ({ voucher_id, ...patch }) => {
+      try {
+        if (Object.values(patch).every((v) => v === undefined)) {
+          return { content: [{ type: "text" as const, text: "No changes given. Specify at least one field to update." }], isError: true };
+        }
+        const { voucher } = await apiRequest("PATCH", `/v1/sellers/vouchers/${voucher_id}`, patch);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `**Voucher ${voucher.code} updated** — ${describeVoucherValue(voucher)} · ${voucher.active ? "active" : "paused"}`,
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Could not update the voucher: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
