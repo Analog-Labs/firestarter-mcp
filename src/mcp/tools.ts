@@ -4396,6 +4396,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
                 : null,
             community.locked_until ? `Locked until: ${new Date(community.locked_until).toISOString().slice(0, 10)} (first-touch lock)` : null,
             community.attributed_at ? `Joined: ${new Date(community.attributed_at).toISOString().slice(0, 10)}` : null,
+            res?.referral_url
+              ? `\n**Your referral link:** ${res.referral_url}\nShare it — when someone you bring joins and makes a qualifying purchase, it counts toward your tier.`
+              : null,
             "\nYour buys (and sells, when enabled) credit this community. To leave, use firestarter_leave_market.",
           ].filter(Boolean);
           // Re-discovery: append the community's current shelf so "what market am
