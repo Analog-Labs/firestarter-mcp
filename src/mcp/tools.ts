@@ -1694,6 +1694,40 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_drops — community-sponsored drops (Phase 4)
+  server.tool(
+    "firestarter_drops",
+    "Community-sponsored drops: a community owner funds a discount on a specific listing for the first N members, sometimes opening it to higher tiers first. Use action 'list' with a listing_id to see any live drops on it — each shows the per-claim discount, how many slots remain, and whether it is still in a tier-gated early-access window. Use action 'claim' with a drop_id to reserve a slot for the buyer before checkout — first-come, first-served, one per member; the reserved discount then applies to that buyer's purchase of the listing. test/live follows the API key's environment.",
+    {
+      action: z.enum(["list", "claim"]).describe("'list' the live drops on a listing, or 'claim' a specific drop_id."),
+      listing_id: z.string().optional().describe("Listing to list drops for (required for action 'list')."),
+      drop_id: z.string().optional().describe("Drop to claim (required for action 'claim')."),
+    },
+    async ({ action, listing_id, drop_id }) => {
+      try {
+        if (action === "claim") {
+          if (!drop_id) return { content: [{ type: "text" as const, text: "Pass a drop_id to claim a drop." }], isError: true };
+          const res = await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/claim`);
+          const dollars = ((res.discount_cents ?? 0) / 100).toFixed(2);
+          const left = Number(res.remaining ?? 0);
+          return { content: [{ type: "text" as const, text: `🎉 Claimed — $${dollars} off is reserved for you on this drop (${left} slot${left === 1 ? "" : "s"} left). It applies when you buy the listing.` }] };
+        }
+        if (!listing_id) return { content: [{ type: "text" as const, text: "Pass a listing_id to list its drops." }], isError: true };
+        const data = await apiRequest("GET", `/v1/drops?listing_id=${encodeURIComponent(listing_id)}`);
+        const drops: any[] = data?.drops ?? [];
+        if (drops.length === 0) return { content: [{ type: "text" as const, text: "No live community drops on this listing right now." }] };
+        const lines = drops.map((d) => {
+          const dollars = (Number(d.discount_cents) / 100).toFixed(2);
+          const gate = d.in_priority_window && Number(d.min_tier) > 0 ? ` · early access for tier ${d.min_tier}+ until ${d.priority_until}` : "";
+          return `- \`${d.id}\` — $${dollars} off · ${d.remaining} left${gate}`;
+        });
+        return { content: [{ type: "text" as const, text: `**Live drops on this listing**\n${lines.join("\n")}\n\nClaim one with action 'claim' and its drop_id.` }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error with drops: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_payment_method
   server.tool(
     "firestarter_payment_method",

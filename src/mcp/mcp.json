@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 64 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 65 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -270,6 +270,28 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "firestarter_drops",
+      "description": "Community-sponsored drops: a community owner funds a discount on a specific listing for the first N members, sometimes opening it to higher tiers first. Use action 'list' with a listing_id to see any live drops on it — each shows the per-claim discount, how many slots remain, and whether it is still in a tier-gated early-access window. Use action 'claim' with a drop_id to reserve a slot for the buyer before checkout — first-come, first-served, one per member; the reserved discount then applies to that buyer's purchase of the listing. test/live follows the API key's environment.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "claim"]
+          },
+          "listing_id": {
+            "type": "string"
+          },
+          "drop_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ]
       }
     },
     {
