@@ -85,8 +85,9 @@ describe("renderShippingEstimate", () => {
       ],
     }));
     const body = lines.join("\n");
-    expect(body).toContain("estimate · carrier assigned at fulfillment"); // no carrier
-    expect(body).toMatch(/DHL Express.*estimate/); // has carrier: plain "estimate" tag
+    expect(body).toContain("carrier assigned at fulfillment"); // no carrier
+    expect(body).toContain("price: Firestarter estimate"); // quoter named separately from the carrier
+    expect(body).toMatch(/DHL Express.*Firestarter estimate/); // has carrier: still marked as an estimate price
     expect(body).toContain("live carrier rates are quoted at approval"); // fallback banner
   });
 

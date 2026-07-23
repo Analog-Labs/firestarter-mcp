@@ -474,6 +474,63 @@ export function provenanceLine(p: unknown): string | null {
 }
 
 /**
+ * Buyer-facing display name for a shipping option's `provider` — the SERVICE
+ * THAT QUOTED the price (rating engine / courier / platform), which is not the
+ * same thing as the carrier that ships the parcel. Null for absent values.
+ * Exported for unit tests.
+ */
+export function shippingProviderDisplay(p: unknown): string | null {
+  if (typeof p !== "string" || !p.trim()) return null;
+  switch (p.trim().toLowerCase()) {
+    case "easypost": return "EasyPost";
+    case "dhl": return "DHL";
+    case "shippo": return "Shippo";
+    case "sendcloud": return "Sendcloud";
+    case "platform_estimate": return "Firestarter estimate";
+    case "seller": return "seller flat rate";
+    case "nash": return "Nash";
+    case "lalamove": return "Lalamove";
+    case "uber_direct": return "Uber Direct";
+    case "doordash": return "DoorDash";
+    default: return p.trim();
+  }
+}
+
+/**
+ * Tags for one shipping method row that keep two DIFFERENT facts separate for
+ * the buyer:
+ *   - WHO SHIPS the parcel — "ships via <carrier>" (or, when no carrier is
+ *     knowable before the label is bought, "carrier assigned at fulfillment");
+ *   - WHO QUOTED the price — "rate quoted by <provider>" for a live rate
+ *     (EasyPost/Shippo/Sendcloud rate many carriers, so the rating service is
+ *     real information), or "price: Firestarter estimate — live rate applies at
+ *     approval" for a platform fallback tier, which is NOT a carrier's number.
+ * Redundant tags are dropped: no "ships via X" when the label already leads
+ * with the carrier, and no "rate quoted by X" when the quoter IS the carrier
+ * (DHL quoting DHL Express, a courier quoting itself). Shared by every surface
+ * that renders a shipping method (delivery-options menu, pre-purchase estimate,
+ * shipping-options tool) so the same row never reads differently per tool.
+ * Exported for unit tests.
+ */
+export function shippingMethodTags(m: any, label: string): string[] {
+  const tags: string[] = [];
+  const carrierName = typeof m.carrier === "string" && m.carrier.trim() ? m.carrier.trim() : null;
+  const labelLeadsWithCarrier = !!carrierName && label.toLowerCase().startsWith(carrierName.toLowerCase());
+  if (m.is_estimated) {
+    if (carrierName && !labelLeadsWithCarrier) tags.push(`ships via ${carrierName}`);
+    else if (!carrierName) tags.push("carrier assigned at fulfillment");
+    tags.push("price: Firestarter estimate — live rate applies at approval");
+    return tags;
+  }
+  if (carrierName && !labelLeadsWithCarrier) tags.push(`ships via ${carrierName}`);
+  const quoted = shippingProviderDisplay(m.provider);
+  const quoterIsCarrier = !!quoted && !!carrierName &&
+    (carrierName.toLowerCase().startsWith(quoted.toLowerCase()) || quoted.toLowerCase().startsWith(carrierName.toLowerCase()));
+  if (quoted && !quoterIsCarrier) tags.push(`rate quoted by ${quoted}`);
+  return tags;
+}
+
+/**
  * Render the buyer-facing delivery-options menu for one purchasable option.
  *
  * The rates already exist — the quote step rate-shops each purchasable option and
@@ -519,16 +576,11 @@ export function renderDeliveryOptions(opt: any, dm: any): string[] {
     }
     const tags: string[] = [];
     if (Array.isArray(m.badges)) tags.push(...m.badges.filter((b: unknown) => typeof b === "string" && b));
-    // Name the logistics CARRIER explicitly. A real carrier rate already leads
-    // the label with it ("USPS Priority") — only add a "via <carrier>" tag when
-    // the label doesn't (e.g. a seller flat rate labelled "Standard"). An
-    // estimate tier carries a carrier only when the ship step will
-    // deterministically use one (expectedShipCarrier — e.g. DHL Express
-    // cross-border); otherwise it has none until the label is bought — say so
-    // rather than leaving the buyer to guess.
-    const carrierName = typeof m.carrier === "string" && m.carrier.trim() ? m.carrier.trim() : null;
-    if (carrierName && !label.toLowerCase().startsWith(carrierName.toLowerCase())) tags.push(`via ${carrierName}`);
-    if (m.is_estimated) tags.push(carrierName ? "estimate" : "estimate · carrier assigned at fulfillment");
+    // Shared quoter-vs-shipper tags: "ships via <carrier>" names who delivers
+    // (expectedShipCarrier fills it on estimate tiers when deterministic),
+    // "rate quoted by <provider>" / "price: Firestarter estimate" names who
+    // priced the row — two different services, kept visibly distinct.
+    tags.push(...shippingMethodTags(m, label));
     const parts = [price];
     if (eta) parts.push(eta);
     // Concrete date next to the day count — "when will it arrive?" needs a date,
@@ -581,6 +633,12 @@ export function renderPayReadySummary(opts: { baseCents: number | null; shipping
       (typeof s.delivery_range === "string" && s.delivery_range.trim()) ||
       (Number.isFinite(days) ? `~${days} day${days === 1 ? "" : "s"}` : null);
     lines.push(`Shipping: ${[label, price, eta].filter(Boolean).join(" · ")}`);
+    // Post-approval transparency: who ships it and who priced it ("ships via
+    // DHL Express" / "rate quoted by EasyPost" / "price: Firestarter estimate")
+    // — the buyer should know the logistics company behind the number they are
+    // about to be charged, not just a tier label.
+    const srcTags = shippingMethodTags(s, label);
+    if (srcTags.length) lines.push(`Shipping details: ${srcTags.join(", ")}`);
   }
   const base = opts.baseCents;
   if (base != null && Number.isFinite(base)) {
@@ -634,23 +692,17 @@ export function renderShippingEstimate(data: any): string[] {
         : cur ? `${(m.price_cents / 100).toFixed(2)} ${cur}` : `$${(m.price_cents / 100).toFixed(2)}`;
     const eta = m.delivery_range || (m.delivery_days != null ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}` : null);
     const label = m.label || [m.carrier, m.service].filter(Boolean).join(" ") || m.method_type || "Shipping";
-    // Same carrier-naming rule as renderDeliveryOptions: only tag "via <carrier>"
-    // when the label doesn't already lead with it; an estimate tier names a
-    // carrier only when fulfillment will deterministically use it
-    // (expectedShipCarrier), otherwise it has none until the label is bought —
-    // say so instead of implying one.
-    const carrierName = typeof m.carrier === "string" && m.carrier.trim() ? m.carrier.trim() : null;
+    // Shared quoter-vs-shipper tags (same rules as renderDeliveryOptions).
     const tags = [
       ...(Array.isArray(m.badges) ? m.badges : []),
-      carrierName && !label.toLowerCase().startsWith(carrierName.toLowerCase()) ? `via ${carrierName}` : null,
-      m.is_estimated ? (carrierName ? "estimate" : "estimate · carrier assigned at fulfillment") : null,
-    ].filter(Boolean);
+      ...shippingMethodTags(m, label),
+    ];
     const parts = [`- ${label}`, price];
     if (eta) parts.push(eta);
     lines.push(`  ${parts.join(" · ")}${tags.length ? ` — ${tags.join(", ")}` : ""}`);
   }
   if (data.fallback_used) {
-    lines.push("  (Estimated tiers — live carrier rates are quoted at approval.)");
+    lines.push("  (Prices above are Firestarter's estimate tiers, not carrier quotes — live carrier rates are quoted at approval.)");
   }
   // Route class context (from the estimate's route_class): an international
   // route means the buyer may owe import duties on delivery (DAP — the platform
@@ -1509,14 +1561,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const eta = m.delivery_range || (m.delivery_days != null ? `~${m.delivery_days} day${m.delivery_days === 1 ? "" : "s"}` : null);
           const label = m.label || [m.carrier, m.service].filter(Boolean).join(" ") || m.method_type || "Shipping";
           const allIn = m.all_in_cents != null ? `${fmt(allInCents(m.all_in_cents))} all-in` : null;
-          // Make the delivery service provider explicit — name both the routing
-          // provider and the carrier so "which service is shipping this" is visible.
+          // Shared quoter-vs-shipper tags — "ships via <carrier>" vs "rate
+          // quoted by <provider>" — instead of the old internal-enum dump
+          // (provider: easypost, carrier: USPS).
           const tags = [
             ...(Array.isArray(m.badges) ? m.badges : []),
-            m.provider ? `provider: ${m.provider}` : null,
-            m.carrier ? `carrier: ${m.carrier}` : null,
-            m.is_estimated ? "estimate" : null,
-          ].filter(Boolean);
+            ...shippingMethodTags(m, label),
+          ];
           const parts = [`[${m.index}] ${label}`, price];
           if (eta) parts.push(eta);
           // Concrete arrival date next to the day count (real rates only — a
@@ -1807,7 +1858,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (data.promised_delivery_date) text += `Expected delivery: ~${data.promised_delivery_date} (promised when the order was quoted)\n`;
           if (data.shipping_method) {
             const svc = [data.shipping_method.carrier, data.shipping_method.service].filter(Boolean).join(" ");
-            if (svc) text += `Shipping method: ${svc}${data.shipping_method.provider ? ` (via ${data.shipping_method.provider})` : ""}\n`;
+            // Name the quote source in buyer terms, not the internal enum —
+            // "(rate quoted by Firestarter estimate)" beats "(via platform_estimate)".
+            const quotedBy = shippingProviderDisplay(data.shipping_method.provider);
+            if (svc) text += `Shipping method: ${svc}${quotedBy ? ` (rate quoted by ${quotedBy})` : ""}\n`;
           }
           const route = [
             data.ship_from ? [data.ship_from.city, data.ship_from.country].filter(Boolean).join(", ") : null,
@@ -1822,7 +1876,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           text += `Ships from: ${[data.ship_from.city, data.ship_from.state, data.ship_from.country].filter(Boolean).join(", ")}\n`;
         }
         text += `Carrier: ${data.carrier || "Unknown"}\n`;
-        if (data.shipping_method?.provider) text += `Provider: ${data.shipping_method.provider}\n`;
+        // Post-ship the label is BOUGHT: `provider` is the logistics service the
+        // label was purchased through (EasyPost/DHL/Shippo/Sendcloud) — distinct
+        // from the carrier moving the parcel. Say it in those terms.
+        {
+          const bookedVia = shippingProviderDisplay(data.shipping_method?.provider);
+          if (bookedVia) text += `Label booked via: ${bookedVia}\n`;
+        }
         if (data.shipping_method?.service) text += `Service: ${data.shipping_method.service}\n`;
         text += `Tracking: ${data.tracking_number}\n`;
         if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
