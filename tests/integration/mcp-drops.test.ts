@@ -139,3 +139,42 @@ describe("MCP firestarter_drops", () => {
     expect(textOf(res)).toContain("early-access window for higher tiers");
   });
 });
+
+describe("MCP firestarter_create_drop (owner)", () => {
+  it("creates a drop on the owner's program and confirms its terms + slots", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        const body = init?.body ? JSON.parse(init.body) : undefined;
+        fetchCalls.push({ method, url: String(url), body });
+        if (method === "POST" && String(url).endsWith("/v1/attribution/programs/apg_1/drops")) {
+          // The owner endpoint receives the drop terms.
+          expect(body).toMatchObject({ listing_id: "lst_9", discount_cents: 500, max_claims: 20 });
+          return jsonResponse(201, {
+            drop: {
+              id: "drop_new", listing_id: "lst_9", discount_cents: 500, max_claims: 20,
+              claims_used: 0, min_tier: 0, priority_until: null, expires_at: "2026-08-01T00:00:00Z", status: "active",
+            },
+          });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_create_drop({ program_id: "apg_1", listing_id: "lst_9", discount_cents: 500, max_claims: 20 });
+    expect(res.isError).toBeFalsy();
+    const text = textOf(res);
+    expect(text).toMatch(/Drop created/i);
+    expect(text).toContain("$5.00");
+    expect(text).toContain("20");
+  });
+
+  it("maps PROGRAM_NOT_FOUND to a firestarter_my_markets hint", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(404, { error: "Program not found", code: "PROGRAM_NOT_FOUND" })));
+    const tools = captureTools();
+    const res = await tools.firestarter_create_drop({ program_id: "apg_x", listing_id: "lst_9", discount_cents: 500, max_claims: 20 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("firestarter_my_markets");
+  });
+});

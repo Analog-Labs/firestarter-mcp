@@ -4142,6 +4142,49 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     );
 
     server.tool(
+      "firestarter_create_drop",
+      "Create a community-sponsored DROP on a market you own: fund a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). YOU fund the discount — it applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Use when a community owner wants to reward members with a real DISCOUNT incentive — distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
+      {
+        program_id: z.string().describe("The market/program id you own (from firestarter_my_markets)."),
+        listing_id: z.string().describe("The listing (lst_...) to discount — find one with firestarter_catalog_search. Must be a real, sellable listing."),
+        discount_cents: z.number().int().positive().describe("Per-claim discount in cents, e.g. 500 = $5 off each claimed order."),
+        max_claims: z.number().int().positive().describe("How many members can claim it (the 'first N') — first-come, first-served, one per member."),
+        min_tier: z.number().int().min(0).optional().describe("Rung required to claim DURING the priority window (0 = everyone). Use with priority_hours to give higher tiers early access first."),
+        priority_hours: z.number().min(0).optional().describe("Hours the drop stays tier-gated (to min_tier and up) before opening to everyone. Omit or 0 = open to all immediately."),
+        expires_in_hours: z.number().positive().optional().describe("Hours until the drop expires. Default 168 (7 days)."),
+      },
+      async ({ program_id, listing_id, discount_cents, max_claims, min_tier, priority_hours, expires_in_hours }) => {
+        try {
+          const body: Record<string, unknown> = { listing_id, discount_cents, max_claims };
+          if (min_tier != null) body.min_tier = min_tier;
+          if (priority_hours != null) body.priority_hours = priority_hours;
+          if (expires_in_hours != null) body.expires_in_hours = expires_in_hours;
+          const res = await apiRequest("POST", `/v1/attribution/programs/${encodeURIComponent(program_id)}/drops`, body);
+          const d = res?.drop ?? {};
+          const dollars = ((Number(d.discount_cents) || discount_cents) / 100).toFixed(2);
+          const slots = Number(d.max_claims) || max_claims;
+          const lines = [
+            `**Drop created.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`,
+          ];
+          if (Number(d.min_tier) > 0 && d.priority_until) {
+            lines.push(`Early access for tier ${d.min_tier}+ until ${new Date(d.priority_until).toISOString().slice(0, 10)}, then it opens to everyone.`);
+          }
+          if (d.expires_at) lines.push(`Expires ${new Date(d.expires_at).toISOString().slice(0, 10)}.`);
+          lines.push("Members reserve a slot with firestarter_drops (action 'claim'); the discount then applies at checkout.");
+          return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "INVALID_LISTING") {
+            return { content: [{ type: "text" as const, text: `That listing can't back a drop: ${toErrorMessage(err)}. Find a valid listing id with firestarter_catalog_search.` }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't create the drop: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
       "firestarter_set_market_picks",
       "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) — find them with firestarter_catalog_search. `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
       {
