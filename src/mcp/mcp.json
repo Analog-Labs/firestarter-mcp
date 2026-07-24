@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 66 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 69 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -1037,6 +1037,68 @@
         "required": [
           "listing_id",
           "mode"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_ship_from_locations",
+      "description": "List the seller's ship-from (fulfillment) locations. The PRIMARY location is the origin every shipping quote is rated from — if buyers see wrong shipping prices or 'can't ship there', check this first. Use firestarter_save_ship_from to add/correct one and firestarter_delete_ship_from to remove one. Seller accounts only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "firestarter_save_ship_from",
+      "description": "Add or update a seller ship-from (fulfillment) location — the address shipping rates are quoted FROM. Three forms: (1) no location_id → create (street1 + city required; state/zip also required for US/CA/AU origins); (2) location_id + address fields → update that location; (3) location_id + is_primary true and NO address fields → just make it the primary. Set is_primary on the address parcels actually dispatch from — the primary drives every quote's origin. Seller accounts only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {
+            "type": "string"
+          },
+          "street1": {
+            "type": "string"
+          },
+          "street2": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "zip": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "is_primary": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "firestarter_delete_ship_from",
+      "description": "Delete a seller ship-from (fulfillment) location by id (floc_..., from firestarter_ship_from_locations). If you delete the primary, add or promote another with firestarter_save_ship_from — otherwise quotes fall back to the platform origin. Seller accounts only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "location_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "location_id"
         ]
       }
     },
