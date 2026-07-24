@@ -4213,7 +4213,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: `Those include your OWN listings — they already appear under what you sell, so they can't go on the recommends shelf. ${toErrorMessage(err)}` }], isError: true };
           }
           if (err instanceof ApiError && err.code === "UNPICKABLE_LISTING") {
-            return { content: [{ type: "text" as const, text: `Some listings can't be featured (inactive, sold out, or not found): ${toErrorMessage(err)}` }], isError: true };
+            return { content: [{ type: "text" as const, text: `Some listings can't be featured — each must be an active, in-stock listing in the same environment (test vs live) as your API key: ${toErrorMessage(err)}` }], isError: true };
           }
           if (err instanceof ApiError && err.code === "TOO_MANY_PICKS") {
             return { content: [{ type: "text" as const, text: "A shelf holds at most 15 listings — trim the list and try again." }], isError: true };
