@@ -69,8 +69,12 @@ describe("MCP order and shipping context", () => {
     expect(text).toContain("Ships from: Austin, TX, US");
     expect(text).toContain("Ships to: Bangkok, Bangkok, TH");
     expect(text).toContain("Item subtotal: $40.00");
-    expect(text).toContain("provider: shippo");
-    expect(text).toContain("carrier: UPS");
+    // Quoter-vs-shipper separation: the rating service is named in buyer terms
+    // ("rate quoted by Shippo"), and the carrier leads the row label ("UPS
+    // Worldwide Saver") — never the old internal-enum dump (provider:/carrier:).
+    expect(text).toContain("rate quoted by Shippo");
+    expect(text).toContain("UPS Worldwide Saver");
+    expect(text).not.toContain("provider: shippo");
     expect(text).toContain("$51.20 all-in");
   });
 
@@ -89,7 +93,9 @@ describe("MCP order and shipping context", () => {
 
     const text = textOf(await captureTools().firestarter_track_order({ execution_id: "exec_1" }));
     expect(text).toContain("Ships from: Austin, TX, US");
-    expect(text).toContain("Provider: shippo");
+    // Post-ship: the label-purchase service is named in buyer terms, distinct
+    // from the carrier moving the parcel.
+    expect(text).toContain("Label booked via: Shippo");
     expect(text).toContain("Carrier: UPS");
     expect(text).toContain("Status: shipped");
     expect(text).toContain("Fees: item $40.00 + shipping $8.00 + tax $3.20 = $51.20");
