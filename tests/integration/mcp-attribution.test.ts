@@ -71,12 +71,12 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     expect(typeof tools.firestarter_join_market).toBe("function");
   });
 
-  it("static MCP manifest advertises community display names and explicit force joins", () => {
+  it("static MCP manifest advertises community display names", () => {
     const createProps = staticManifestTool("firestarter_create_market").inputSchema.properties;
     expect(createProps.display_name).toMatchObject({ type: "string", maxLength: 60 });
 
     const joinProps = staticManifestTool("firestarter_join_market").inputSchema.properties;
-    expect(joinProps.force).toMatchObject({ type: "boolean" });
+    expect(joinProps.force).toBeUndefined();
   });
 
   it("firestarter_create_market POSTs the program and surfaces the cap", async () => {
@@ -177,7 +177,7 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
   it("firestarter_join_market redeems a code (first-touch)", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
       if (String(url).includes("/v1/attribution/redeem")) {
-        expect(JSON.parse(init.body)).toMatchObject({ code: "ABCD1234", force: false });
+        expect(JSON.parse(init.body)).toMatchObject({ code: "ABCD1234" });
         return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       expect(String(url)).toContain("/marketplace/community/ABCD1234");
@@ -226,38 +226,30 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     expect(result.isError).toBeUndefined();
   });
 
-  it("firestarter_join_market can force only after explicit buyer confirmation", async () => {
+  it("firestarter_join_market reports a switch when it replaces an existing binding", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
       if (String(url).includes("/v1/attribution/redeem")) {
-        expect(JSON.parse(init.body)).toMatchObject({ code: "WXYZ", force: true });
+        expect(JSON.parse(init.body)).toMatchObject({ code: "WXYZ" });
         return new Response(JSON.stringify({ ok: true, replaced: true }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({ community: { name: "New Market", top_categories: [], picks: [] } }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
-    const text = textOf(await captureTools().firestarter_join_market({ code: "WXYZ", force: true }));
-    expect(text).toContain("explicit switch confirmation");
-  });
-
-  it("firestarter_join_market relays a lock conflict gracefully (not an error)", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () =>
-      new Response(JSON.stringify({ error: "Attribution is locked and cannot be replaced yet", code: "ATTRIBUTION_LOCKED" }), { status: 409, headers: { "Content-Type": "application/json" } }),
-    ));
-    const res = await captureTools().firestarter_join_market({ code: "WXYZ" });
-    expect(textOf(res)).toContain("locked");
-    expect(res.isError).toBeUndefined(); // a graceful explanation, not a tool error
+    const text = textOf(await captureTools().firestarter_join_market({ code: "WXYZ" }));
+    expect(text).toContain("Switched");
+    expect(text).not.toMatch(/lock/i);
   });
 
   it("firestarter_my_market shows the current connection (GET /me)", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: any) => {
       expect(String(url)).toContain("/v1/attribution/me");
       return new Response(JSON.stringify({
-        community: { connected: true, name: "Dom's Discord", code: "ABCD1234", program_status: "active", locked_until: "2026-10-01T00:00:00Z", attributed_at: "2026-07-03T00:00:00Z" },
+        community: { connected: true, name: "Dom's Discord", code: "ABCD1234", program_status: "active", attributed_at: "2026-07-03T00:00:00Z" },
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const text = textOf(await captureTools().firestarter_my_market({}));
     expect(text).toContain("Dom's Discord");
     expect(text).toContain("ABCD1234");
-    expect(text).toContain("2026-10-01");
+    expect(text).not.toMatch(/lock/i);
   });
 
   it("firestarter_my_market reports when not connected to any market", async () => {

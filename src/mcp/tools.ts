@@ -3971,7 +3971,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_market_link",
-      "Mint a shareable join code for a market you own (from firestarter_create_market). Give the code to your community — when a member redeems it (firestarter_join_market) they are attributed to your program (first-touch, ~90-day lock) so you earn on their activity. Optionally tag a channel/campaign for tracking.",
+      "Mint a shareable join code for a market you own (from firestarter_create_market). Give the code to your community — when a member redeems it (firestarter_join_market) they are attributed to your program so you earn on their activity. Optionally tag a channel/campaign for tracking.",
       {
         program_id: z.string().describe("The market/program id from firestarter_create_market."),
         channel: z.string().optional().describe("Optional channel tag, e.g. 'discord', 'x', 'telegram'."),
@@ -3982,7 +3982,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const res = await apiRequest("POST", "/v1/attribution/links", { program_id, channel, campaign });
           const code = res.link?.code;
           if (!code) return { content: [{ type: "text" as const, text: "Link created but no code was returned." }], isError: true };
-          return { content: [{ type: "text" as const, text: `**Share link:** ${MARKET_LINK_BASE}/${code}\n(share code: \`${code}\`)\n\nGive this to your community. Each member joins once (first-touch, locks ~90 days) — opening the link, or pasting the code to their Firestarter agent (firestarter_join_market), joins your market. Prefer a memorable URL? Claim a handle with firestarter_set_market_handle and ${MARKET_LINK_BASE}/<handle> resolves to the same market.` }] };
+          return { content: [{ type: "text" as const, text: `**Share link:** ${MARKET_LINK_BASE}/${code}\n(share code: \`${code}\`)\n\nGive this to your community. Each member who redeems it — by opening the link, or pasting the code to their Firestarter agent (firestarter_join_market) — joins your market. Prefer a memorable URL? Claim a handle with firestarter_set_market_handle and ${MARKET_LINK_BASE}/<handle> resolves to the same market.` }] };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Error creating share link: ${toErrorMessage(err)}` }], isError: true };
         }
@@ -4256,7 +4256,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_market_preview",
-      "Preview a community market BEFORE joining — read-only, no join, no lock. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend' before committing — show the picks, then let them choose to join (firestarter_join_market) or just buy a pick. Joining is first-touch and locks ~90 days, so previewing first avoids a premature lock. IMPORTANT framing: the buyer gets NO discount or cashback — the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. Do not promise a buyer perk.",
+      "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend' before committing — show the picks, then let them choose to join (firestarter_join_market) or just buy a pick. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: the buyer gets NO discount or cashback — the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. Do not promise a buyer perk.",
       {
         code: z.string().describe("The community's share code or vanity handle (e.g. the <code> in firestarter.network/m/<code>)."),
       },
@@ -4276,7 +4276,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         parts.push("\n" + (shelf ?? `${name} hasn't curated a shelf yet — you can still shop the full Firestarter catalog while supporting them.`));
         if (community.active !== false) {
           parts.push(
-            `\nTo join: firestarter_join_market with code \`${cleaned}\`. First-touch — your first join locks ~90 days, and your future buys then credit ${name} at no extra cost to you (your price is unchanged; the value is the curation and supporting them).`,
+            `\nTo join: firestarter_join_market with code \`${cleaned}\`. Your future buys then credit ${name} at no extra cost to you (your price is unchanged; the value is the curation and supporting them). You can switch communities anytime.`,
           );
         }
         return { content: [{ type: "text" as const, text: parts.join("\n") }] };
@@ -4319,19 +4319,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_join_market",
-      "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. First-touch: the first market joined locks for ~90 days. Use when a user pastes a Firestarter join/market code or asks to join a community's market. Tip: to show the community's picks BEFORE committing to the lock, call firestarter_market_preview first.",
+      "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. If the buyer is already supporting a different community, confirm with them first — joining moves their attribution to the new community. Use when a user pastes a Firestarter join/market code or asks to join a community's market. Tip: to show the community's picks BEFORE joining, call firestarter_market_preview first.",
       {
         code: z.string().describe("The market share code the community gave you."),
-        force: z.boolean().optional().describe("Set true only after the buyer explicitly confirms switching from another locked community."),
       },
-      async ({ code, force }) => {
+      async ({ code }) => {
         try {
-          const res = await apiRequest("POST", "/v1/attribution/redeem", { code, force: force === true });
+          const res = await apiRequest("POST", "/v1/attribution/redeem", { code });
           let text =
             res.idempotent
               ? "You're already in this market — nothing changed."
               : res.replaced
-                ? `Joined — your attribution moved to this market${force ? " after your explicit switch confirmation" : " (the previous lock had expired)"}.`
+                ? "Switched — your buys now credit this market."
                 : "**Joined the market.** Your future buys (and sells, when that's enabled) credit this community.";
           // Turn a successful join into an actionable welcome: greet the buyer,
           // then lead with what the community recommends via the shared shelf
@@ -4357,7 +4356,6 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
           const msg = toErrorMessage(err);
-          if (/locked/i.test(msg)) return { content: [{ type: "text" as const, text: "You're locked to another market right now. Ask the buyer to confirm the switch, then call this tool again with `force: true`." }] };
           return { content: [{ type: "text" as const, text: `Couldn't join: ${msg}` }], isError: true };
         }
       }
@@ -4365,7 +4363,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_my_market",
-      "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, how long the first-touch lock lasts, AND what the community recommends (its curated shelf, each pick buyable via firestarter_execute). Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
+      "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, AND what the community recommends (its curated shelf, each pick buyable via firestarter_execute). Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
       {},
       async () => {
         try {
@@ -4394,7 +4392,6 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               : tier
                 ? "Top tier — nothing above this one."
                 : null,
-            community.locked_until ? `Locked until: ${new Date(community.locked_until).toISOString().slice(0, 10)} (first-touch lock)` : null,
             community.attributed_at ? `Joined: ${new Date(community.attributed_at).toISOString().slice(0, 10)}` : null,
             res?.referral_url
               ? `\n**Your referral link:** ${res.referral_url}\nShare it — when someone you bring joins and makes a qualifying purchase, it counts toward your tier.`
@@ -4416,7 +4413,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_leave_market",
-      "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch and the first-touch lock has expired. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
+      "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch to another one. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
       {},
       async () => {
         try {
