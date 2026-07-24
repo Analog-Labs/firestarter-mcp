@@ -298,6 +298,14 @@ describe("firestarter_set_market_picks (owner curation)", () => {
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain("your OWN listings");
   });
+
+  it("names the environment cause when a pick is unpickable (e.g. wrong test/live env)", async () => {
+    routes.putPicks = () => json(400, { error: "Not available to feature (must be active, in stock, and in your API key's environment — test vs live): lst_z", code: "UNPICKABLE_LISTING" });
+    const res = await captureTools()["firestarter_set_market_picks"]({ program_id: "apg_1", picks: [{ listing_id: "lst_z" }] });
+    expect(res.isError).toBe(true);
+    // The owner must be told environment mismatch is a cause, not left guessing.
+    expect(textOf(res)).toMatch(/environment \(test vs live\)/i);
+  });
 });
 
 describe("firestarter_update_market (owner identity)", () => {

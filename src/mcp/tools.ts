@@ -3283,7 +3283,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_create_voucher
   server.tool(
     "firestarter_create_voucher",
-    "Create a voucher (also called a coupon, promo code, or discount code) that buyers can apply to your listings. Supports percentage off, a fixed amount off, or free shipping, with an optional start/end date, usage cap, per-buyer limit, minimum order value, and scoping to a single listing. YOU FUND THE DISCOUNT: it comes out of your proceeds, and the platform fee is charged on the discounted total. Dates accept natural language — 'next Friday', 'in 2 weeks' — as well as ISO dates. A discount above 50% requires confirm_deep_discount, so confirm the number with the seller before re-sending. If the voucher would leave the seller's cheapest orders below the payable minimum the call is rejected with an explanation rather than creating something whose orders would fail at payment.",
+    "Create a voucher (also called a coupon, promo code, or discount code) that buyers can apply to your listings. Requires a SELLER account with at least one listing — a community-market owner who only recommends other sellers' products has nothing of their own to discount and should reward members with tiered access (firestarter_set_market_tiers) instead. Supports percentage off, a fixed amount off, or free shipping, with an optional start/end date, usage cap, per-buyer limit, minimum order value, and scoping to a single listing. YOU FUND THE DISCOUNT: it comes out of your proceeds, and the platform fee is charged on the discounted total. Dates accept natural language — 'next Friday', 'in 2 weeks' — as well as ISO dates. A discount above 50% requires confirm_deep_discount, so confirm the number with the seller before re-sending. If the voucher would leave the seller's cheapest orders below the payable minimum the call is rejected with an explanation rather than creating something whose orders would fail at payment.",
     {
       code: z.string().describe("The code buyers type, e.g. 'SUMMER20'. 2-64 characters: letters, numbers, dashes or underscores. Case-insensitive; stored uppercase."),
       discount_percent: z.number().int().min(1).max(100).optional().describe("Percent off, 1-100. Use this OR discount_amount_cents, not both."),
@@ -3321,6 +3321,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `\nYou fund this discount — it comes out of your proceeds.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
+        if (err instanceof ApiError && err.code === "NO_SELLER") {
+          return { content: [{ type: "text" as const, text: "Vouchers are a seller tool: they discount your OWN listings and come out of your proceeds, so this account needs to be a seller with at least one product first. List one with firestarter_create_listing, then create the voucher. (A community market that only recommends other sellers' products has nothing of its own to discount — reward members with tiered early access via firestarter_set_market_tiers / firestarter_set_market_picks instead.)" }], isError: true };
+        }
         return { content: [{ type: "text" as const, text: `Could not create the voucher: ${toErrorMessage(err)}` }], isError: true };
       }
     }
@@ -4277,7 +4280,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: `Those include your OWN listings — they already appear under what you sell, so they can't go on the recommends shelf. ${toErrorMessage(err)}` }], isError: true };
           }
           if (err instanceof ApiError && err.code === "UNPICKABLE_LISTING") {
-            return { content: [{ type: "text" as const, text: `Some listings can't be featured (inactive, sold out, or not found): ${toErrorMessage(err)}` }], isError: true };
+            return { content: [{ type: "text" as const, text: `Some listings can't be featured — each must be an active, in-stock listing in the same environment (test vs live) as your API key: ${toErrorMessage(err)}` }], isError: true };
           }
           if (err instanceof ApiError && err.code === "TOO_MANY_PICKS") {
             return { content: [{ type: "text" as const, text: "A shelf holds at most 15 listings — trim the list and try again." }], isError: true };
