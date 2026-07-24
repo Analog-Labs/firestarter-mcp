@@ -192,7 +192,7 @@ describe("firestarter_my_market", () => {
     routes.me = () => json(200, {
       community: {
         connected: true, name: "Tania Saleem", code: "TANIACODE1",
-        program_status: "active", locked_until: "2026-10-01T00:00:00Z", attributed_at: "2026-07-01T00:00:00Z",
+        program_status: "active", attributed_at: "2026-07-01T00:00:00Z",
       },
     });
     routes.community = () => json(200, { community: COMMUNITY_WITH_PICKS });

@@ -1226,7 +1226,7 @@
     },
     {
       "name": "firestarter_market_link",
-      "description": "Mint a shareable join link + code for a market you own (from firestarter_create_market). Give it to your community — when a member opens the link or redeems the code (firestarter_join_market) they are attributed to your program (first-touch, ~90-day lock) so you earn on their activity. For a memorable URL, claim a handle with firestarter_set_market_handle. Optionally tag a channel/campaign for tracking.",
+      "description": "Mint a shareable join link + code for a market you own (from firestarter_create_market). Give it to your community — when a member opens the link or redeems the code (firestarter_join_market) they are attributed to your program so you earn on their activity. For a memorable URL, claim a handle with firestarter_set_market_handle. Optionally tag a channel/campaign for tracking.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1377,7 +1377,7 @@
     },
     {
       "name": "firestarter_market_preview",
-      "description": "Preview a community market BEFORE joining — read-only, no join, no lock. Given a share code or vanity handle, returns the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use when a buyer pastes a market code/link or asks what a community recommends before committing to the ~90-day first-touch lock. The buyer gets no discount; the community earns a share of Firestarter's fee at no extra cost to the buyer.",
+      "description": "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use when a buyer pastes a market code/link or asks what a community recommends before choosing to join. The buyer gets no discount; the community earns a share of Firestarter's fee at no extra cost to the buyer.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1406,17 +1406,13 @@
     },
     {
       "name": "firestarter_join_market",
-      "description": "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. First-touch: the first market joined locks for ~90 days. Use when a user pastes a Firestarter join/market code or asks to join a community's market.",
+      "description": "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. If the buyer is already supporting a different community, confirm with them first — joining moves their attribution to the new community. Use when a user pastes a Firestarter join/market code or asks to join a community's market.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "code": {
             "type": "string",
             "description": "The market share code."
-          },
-          "force": {
-            "type": "boolean",
-            "description": "Set true only after the buyer explicitly confirms switching from another locked community."
           }
         },
         "required": [
@@ -1426,7 +1422,7 @@
     },
     {
       "name": "firestarter_my_market",
-      "description": "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, and how long the first-touch lock lasts. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', or before joining/leaving so you can confirm the current state. Read-only.",
+      "description": "Show which community market the buyer is currently connected to (if any): the community name, join code, and program status. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', or before joining/leaving so you can confirm the current state. Read-only.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -1435,7 +1431,7 @@
     },
     {
       "name": "firestarter_leave_market",
-      "description": "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch and the first-touch lock has expired. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
+      "description": "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch to another one. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
       "inputSchema": {
         "type": "object",
         "properties": {},
