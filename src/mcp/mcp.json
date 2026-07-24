@@ -906,7 +906,7 @@
     },
     {
       "name": "firestarter_create_voucher",
-      "description": "Create a voucher (coupon / promo code / discount code) buyers can apply to your listings. Percentage off, fixed amount off, or free shipping, with optional start and end dates, usage cap, per-buyer limit, minimum order value, and scoping to one listing. The seller funds the discount. Dates accept natural language such as 'next Friday'. Discounts above 50% require confirm_deep_discount.",
+      "description": "Create a voucher (coupon / promo code / discount code) buyers can apply to your listings. Requires a SELLER account with at least one listing — a community-market owner who only recommends other sellers' products has nothing of their own to discount and should reward members with tiered access (firestarter_set_market_tiers) instead. Percentage off, fixed amount off, or free shipping, with optional start and end dates, usage cap, per-buyer limit, minimum order value, and scoping to one listing. The seller funds the discount. Dates accept natural language such as 'next Friday'. Discounts above 50% require confirm_deep_discount.",
       "inputSchema": {
         "type": "object",
         "properties": {
