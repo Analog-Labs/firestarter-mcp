@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 65 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 66 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -906,7 +906,7 @@
     },
     {
       "name": "firestarter_create_voucher",
-      "description": "Create a voucher (coupon / promo code / discount code) buyers can apply to your listings. Percentage off, fixed amount off, or free shipping, with optional start and end dates, usage cap, per-buyer limit, minimum order value, and scoping to one listing. The seller funds the discount. Dates accept natural language such as 'next Friday'. Discounts above 50% require confirm_deep_discount.",
+      "description": "Create a voucher (coupon / promo code / discount code) buyers can apply to your listings. Requires a SELLER account with at least one listing — a community-market owner who only recommends other sellers' products has nothing of their own to discount and should reward members with tiered access (firestarter_set_market_tiers) instead. Percentage off, fixed amount off, or free shipping, with optional start and end dates, usage cap, per-buyer limit, minimum order value, and scoping to one listing. The seller funds the discount. Dates accept natural language such as 'next Friday'. Discounts above 50% require confirm_deep_discount.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1468,6 +1468,49 @@
         },
         "required": [
           "program_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_create_drop",
+      "description": "Create a community-sponsored DROP on a market you own: fund a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). YOU fund the discount — it applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Use when a community owner wants to reward members with a real DISCOUNT incentive — distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id you own (from firestarter_my_markets)."
+          },
+          "listing_id": {
+            "type": "string",
+            "description": "The listing (lst_...) to discount — find one with firestarter_catalog_search. Must be a real, sellable listing."
+          },
+          "discount_cents": {
+            "type": "integer",
+            "description": "Per-claim discount in cents, e.g. 500 = $5 off each claimed order."
+          },
+          "max_claims": {
+            "type": "integer",
+            "description": "How many members can claim it (the 'first N') — first-come, first-served, one per member."
+          },
+          "min_tier": {
+            "type": "integer",
+            "description": "Rung required to claim DURING the priority window (0 = everyone). Use with priority_hours to give higher tiers early access first."
+          },
+          "priority_hours": {
+            "type": "number",
+            "description": "Hours the drop stays tier-gated (to min_tier and up) before opening to everyone. Omit or 0 = open to all immediately."
+          },
+          "expires_in_hours": {
+            "type": "number",
+            "description": "Hours until the drop expires. Default 168 (7 days)."
+          }
+        },
+        "required": [
+          "program_id",
+          "listing_id",
+          "discount_cents",
+          "max_claims"
         ]
       }
     },
