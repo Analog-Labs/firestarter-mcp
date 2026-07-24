@@ -3515,6 +3515,99 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Ship-from locations (#audit: was JWT/dashboard-only, yet the PRIMARY
+  // location is what the quote engine resolves as the rate-shop origin — a
+  // wrong or missing one silently mis-prices every shipping quote. One render
+  // helper shared by all three tools so a location always reads the same.
+  const renderShipFromLocation = (l: any): string => {
+    const place = [l.street1, l.city, l.state, l.zip, l.country].filter(Boolean).join(", ");
+    const label = l.label ? `${l.label} — ` : "";
+    return `- \`${l.id}\`${l.is_primary ? " **(primary — quotes ship from here)**" : ""} ${label}${place}`;
+  };
+
+  // Tool: firestarter_ship_from_locations
+  server.tool(
+    "firestarter_ship_from_locations",
+    "List the seller's ship-from (fulfillment) locations. The PRIMARY location is the origin every shipping quote is rated from — if buyers see wrong shipping prices or 'can't ship there', check this first. Use firestarter_save_ship_from to add/correct one and firestarter_delete_ship_from to remove one. Seller accounts only.",
+    {},
+    { readOnlyHint: true, destructiveHint: false },
+    async () => {
+      try {
+        const data = await apiRequest("GET", "/v1/sellers/locations");
+        const rows: any[] = Array.isArray(data?.locations) ? data.locations : [];
+        if (rows.length === 0) {
+          return { content: [{ type: "text" as const, text: "No ship-from locations yet — shipping quotes fall back to the platform origin. Add the seller's real dispatch address with firestarter_save_ship_from (set is_primary: true) so rates are quoted from where parcels actually ship." }] };
+        }
+        const lines = ["**Ship-from locations** (primary = rate-quote origin):", ...rows.map(renderShipFromLocation)];
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error listing ship-from locations: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_save_ship_from
+  server.tool(
+    "firestarter_save_ship_from",
+    "Add or update a seller ship-from (fulfillment) location — the address shipping rates are quoted FROM. Three forms: (1) no location_id → create (street1 + city required; state/zip also required for US/CA/AU origins); (2) location_id + address fields → update that location; (3) location_id + is_primary true and NO address fields → just make it the primary. Set is_primary on the address parcels actually dispatch from — the primary drives every quote's origin. Seller accounts only.",
+    {
+      location_id: z.string().optional().describe("Existing location id (floc_...) to update or promote. Omit to create a new location."),
+      street1: z.string().optional().describe("Street address line 1 (required when creating)"),
+      street2: z.string().optional().describe("Street address line 2"),
+      city: z.string().optional().describe("City (required when creating)"),
+      state: z.string().optional().describe("State/province — required for US/CA/AU origins"),
+      zip: z.string().optional().describe("Postal/ZIP — required for US/CA/AU origins"),
+      country: z.string().optional().describe("ISO country code (e.g. US, TH). Defaults to US."),
+      phone: z.string().optional().describe("Pickup contact phone"),
+      label: z.string().optional().describe("Label, e.g. 'Bangkok warehouse'"),
+      is_primary: z.boolean().optional().describe("Make this the primary (rate-quote origin)."),
+    },
+    async ({ location_id, is_primary, ...addr }) => {
+      const hasAddress = Object.values(addr).some((v) => typeof v === "string" && v.trim());
+      try {
+        let data: any;
+        if (location_id && !hasAddress) {
+          if (!is_primary) {
+            return { content: [{ type: "text" as const, text: "Nothing to change — pass address fields to update this location, or is_primary: true to promote it." }], isError: true };
+          }
+          data = await apiRequest("POST", `/v1/sellers/locations/${location_id}/primary`);
+        } else if (location_id) {
+          data = await apiRequest("PUT", `/v1/sellers/locations/${location_id}`, { ...addr, is_primary });
+          if (is_primary) data = await apiRequest("POST", `/v1/sellers/locations/${location_id}/primary`);
+        } else {
+          data = await apiRequest("POST", "/v1/sellers/locations", { ...addr, is_primary });
+        }
+        const l = data?.location ?? data;
+        const lines = [
+          location_id ? "**Ship-from location updated.**" : "**Ship-from location added.**",
+          renderShipFromLocation(l),
+        ];
+        if (l.is_primary) lines.push("Shipping quotes now rate from this origin.");
+        else lines.push("Note: not the primary — quotes still rate from the current primary location.");
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error saving ship-from location: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_delete_ship_from
+  server.tool(
+    "firestarter_delete_ship_from",
+    "Delete a seller ship-from (fulfillment) location by id (floc_..., from firestarter_ship_from_locations). If you delete the primary, add or promote another with firestarter_save_ship_from — otherwise quotes fall back to the platform origin. Seller accounts only.",
+    {
+      location_id: z.string().describe("The location id (floc_...) to delete"),
+    },
+    async ({ location_id }) => {
+      try {
+        await apiRequest("DELETE", `/v1/sellers/locations/${location_id}`);
+        return { content: [{ type: "text" as const, text: `**Deleted** ship-from location \`${location_id}\`. Check firestarter_ship_from_locations — if it was the primary, promote another so quotes rate from the right origin.` }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error deleting ship-from location: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_verify
   // A3: possession-verification evidence. Wraps POST /v1/listings/:id/verification.
   // The happy path is human-free: vision soft-check auto-approves, the agent
