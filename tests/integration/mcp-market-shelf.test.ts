@@ -252,8 +252,8 @@ describe("firestarter_set_market_picks (owner curation)", () => {
       picks: [{ listing_id: "lst_a", note: "love it" }, { listing_id: "lst_b" }],
     }));
     expect(putBody.picks).toEqual([
-      { listing_id: "lst_a", note: "love it" },
-      { listing_id: "lst_b", note: null },
+      { listing_id: "lst_a", note: "love it", min_tier: 0 },
+      { listing_id: "lst_b", note: null, min_tier: 0 },
     ]);
     expect(t).toContain("Shelf updated");
     expect(t).toContain("Cool Sticker");
@@ -269,8 +269,8 @@ describe("firestarter_set_market_picks (owner curation)", () => {
     };
     await captureTools()["firestarter_set_market_picks"]({ program_id: "apg_1", action: "add", picks: [{ listing_id: "lst_new", note: "new" }] });
     expect(putBody.picks).toEqual([
-      { listing_id: "lst_existing", note: "keep" },
-      { listing_id: "lst_new", note: "new" },
+      { listing_id: "lst_existing", note: "keep", min_tier: 0 },
+      { listing_id: "lst_new", note: "new", min_tier: 0 },
     ]);
   });
 
@@ -282,7 +282,7 @@ describe("firestarter_set_market_picks (owner curation)", () => {
       return json(200, { count: body.picks.length, picks: body.picks.map((p: any) => ({ listing_id: p.listing_id, product_name: "X", price: 1, note: p.note })) });
     };
     await captureTools()["firestarter_set_market_picks"]({ program_id: "apg_1", action: "remove", picks: [{ listing_id: "lst_a" }] });
-    expect(putBody.picks).toEqual([{ listing_id: "lst_b", note: "b" }]);
+    expect(putBody.picks).toEqual([{ listing_id: "lst_b", note: "b", min_tier: 0 }]);
   });
 
   it("reports a cleared shelf when the last pick is removed", async () => {

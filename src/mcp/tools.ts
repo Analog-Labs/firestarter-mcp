@@ -79,6 +79,17 @@ function cleanListingId(id: string): string {
   return id.replace(/\\/g, "");
 }
 
+/** One-line human description of what a voucher takes off. */
+function describeVoucherValue(v: {
+  discount_type?: string;
+  discount_percent?: number | null;
+  discount_amount_cents?: number | null;
+}): string {
+  if (v.discount_type === "free_shipping") return "free shipping";
+  if (v.discount_type === "fixed") return `$${((v.discount_amount_cents ?? 0) / 100).toFixed(2)} off`;
+  return `${v.discount_percent ?? 0}% off`;
+}
+
 // ─── Community-market shelf (agent-facing) ───────────────────────────────────
 // The buyer-facing web page (/m/<handle>) shows a community's curated shelf —
 // the owner's product picks with their notes. The public marketplace endpoint
@@ -969,6 +980,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
+      voucher_code: z.string().optional().describe("A discount code the buyer already has (voucher / coupon / promo code). Pass it ONLY when the buyer gave you one — you do NOT need to hunt for codes, since the best publicly available voucher is applied automatically. Use this for a private or targeted code, which auto-apply cannot find. If the code can't be used the order still proceeds at the best price available, and the response explains why it didn't apply so you can tell the buyer."),
       budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
       // Permissive, forever-stable boundary: accept a string OR any object shape
       // and NEVER reject for shape (an older/stale cached client that omits
@@ -994,7 +1006,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .optional()
         .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
-    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by, voucher_code }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
@@ -1002,6 +1014,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           preferences: { priority: priority || "cost", require_approval: !auto_pay },
         };
         if (listing_id) body.listing_id = listing_id;
+        if (voucher_code?.trim()) body.voucher_code = voucher_code.trim();
         // Attribution rides the existing free-form metadata column — the REST
         // API stores body.metadata verbatim and the list endpoint echoes it.
         if (requested_by && (requested_by.name || requested_by.id)) {
@@ -1677,6 +1690,40 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error saving address: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_drops — community-sponsored drops (Phase 4)
+  server.tool(
+    "firestarter_drops",
+    "Community-sponsored drops: a community owner funds a discount on a specific listing for the first N members, sometimes opening it to higher tiers first. Use action 'list' with a listing_id to see any live drops on it — each shows the per-claim discount, how many slots remain, and whether it is still in a tier-gated early-access window. Use action 'claim' with a drop_id to reserve a slot for the buyer before checkout — first-come, first-served, one per member; the reserved discount then applies to that buyer's purchase of the listing. test/live follows the API key's environment.",
+    {
+      action: z.enum(["list", "claim"]).describe("'list' the live drops on a listing, or 'claim' a specific drop_id."),
+      listing_id: z.string().optional().describe("Listing to list drops for (required for action 'list')."),
+      drop_id: z.string().optional().describe("Drop to claim (required for action 'claim')."),
+    },
+    async ({ action, listing_id, drop_id }) => {
+      try {
+        if (action === "claim") {
+          if (!drop_id) return { content: [{ type: "text" as const, text: "Pass a drop_id to claim a drop." }], isError: true };
+          const res = await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/claim`);
+          const dollars = ((res.discount_cents ?? 0) / 100).toFixed(2);
+          const left = Number(res.remaining ?? 0);
+          return { content: [{ type: "text" as const, text: `🎉 Claimed — $${dollars} off is reserved for you on this drop (${left} slot${left === 1 ? "" : "s"} left). It applies when you buy the listing.` }] };
+        }
+        if (!listing_id) return { content: [{ type: "text" as const, text: "Pass a listing_id to list its drops." }], isError: true };
+        const data = await apiRequest("GET", `/v1/drops?listing_id=${encodeURIComponent(listing_id)}`);
+        const drops: any[] = data?.drops ?? [];
+        if (drops.length === 0) return { content: [{ type: "text" as const, text: "No live community drops on this listing right now." }] };
+        const lines = drops.map((d) => {
+          const dollars = (Number(d.discount_cents) / 100).toFixed(2);
+          const gate = d.in_priority_window && Number(d.min_tier) > 0 ? ` · early access for tier ${d.min_tier}+ until ${d.priority_until}` : "";
+          return `- \`${d.id}\` — $${dollars} off · ${d.remaining} left${gate}`;
+        });
+        return { content: [{ type: "text" as const, text: `**Live drops on this listing**\n${lines.join("\n")}\n\nClaim one with action 'claim' and its drop_id.` }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error with drops: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -2662,7 +2709,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: "To set up PayPal payouts, call `firestarter_payouts` with `provider: \"paypal\"` and `paypal_email: \"seller@email.com\"`. The seller will receive payouts to that PayPal account." }] };
           }
           const result = await apiRequest("POST", "/v1/sellers/payout-method/paypal", { email: paypal_email });
-          return { content: [{ type: "text" as const, text: `**PayPal payouts configured!**\nEmail: ${paypal_email}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
+          return { content: [{ type: "text" as const, text: `**PayPal payouts connected!**\nEmail: ${paypal_email}\nStatus: connected — verified on your first payout\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
         }
 
         if (provider === "wise") {
@@ -2980,9 +3027,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
 
         const buyableCount = listings.filter((l) => l.buyable).length;
+        // The buyer's community, when they're in one. Named on its own line so
+        // the agent can attribute a pick ("Analog picks this") rather than
+        // showing an unexplained star.
+        const communityName: string | null =
+          typeof data.query?.community?.name === "string" ? data.query.community.name : null;
+        const pickCount = listings.filter((l) => l.picked_by_community).length;
         const lines = [
-          `**Firestarter catalog** — ${listings.length} result${listings.length === 1 ? "" : "s"} (${data.query?.environment || "live"} mode, ${buyableCount} buyable now)${data.has_more ? " · more available, narrow the search or raise `limit`" : ""}\n`,
+          `**Firestarter catalog** — ${listings.length} result${listings.length === 1 ? "" : "s"} (${data.query?.environment || "live"} mode, ${buyableCount} buyable now)${data.has_more ? " · more available, narrow the search or raise `limit`" : ""}`,
         ];
+        if (communityName && pickCount > 0) {
+          lines.push(`★ = picked by **${communityName}**, the community you're in (${pickCount} here).`);
+        }
+        lines.push("");
         for (const l of listings) {
           const price = `${l.currency || "USD"} ${Number(l.current_price).toFixed(2)}`;
           const tag = l.buyable ? "✅ buyable" : "👁 browse-only";
@@ -2990,8 +3047,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // clients auto-unfurl a preview and agents have a fetchable, CORS-open
           // image URL (the network image endpoint) instead of guessing a link.
           const img0 = Array.isArray(l.images) && typeof l.images[0] === "string" && /^https?:\/\//i.test(l.images[0]) ? l.images[0] : null;
+          // The curator's note is the whole point of a pick — a bare badge says
+          // "someone chose this", the note says why, which is what a buyer
+          // actually weighs. Rendered on its own line, quoted, when present.
+          const picked = l.picked_by_community === true;
+          const note = picked && typeof l.pick_note === "string" && l.pick_note.trim() ? l.pick_note.trim() : null;
           lines.push(
-            `- **${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}\n  id: \`${l.id}\` · ${l.share_url}${img0 ? `\n  ${img0}` : ""}`,
+            `- ${picked ? "★ " : ""}**${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}` +
+            `${note ? `\n  _"${note}"_${communityName ? ` — ${communityName}` : ""}` : ""}` +
+            `\n  id: \`${l.id}\` · ${l.share_url}${img0 ? `\n  ${img0}` : ""}`,
           );
         }
         lines.push(
@@ -3138,6 +3202,118 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error checking demand: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // ── Vouchers ──────────────────────────────────────────────────────────────
+  //
+  // Sellers can run every other part of their store through an agent — list,
+  // reprice, ship, read analytics — but not discounts, which were reachable
+  // only from the dashboard. These close that gap.
+  //
+  // Synonyms live in the descriptions ("voucher, coupon, promo code, discount
+  // code") on purpose: tool selection is semantic, and a seller may say any of
+  // them. The schema and API say "voucher" so there is one canonical name.
+
+  // Tool: firestarter_create_voucher
+  server.tool(
+    "firestarter_create_voucher",
+    "Create a voucher (also called a coupon, promo code, or discount code) that buyers can apply to your listings. Supports percentage off, a fixed amount off, or free shipping, with an optional start/end date, usage cap, per-buyer limit, minimum order value, and scoping to a single listing. YOU FUND THE DISCOUNT: it comes out of your proceeds, and the platform fee is charged on the discounted total. Dates accept natural language — 'next Friday', 'in 2 weeks' — as well as ISO dates. A discount above 50% requires confirm_deep_discount, so confirm the number with the seller before re-sending. If the voucher would leave the seller's cheapest orders below the payable minimum the call is rejected with an explanation rather than creating something whose orders would fail at payment.",
+    {
+      code: z.string().describe("The code buyers type, e.g. 'SUMMER20'. 2-64 characters: letters, numbers, dashes or underscores. Case-insensitive; stored uppercase."),
+      discount_percent: z.number().int().min(1).max(100).optional().describe("Percent off, 1-100. Use this OR discount_amount_cents, not both."),
+      discount_amount_cents: z.number().int().min(1).optional().describe("Fixed amount off in cents (e.g. 500 = $5 off). Use instead of discount_percent."),
+      free_shipping: z.boolean().optional().describe("Set true for a free-shipping voucher instead of a discount off the item price."),
+      max_uses: z.number().int().min(1).optional().describe("Total redemptions allowed across all buyers. Omit for unlimited."),
+      per_buyer_limit: z.number().int().min(1).optional().describe("How many times one buyer may use it. Omit for unlimited."),
+      min_order_cents: z.number().int().min(0).optional().describe("Minimum order subtotal in cents before the voucher applies."),
+      listing_id: z.string().optional().describe("Restrict the voucher to one of your listings (lst_...). Omit to apply across all of them."),
+      starts_at: z.string().optional().describe("When it becomes usable. Natural language ('tomorrow') or ISO. Omit to start immediately."),
+      expires_at: z.string().optional().describe("When it stops working. Natural language ('next Friday') or ISO. Omit for no expiry."),
+      discoverable: z.boolean().optional().describe("Default true: buyer agents can find and auto-apply it. Set false for a targeted code usable only by someone you give it to."),
+      confirm_deep_discount: z.boolean().optional().describe("Required to create a discount above 50%. Only pass it after the seller has confirmed that exact number."),
+    },
+    async ({ code, discount_percent, discount_amount_cents, free_shipping, ...rest }) => {
+      try {
+        const body: any = { code, ...rest };
+        if (free_shipping) body.discount_type = "free_shipping";
+        else if (discount_amount_cents !== undefined) {
+          body.discount_type = "fixed";
+          body.discount_amount_cents = discount_amount_cents;
+        } else {
+          body.discount_type = "percent";
+          body.discount_percent = discount_percent;
+        }
+
+        const { voucher } = await apiRequest("POST", "/v1/sellers/vouchers", body);
+        let text = `**Voucher ${voucher.code} created**\n`;
+        text += `${describeVoucherValue(voucher)}\n`;
+        if (voucher.listing_id) text += `Applies to listing ${voucher.listing_id} only\n`;
+        if (voucher.min_order_cents) text += `Minimum order: $${(voucher.min_order_cents / 100).toFixed(2)}\n`;
+        if (voucher.max_uses) text += `Limited to ${voucher.max_uses} uses\n`;
+        if (voucher.expires_at) text += `Expires ${new Date(voucher.expires_at).toUTCString()}\n`;
+        if (voucher.discoverable === false) text += `Targeted: buyer agents won't surface it automatically.\n`;
+        text += `\nYou fund this discount — it comes out of your proceeds.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Could not create the voucher: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_vouchers
+  server.tool(
+    "firestarter_vouchers",
+    "List your vouchers (coupons / promo codes / discount codes) with their status and what each one has cost you so far. Status is one of active, scheduled (start date not reached), expired, exhausted (hit its usage cap), or paused. Use this to answer 'what discounts am I running?' or 'how is SUMMER20 doing?'.",
+    {},
+    async () => {
+      try {
+        const { vouchers } = await apiRequest("GET", "/v1/sellers/vouchers");
+        if (!vouchers?.length) {
+          return { content: [{ type: "text" as const, text: "You have no vouchers yet. Create one with firestarter_create_voucher." }] };
+        }
+        let text = `**Your vouchers** (${vouchers.length})\n\n`;
+        for (const v of vouchers) {
+          text += `- **${v.code}** — ${describeVoucherValue(v)} · ${v.state}\n`;
+          const used = v.max_uses ? `${v.redemption_count}/${v.max_uses} used` : `${v.redemption_count} used`;
+          text += `  ${used} · you've funded $${((v.total_discount_funded_cents || 0) / 100).toFixed(2)}\n`;
+          if (v.expires_at) text += `  expires ${new Date(v.expires_at).toUTCString()}\n`;
+        }
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Could not list vouchers: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_update_voucher
+  server.tool(
+    "firestarter_update_voucher",
+    "Pause, resume, extend, or adjust the limits on an existing voucher. Pausing (active=false) stops it being redeemed without deleting it, so its history is kept. The code and the discount VALUE cannot be changed — buyers may already hold the code, and repricing an offer someone was given is a different voucher, so pause this one and create another instead.",
+    {
+      voucher_id: z.string().describe("The voucher id (promo_...) from firestarter_vouchers."),
+      active: z.boolean().optional().describe("false pauses it, true resumes it."),
+      discoverable: z.boolean().optional().describe("Whether buyer agents may surface and auto-apply it."),
+      expires_at: z.string().optional().describe("New expiry. Natural language ('next Friday') or ISO."),
+      max_uses: z.number().int().min(1).optional().describe("New total redemption cap."),
+      per_buyer_limit: z.number().int().min(1).optional().describe("New per-buyer cap."),
+      min_order_cents: z.number().int().min(0).optional().describe("New minimum order subtotal in cents."),
+    },
+    async ({ voucher_id, ...patch }) => {
+      try {
+        if (Object.values(patch).every((v) => v === undefined)) {
+          return { content: [{ type: "text" as const, text: "No changes given. Specify at least one field to update." }], isError: true };
+        }
+        const { voucher } = await apiRequest("PATCH", `/v1/sellers/vouchers/${voucher_id}`, patch);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `**Voucher ${voucher.code} updated** — ${describeVoucherValue(voucher)} · ${voucher.active ? "active" : "paused"}`,
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Could not update the voucher: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -3932,6 +4108,37 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     );
 
     server.tool(
+      "firestarter_set_market_tiers",
+      "Configure member tiers for a community market you own. Tiers reward members with ACCESS, never money or discounts — a higher tier sees picks you've staged early (firestarter_set_market_picks with min_tier). A member's tier is derived from their qualifying orders in your community over the last 12 months; nothing is stored per member, so there is no balance to top up and nothing expires. Every market already has working defaults (Member 0 / Regular 2 / Insider 5) — only call this to rename rungs, change how many orders each needs, add a 4th rung, or switch tiers off. Raising a threshold never demotes an existing member for 30 days.",
+      {
+        program_id: z.string().describe("The market/program id (from firestarter_my_markets)."),
+        enabled: z.boolean().optional().describe("Set false to switch tiers off entirely for this market. Default true."),
+        tiers: z.array(z.object({
+          name: z.string().max(20).describe("What this rung is called, e.g. 'Regular'. Shown to members."),
+          min_orders: z.number().int().min(0).max(100).optional().describe("Qualifying orders needed. Ignored for the first rung, which is always 0 (everyone who joins). Must increase down the list."),
+        })).min(2).max(4).optional().describe("2-4 rungs, cheapest first. Omit to keep the platform defaults."),
+      },
+      async ({ program_id, enabled, tiers }) => {
+        try {
+          const tier_config = tiers
+            ? { enabled: enabled !== false, tiers: tiers.map((t) => ({ name: t.name, min_orders: t.min_orders ?? 0 })) }
+            : { enabled: enabled !== false };
+          const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, { tier_config });
+          const saved = res?.program?.tier_config;
+          if (!saved?.enabled) {
+            return { content: [{ type: "text" as const, text: "**Tiers switched off.** Members see your shelf with no rungs, and any picks staged behind a tier are now hidden from everyone — drop their min_tier to 0 to publish them." }] };
+          }
+          const ladder = (saved.tiers ?? []).map((t: any, i: number) =>
+            i === 0 ? `• ${t.name} — everyone who joins` : `• ${t.name} — ${t.min_orders} qualifying order${t.min_orders === 1 ? "" : "s"}`,
+          );
+          return { content: [{ type: "text" as const, text: `**Tiers updated.**\n${ladder.join("\n")}\n\nA qualifying order is a delivered, non-refunded order over the platform minimum — that part isn't configurable, so status means the same thing across every community. Stage a pick for a rung with firestarter_set_market_picks (min_tier).` }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't update tiers: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
       "firestarter_set_market_picks",
       "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) — find them with firestarter_catalog_search. `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
       {
@@ -3939,6 +4146,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         picks: z.array(z.object({
           listing_id: z.string().describe("A listing id (lst_...) to feature. Must be another seller's listing — not your own."),
           note: z.string().max(140).optional().describe("Optional short 'why I picked it' shown to buyers."),
+          min_tier: z.number().int().min(0).max(3).optional().describe("Tier RUNG INDEX needed to see this pick. 0 (default) = everyone, including signed-out visitors. 1+ stages it as an early look for that rung and above — this is how 'members get first look at new picks' works. Set tiers up first with firestarter_set_market_tiers."),
         })).min(1).describe("The picks to set/add/remove. For 'remove', only each listing_id is used."),
         action: z.enum(["replace", "add", "remove"]).optional().describe("replace (default): the picks become the exact shelf, in order. add: append to the current shelf. remove: drop the given listing ids."),
       },
@@ -3947,24 +4155,35 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const incoming = picks.map((p) => ({
           listing_id: cleanListingId(p.listing_id),
           note: typeof p.note === "string" ? p.note : null,
+          min_tier: typeof p.min_tier === "number" ? p.min_tier : 0,
         }));
         try {
           // The PUT is a wholesale replace-set (matches the web). To offer natural
           // add/remove, fetch the current owner shelf, merge, then replace — the
           // GET is owner-scoped, so a non-owner 404s here just like the PUT would.
-          let desired: Array<{ listing_id: string; note: string | null }>;
+          type Pick = { listing_id: string; note: string | null; min_tier: number };
+          let desired: Pick[];
           if (mode === "replace") {
             desired = incoming;
           } else {
             const cur = await apiRequest("GET", `/v1/attribution/programs/${encodeURIComponent(program_id)}/picks`);
-            const current: Array<{ listing_id: string; note: string | null }> = (Array.isArray(cur?.picks) ? cur.picks : [])
-              .map((p: any) => ({ listing_id: String(p.listing_id), note: typeof p.note === "string" ? p.note : null }));
+            const current: Pick[] = (Array.isArray(cur?.picks) ? cur.picks : [])
+              .map((p: any) => ({
+                listing_id: String(p.listing_id),
+                note: typeof p.note === "string" ? p.note : null,
+                min_tier: Number.isFinite(Number(p.min_tier)) ? Number(p.min_tier) : 0,
+              }));
             if (mode === "add") {
               const byId = new Map(current.map((p) => [p.listing_id, p]));
               for (const p of incoming) {
                 const existing = byId.get(p.listing_id);
-                if (existing) { if (p.note != null) existing.note = p.note; }
-                else { const np = { ...p }; current.push(np); byId.set(p.listing_id, np); }
+                // An `add` that names an existing pick updates only what was
+                // actually supplied — re-adding to fix a note must not silently
+                // un-stage a pick the owner had gated to a tier.
+                if (existing) {
+                  if (p.note != null) existing.note = p.note;
+                  if (p.min_tier > 0) existing.min_tier = p.min_tier;
+                } else { const np = { ...p }; current.push(np); byId.set(p.listing_id, np); }
               }
               desired = current;
             } else {
@@ -3973,7 +4192,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             }
           }
           const res = await apiRequest("PUT", `/v1/attribution/programs/${encodeURIComponent(program_id)}/picks`, {
-            picks: desired.map((p) => ({ listing_id: p.listing_id, note: p.note })),
+            picks: desired.map((p) => ({ listing_id: p.listing_id, note: p.note, min_tier: p.min_tier })),
           });
           const shelf: any[] = Array.isArray(res?.picks) ? res.picks : [];
           if (shelf.length === 0) {
@@ -3983,7 +4202,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             const nm = typeof p.product_name === "string" && p.product_name.trim() ? p.product_name.trim() : "Untitled";
             const price = Number.isFinite(Number(p.price)) ? `$${Number(p.price).toFixed(2)}` : "price at checkout";
             const note = typeof p.note === "string" && p.note.trim() ? ` — "${p.note.trim()}"` : "";
-            return `• ${nm} — ${price}${note}`;
+            // Name the gate explicitly: an owner who staged a pick and then can't
+            // see it on the public page should be told why, not left guessing.
+            const gate = Number(p.min_tier) > 0 ? ` [tier ${p.min_tier}+ only]` : "";
+            return `• ${nm} — ${price}${note}${gate}`;
           });
           return { content: [{ type: "text" as const, text: `**Shelf updated — ${shelf.length} pick${shelf.length === 1 ? "" : "s"}** (buyers see these on your join page and in the agent):\n${lines.join("\n")}` }] };
         } catch (err: any) {
@@ -4150,11 +4372,30 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (!community || community.connected !== true) {
             return { content: [{ type: "text" as const, text: "You're not connected to any community market. Paste a share code and I can join one for you (firestarter_join_market)." }] };
           }
+          // Standing in this community. Best-effort and rendered only when the
+          // owner has tiers on — a community that hasn't turned them on should
+          // read exactly as it did before, with no empty "Tier: —" line.
+          let tier: any = null;
+          try {
+            tier = (await apiRequest("GET", "/v1/attribution/tier"))?.tier ?? null;
+          } catch { /* standing is a bonus; the status below stands alone */ }
+
           const lines = [
             `**Connected to:** ${community.name}`,
             community.code ? `Join code: \`${community.code}\`` : null,
             `Status: ${community.program_status}`,
+            tier
+              ? `**Tier: ${tier.name}** · ${tier.qualifying_orders} qualifying order${tier.qualifying_orders === 1 ? "" : "s"} in the last 12 months`
+              : null,
+            tier?.next
+              ? `${tier.next.orders_needed} more to reach ${tier.next.name}`
+              : tier
+                ? "Top tier — nothing above this one."
+                : null,
             community.attributed_at ? `Joined: ${new Date(community.attributed_at).toISOString().slice(0, 10)}` : null,
+            res?.referral_url
+              ? `\n**Your referral link:** ${res.referral_url}\nShare it — when someone you bring joins and makes a qualifying purchase, it counts toward your tier.`
+              : null,
             "\nYour buys (and sells, when enabled) credit this community. To leave, use firestarter_leave_market.",
           ].filter(Boolean);
           // Re-discovery: append the community's current shelf so "what market am
