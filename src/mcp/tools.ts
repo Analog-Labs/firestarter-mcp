@@ -126,10 +126,12 @@ async function fetchPublicCommunity(
  * straight to firestarter_execute — the shelf is an actionable next step, not
  * just a list.
  *
- * Framing is deliberate and must not overpromise: the buyer gets NO discount or
- * cashback. The community earns a share of Firestarter's fee "at no extra cost
- * to you, never from the seller's payout"; the buyer's benefit is curation and
- * supporting the community. Never phrase this as a buyer perk/benefit.
+ * Framing is deliberate and must not overpromise: JOINING itself gives the buyer
+ * no automatic discount or cashback. The community earns a share of Firestarter's
+ * fee "at no extra cost to you, never from the seller's payout"; the buyer's
+ * benefit is curation and supporting the community. A community MAY separately
+ * fund drops (real discounts the buyer claims before checkout), which this shelf
+ * surfaces per pick — but never phrase JOINING itself as a buyer perk/benefit.
  */
 function formatCommunityShelf(community: any): string | null {
   const picks: any[] = Array.isArray(community?.picks) ? community.picks : [];
@@ -4502,7 +4504,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_market_preview",
-      "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend' before committing — show the picks, then let them choose to join (firestarter_join_market) or just buy a pick. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: the buyer gets NO discount or cashback — the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. Do not promise a buyer perk.",
+      "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend' before committing — show the picks, then let them choose to join (firestarter_join_market) or just buy a pick. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: JOINING itself gives the buyer no automatic discount or cashback — their price is unchanged and the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. A community MAY separately fund drops (real discounts the buyer claims before checkout) and reward members with tiered early access — surface those when present, but never imply that joining alone grants a discount.",
       {
         code: z.string().describe("The community's share code or vanity handle (e.g. the <code> in firestarter.network/m/<code>)."),
       },

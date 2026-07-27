@@ -1643,7 +1643,7 @@
     },
     {
       "name": "firestarter_market_preview",
-      "description": "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use when a buyer pastes a market code/link or asks what a community recommends before choosing to join. The buyer gets no discount; the community earns a share of Firestarter's fee at no extra cost to the buyer.",
+      "description": "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use when a buyer pastes a market code/link or asks what a community recommends before choosing to join. Joining itself gives the buyer no automatic discount; their price is unchanged and the community earns a share of Firestarter's fee at no extra cost to the buyer. A community may separately fund drops (real discounts claimed before checkout) and tiered early access, which the preview surfaces when present.",
       "inputSchema": {
         "type": "object",
         "properties": {
