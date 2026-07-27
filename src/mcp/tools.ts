@@ -4342,6 +4342,41 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     );
 
     server.tool(
+      "firestarter_market_drops",
+      "List the community-sponsored drops on a market you OWN (created with firestarter_create_drop): each drop's discount, how many slots have been claimed vs the cap, its status (active, expired, or exhausted), the listing it discounts, any tier gate, and when it expires. Use when an owner asks 'how are my drops doing?', 'how many people claimed my drop?', or wants to see what drops are still live before creating another. Read-only. This is the OWNER view; buyers discover and claim drops on a specific listing with firestarter_drops.",
+      {
+        program_id: z.string().describe("The market/program id you own (from firestarter_my_markets)."),
+      },
+      async ({ program_id }) => {
+        try {
+          const res = await apiRequest("GET", `/v1/attribution/programs/${encodeURIComponent(program_id)}/drops`);
+          const drops: any[] = Array.isArray(res?.drops) ? res.drops : [];
+          if (drops.length === 0) {
+            return { content: [{ type: "text" as const, text: "This market has no drops yet. Create one with firestarter_create_drop to reward members with a per-claim discount." }] };
+          }
+          const blocks = drops.map((d) => {
+            const dollars = ((Number(d.discount_cents) || 0) / 100).toFixed(2);
+            const claimed = `${Number(d.claims_used) || 0}/${Number(d.max_claims) || 0} claimed`;
+            const lines = [`• $${dollars} off ${d.listing_id} — ${claimed} · ${d.status}`];
+            // Only while the priority window is genuinely still open — a past
+            // window would misreport an open drop as gated.
+            if (Number(d.min_tier) > 0 && d.priority_until && new Date(d.priority_until) > new Date()) {
+              lines.push(`  early access for tier ${d.min_tier}+ until ${new Date(d.priority_until).toISOString().slice(0, 10)}, then open to all`);
+            }
+            if (d.expires_at) lines.push(`  expires ${new Date(d.expires_at).toISOString().slice(0, 10)}`);
+            return lines.join("\n");
+          });
+          return { content: [{ type: "text" as const, text: `**Drops on this market (${drops.length}):**\n${blocks.join("\n")}` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't list the market's drops: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
       "firestarter_set_market_picks",
       "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) — find them with firestarter_catalog_search. `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
       {
