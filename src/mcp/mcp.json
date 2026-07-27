@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 69 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 70 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -1573,6 +1573,22 @@
           "listing_id",
           "discount_cents",
           "max_claims"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_market_drops",
+      "description": "List the community-sponsored drops on a market you OWN (created with firestarter_create_drop): each drop's discount, claimed vs cap, status (active, expired, or exhausted), the listing it discounts, any tier gate, and expiry. Use when an owner asks how their drops are doing or how many members claimed one. Read-only owner view — buyers discover and claim drops on a listing with firestarter_drops.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id you own (from firestarter_my_markets)."
+          }
+        },
+        "required": [
+          "program_id"
         ]
       }
     },

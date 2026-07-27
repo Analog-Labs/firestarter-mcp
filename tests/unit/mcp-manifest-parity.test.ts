@@ -19,6 +19,17 @@ import { registerTools } from "../../src/mcp/tools.js";
 import { registerPrompts } from "../../src/mcp/prompts.js";
 import { registerResources } from "../../src/mcp/resources.js";
 import manifest from "../../src/mcp/mcp.json" with { type: "json" };
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+// The installable stdio manifest at apps/api/mcp.json declares the same tool set
+// as the runtime and the served .well-known manifest. It sits outside src/, so
+// it's read at runtime rather than imported as typed JSON. It once drifted to 32
+// tools because nothing guarded it — the checks below keep all three in lockstep.
+const rootManifest = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../../mcp.json", import.meta.url)), "utf8"),
+);
+const rootManifestToolNames: string[] = (rootManifest.tools || []).map((t: any) => t.name).sort();
 
 function registeredToolNames(): string[] {
   const names: string[] = [];
@@ -155,5 +166,38 @@ describe("MCP manifest param drift (#Phase4/C9)", () => {
       if (a !== b) drifts.push(`${t.name}: manifest [${b}] != runtime [${a}]`);
     }
     expect(drifts, `mcp.json required params drifted from the live Zod schema:\n${drifts.join("\n")}`).toEqual([]);
+  });
+});
+
+// The installable stdio manifest (apps/api/mcp.json) is a SECOND tool-listing
+// surface — the client-config form ("transport":"stdio") distinct from the
+// served .well-known manifest. Nothing imported it and no test guarded it, so it
+// silently froze at 32 tools while the runtime grew to 70. These checks bind it
+// to the runtime (the source of truth) exactly like the served manifest above,
+// so a new tool must be added to BOTH manifests or CI fails.
+describe("stdio mcp.json (apps/api/mcp.json) <-> runtime parity", () => {
+  it("advertises no ghost tools (every root mcp.json tool is registered)", () => {
+    const registered = new Set(registeredToolNames());
+    const ghosts = rootManifestToolNames.filter((t) => !registered.has(t));
+    expect(ghosts, `apps/api/mcp.json advertises tools that are NOT registered: ${ghosts.join(", ")}`).toEqual([]);
+  });
+
+  it("hides no tools (every registered tool is in root mcp.json)", () => {
+    const advertised = new Set(rootManifestToolNames);
+    const hidden = registeredToolNames().filter((t) => !advertised.has(t));
+    expect(hidden, `tools registered but missing from apps/api/mcp.json: ${hidden.join(", ")}`).toEqual([]);
+  });
+
+  it("declares the same tool set as the served .well-known manifest", () => {
+    expect(rootManifestToolNames).toEqual(manifestToolNames);
+  });
+
+  it("tool count matches runtime and its advertised 'N tools' count", () => {
+    const runtime = registeredToolNames().length;
+    expect(rootManifestToolNames.length).toBe(runtime);
+    const m = /(\d+)\s+tools/.exec(rootManifest.description || "");
+    if (m) {
+      expect(parseInt(m[1], 10), "apps/api/mcp.json description 'N tools' is stale vs registered tools").toBe(runtime);
+    }
   });
 });

@@ -178,3 +178,53 @@ describe("MCP firestarter_create_drop (owner)", () => {
     expect(textOf(res)).toContain("firestarter_my_markets");
   });
 });
+
+// The owner can CREATE a drop but, until this tool, had no MCP way to SEE the
+// drops they created — claim progress, status, expiry. The web owner dashboard
+// (CommunityDrops.tsx) already lists them via GET /programs/:id/drops; this
+// closes that tool<->web gap so an agent-only owner isn't blind to their drops.
+describe("MCP firestarter_market_drops (owner list)", () => {
+  it("lists the owner's drops with discount, claim progress, status and gate", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "GET" && String(url).endsWith("/v1/attribution/programs/apg_1/drops")) {
+          return jsonResponse(200, {
+            drops: [
+              { id: "drop_a", listing_id: "lst_9", discount_cents: 500, max_claims: 20, claims_used: 3, min_tier: 2, priority_until: "2999-01-01T00:00:00Z", expires_at: "2999-02-01T00:00:00Z", status: "active" },
+              { id: "drop_b", listing_id: "lst_x", discount_cents: 1000, max_claims: 10, claims_used: 10, min_tier: 0, priority_until: null, expires_at: "2026-07-30T00:00:00Z", status: "exhausted" },
+            ],
+          });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_market_drops({ program_id: "apg_1" });
+    const text = textOf(res);
+    expect(res.isError).toBeFalsy();
+    // Hit the owner-scoped GET, not the buyer /v1/drops surface.
+    expect(fetchCalls.some((c) => c.method === "GET" && c.url.endsWith("/v1/attribution/programs/apg_1/drops"))).toBe(true);
+    expect(text).toContain("$5.00 off lst_9 — 3/20 claimed · active");
+    expect(text).toContain("tier 2+");
+    expect(text).toContain("$10.00 off lst_x — 10/10 claimed · exhausted");
+  });
+
+  it("reports no drops cleanly with a create hint", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { drops: [] })));
+    const tools = captureTools();
+    const res = await tools.firestarter_market_drops({ program_id: "apg_1" });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toContain("firestarter_create_drop");
+  });
+
+  it("maps PROGRAM_NOT_FOUND to a firestarter_my_markets hint", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(404, { error: "Program not found", code: "PROGRAM_NOT_FOUND" })));
+    const tools = captureTools();
+    const res = await tools.firestarter_market_drops({ program_id: "apg_x" });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("firestarter_my_markets");
+  });
+});
