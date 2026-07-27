@@ -299,4 +299,86 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     expect(text).toContain("🔥 $10.00 off · 3 slots left — claim before checkout");
     expect(text).toContain("🔥 $15.00 off · early access for tier 2+");
   });
+
+  it("firestarter_join_market renders tiers + social proof when meaningful", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+      if (String(url).includes("/v1/attribution/redeem")) {
+        return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        community: {
+          name: "Analog Builders", tagline: "Tools for builders.",
+          picks: [{ listing_id: "lst_1", product_name: "Toolkit", price: 49, image: null, note: null, min_tier: 0 }],
+          tiers: { enabled: true, meaningful: true, ladder: [{ name: "Member", min_orders: 0 }, { name: "Insider", min_orders: 5 }] },
+          member_count_bucket: "50+", order_count_bucket: "10-49", active_since: "2025-11",
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const text = textOf(await captureTools().firestarter_join_market({ code: "ABCD1234" }));
+    expect(text).toContain("Member tiers — earn early access:");
+    expect(text).toContain("Insider (5 orders)");
+    expect(text).toContain("50+ members · 10-49 orders driven · active since 2025-11");
+    expect(text).not.toContain("you're here"); // pre-membership: no rung marker
+  });
+
+  it("firestarter_join_market hides the tier ladder on untouched defaults and skips 0 buckets", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+      if (String(url).includes("/v1/attribution/redeem")) {
+        return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        community: {
+          name: "Quiet Co", picks: [{ listing_id: "lst_1", product_name: "P", price: 9, image: null, note: null, min_tier: 0 }],
+          tiers: { enabled: true, meaningful: false, ladder: [{ name: "Member", min_orders: 0 }, { name: "Regular", min_orders: 2 }] },
+          member_count_bucket: "0", order_count_bucket: "0", active_since: null,
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const text = textOf(await captureTools().firestarter_join_market({ code: "ABCD1234" }));
+    expect(text).not.toContain("Member tiers");
+    expect(text).not.toContain("0 members");
+  });
+
+  it("firestarter_market_preview shows the offers block before joining", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({
+        community: {
+          name: "Analog Builders", tagline: "Tools for builders.", active: true,
+          picks: [{ listing_id: "lst_1", product_name: "Toolkit", price: 49, image: null, note: null, min_tier: 0,
+            drops: [{ id: "d1", listing_id: "lst_1", discount_cents: 1000, remaining: 3, min_tier: 0, in_priority_window: false, priority_until: null }] }],
+          tiers: { enabled: true, meaningful: true, ladder: [{ name: "Member", min_orders: 0 }, { name: "Insider", min_orders: 5 }] },
+          member_count_bucket: "50+", order_count_bucket: "10-49", active_since: "2025-11",
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    ));
+    const text = textOf(await captureTools().firestarter_market_preview({ code: "ABCD1234" }));
+    expect(text).toContain("Member tiers — earn early access:");
+    expect(text).toContain("🔥 $10.00 off · 3 slots left — claim before checkout");
+    expect(text).toContain("50+ members");
+    expect(text).not.toContain("you're here");
+  });
+
+  it("firestarter_my_market marks the member's current rung on the ladder", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+      const s = String(url);
+      const json = (data: any) => new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (s.includes("/v1/attribution/me")) {
+        return json({ community: { connected: true, name: "Analog", code: "ABCD1234", program_status: "active", attributed_at: "2026-07-03T00:00:00Z" } });
+      }
+      if (s.includes("/v1/attribution/tier")) {
+        return json({ tier: { index: 1, name: "Insider", qualifying_orders: 6, referral_progress: 0, next: null, ladder: [{ name: "Member", min_orders: 0 }, { name: "Insider", min_orders: 5 }] } });
+      }
+      if (s.includes("/marketplace/community/ABCD1234")) {
+        return json({ community: {
+          name: "Analog", code: "ABCD1234", picks: [],
+          tiers: { enabled: true, meaningful: true, ladder: [{ name: "Member", min_orders: 0 }, { name: "Insider", min_orders: 5 }] },
+          member_count_bucket: "50+", order_count_bucket: "10-49", active_since: "2025-11",
+        } });
+      }
+      throw new Error(`unexpected fetch: ${s}`);
+    }));
+    const text = textOf(await captureTools().firestarter_my_market({}));
+    expect(text).toContain("Insider (5 orders) — you're here");
+    expect(text).toContain("50+ members");
+  });
 });

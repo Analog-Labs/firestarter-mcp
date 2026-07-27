@@ -166,6 +166,39 @@ function formatCommunityShelf(community: any): string | null {
 }
 
 /**
+ * Render the "what this community offers" block: the tier ladder (only when
+ * meaningful) and bucketed social proof. Returns null when there is nothing to
+ * show. Framing: tiers are ACCESS, never money; social proof is bucketed, never
+ * exact. `memberTierIndex` (my_market only) marks the viewer's current rung.
+ */
+function formatCommunityOffers(community: any, memberTierIndex: number | null = null): string | null {
+  const blocks: string[] = [];
+
+  const tiers = community?.tiers;
+  const ladder: any[] = Array.isArray(tiers?.ladder) ? tiers.ladder : [];
+  if (tiers?.meaningful === true && ladder.length > 0) {
+    const rungs = ladder.map((t: any, i: number) => {
+      const orders = Number(t?.min_orders ?? 0);
+      const req = i === 0 ? "join" : `${orders} order${orders === 1 ? "" : "s"}`;
+      const here = memberTierIndex != null && memberTierIndex === i ? " — you're here" : "";
+      const perk = i === ladder.length - 1 ? " · first look at new picks" : "";
+      const nm = typeof t?.name === "string" && t.name.trim() ? t.name.trim() : `Tier ${i}`;
+      return `· ${nm} (${req})${here}${perk}`;
+    });
+    blocks.push(`**Member tiers — earn early access:**\n${rungs.join("\n")}`);
+  }
+
+  const proof = [
+    community?.member_count_bucket && community.member_count_bucket !== "0" ? `${community.member_count_bucket} members` : null,
+    community?.order_count_bucket && community.order_count_bucket !== "0" ? `${community.order_count_bucket} orders driven` : null,
+    typeof community?.active_since === "string" && community.active_since ? `active since ${community.active_since}` : null,
+  ].filter(Boolean);
+  if (proof.length > 0) blocks.push(`★ ${proof.join(" · ")}`);
+
+  return blocks.length > 0 ? blocks.join("\n\n") : null;
+}
+
+/**
  * Keep external links readable in chat: suppress noisy query strings (notably
  * Google Shopping tracking params) while preserving a clickable URL.
  */
@@ -4487,6 +4520,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         const shelf = formatCommunityShelf(community);
         parts.push("\n" + (shelf ?? `${name} hasn't curated a shelf yet — you can still shop the full Firestarter catalog while supporting them.`));
+        const offers = formatCommunityOffers(community);
+        if (offers) parts.push("\n" + offers);
         if (community.active !== false) {
           parts.push(
             `\nTo join: firestarter_join_market with code \`${cleaned}\`. Your future buys then credit ${name} at no extra cost to you (your price is unchanged; the value is the curation and supporting them). You can switch communities anytime.`,
@@ -4565,6 +4600,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
                 ? `\n\nPopular here: ${categories.join(", ")}. Next: search this market for something you need, then review the quote before approving.`
                 : "\n\nNext: search this market for something you need, then review the quote before approving a purchase.";
             }
+            const offers = formatCommunityOffers(community);
+            if (offers) text += `\n\n${offers}`;
           }
           return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
@@ -4616,7 +4653,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // above stands on its own if the public view can't be fetched.
           const publicView = community.code ? await fetchPublicCommunity(apiRequest, community.code) : null;
           const shelf = publicView ? formatCommunityShelf(publicView) : null;
-          const text = lines.join("\n") + (shelf ? `\n\n${shelf}` : "");
+          const offers = publicView ? formatCommunityOffers(publicView, tier?.index ?? null) : null;
+          const text = lines.join("\n")
+            + (shelf ? `\n\n${shelf}` : "")
+            + (offers ? `\n\n${offers}` : "");
           return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Couldn't check your market: ${toErrorMessage(err)}` }], isError: true };
