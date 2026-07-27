@@ -276,4 +276,27 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     const text = textOf(await captureTools().firestarter_leave_market({}));
     expect(text).toContain("weren't connected");
   });
+
+  it("firestarter_join_market annotates a pick that has a live drop", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+      if (String(url).includes("/v1/attribution/redeem")) {
+        return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        community: {
+          name: "Analog Builders",
+          tiers: { enabled: true, meaningful: false, ladder: [] },
+          picks: [
+            { listing_id: "lst_open", product_name: "Aeropress Go", price: 39.99, image: null, note: "daily driver", min_tier: 0,
+              drops: [{ id: "d1", listing_id: "lst_open", discount_cents: 1000, remaining: 3, min_tier: 0, in_priority_window: false, priority_until: null }] },
+            { listing_id: "lst_gated", product_name: "Timemore grinder", price: 68, image: null, note: null, min_tier: 0,
+              drops: [{ id: "d2", listing_id: "lst_gated", discount_cents: 1500, remaining: 8, min_tier: 2, in_priority_window: true, priority_until: "2026-08-01T00:00:00Z" }] },
+          ],
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const text = textOf(await captureTools().firestarter_join_market({ code: "ABCD1234" }));
+    expect(text).toContain("🔥 $10.00 off · 3 slots left — claim before checkout");
+    expect(text).toContain("🔥 $15.00 off · early access for tier 2+");
+  });
 });

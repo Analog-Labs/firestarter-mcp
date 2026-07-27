@@ -144,6 +144,16 @@ function formatCommunityShelf(community: any): string | null {
     const note = typeof p?.note === "string" && p.note.trim() ? ` — "${p.note.trim()}"` : "";
     const id = typeof p?.listing_id === "string" && p.listing_id ? ` (listing_id: \`${p.listing_id}\`)` : "";
     lines.push(`• ${nm} — ${price}${note}${id}`);
+    const drops: any[] = Array.isArray(p?.drops) ? p.drops : [];
+    for (const d of drops) {
+      const off = `$${(Number(d?.discount_cents ?? 0) / 100).toFixed(2)} off`;
+      if (d?.in_priority_window === true && Number(d?.min_tier ?? 0) > 0) {
+        lines.push(`  🔥 ${off} · early access for tier ${Number(d.min_tier)}+`);
+      } else {
+        const left = Number(d?.remaining ?? 0);
+        lines.push(`  🔥 ${off} · ${left} slot${left === 1 ? "" : "s"} left — claim before checkout`);
+      }
+    }
   }
   if (picks.length > SHELF_RENDER_LIMIT) {
     lines.push(`…and ${picks.length - SHELF_RENDER_LIMIT} more.`);
