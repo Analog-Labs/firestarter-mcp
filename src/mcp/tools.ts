@@ -3356,7 +3356,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
 
         const { voucher } = await apiRequest("POST", "/v1/sellers/vouchers", body);
-        let text = `**Voucher ${voucher.code} created**\n`;
+        let text = `**Voucher ${voucher.code} created** (id \`${voucher.id}\`)\n`;
         text += `${describeVoucherValue(voucher)}\n`;
         if (voucher.listing_id) text += `Applies to listing ${voucher.listing_id} only\n`;
         if (voucher.min_order_cents) text += `Minimum order: $${(voucher.min_order_cents / 100).toFixed(2)}\n`;
@@ -3364,6 +3364,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (voucher.expires_at) text += `Expires ${new Date(voucher.expires_at).toUTCString()}\n`;
         if (voucher.discoverable === false) text += `Targeted: buyer agents won't surface it automatically.\n`;
         text += `\nYou fund this discount — it comes out of your proceeds.`;
+        // The id is the handle firestarter_update_voucher needs to pause, resume,
+        // or adjust this later — surface it here so managing it needs no lookup.
+        text += `\nTo pause, resume, or adjust it later, call firestarter_update_voucher with voucher_id \`${voucher.id}\`.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         if (err instanceof ApiError && err.code === "NO_SELLER") {
@@ -3391,6 +3394,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const used = v.max_uses ? `${v.redemption_count}/${v.max_uses} used` : `${v.redemption_count} used`;
           text += `  ${used} · you've funded $${((v.total_discount_funded_cents || 0) / 100).toFixed(2)}\n`;
           if (v.expires_at) text += `  expires ${new Date(v.expires_at).toUTCString()}\n`;
+          // The id is what firestarter_update_voucher needs to pause/resume/adjust
+          // this row; the code alone won't resolve there. Keep it human-quiet but
+          // present so the management flow is reachable without a separate lookup.
+          text += `  id: \`${v.id}\` (use with firestarter_update_voucher)\n`;
         }
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {

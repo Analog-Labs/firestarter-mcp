@@ -49,4 +49,49 @@ describe("firestarter_create_voucher — non-seller guidance", () => {
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain("Could not create the voucher");
   });
+
+  // firestarter_update_voucher requires a voucher_id (promo_...), and its schema
+  // tells the agent to get that id "from firestarter_vouchers". If neither the
+  // create nor the list tool surfaces the id, the update/pause/resume flow is
+  // unreachable — the agent has only the code, which the PATCH route rejects.
+  it("surfaces the promo_ id so the voucher can be managed afterwards", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(
+        JSON.stringify({ voucher: { id: "promo_abc12345", code: "QATEST10", discount_type: "percent", discount_percent: 10, discoverable: true } }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    ));
+    const res = await captureTools().firestarter_create_voucher({ code: "QATEST10", discount_percent: 10 });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toContain("promo_abc12345");
+  });
+});
+
+describe("firestarter_vouchers — listing", () => {
+  it("surfaces each voucher's promo_ id for the update flow", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          vouchers: [
+            {
+              id: "promo_abc12345",
+              code: "QATEST10",
+              discount_type: "percent",
+              discount_percent: 10,
+              state: "active",
+              max_uses: 5,
+              redemption_count: 0,
+              total_discount_funded_cents: 0,
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ));
+    const res = await captureTools().firestarter_vouchers({});
+    const t = textOf(res);
+    // The code stays human-facing; the id is what firestarter_update_voucher needs.
+    expect(t).toContain("QATEST10");
+    expect(t).toContain("promo_abc12345");
+  });
 });
