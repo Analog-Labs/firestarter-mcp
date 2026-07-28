@@ -177,6 +177,19 @@ describe("MCP firestarter_create_drop (owner)", () => {
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain("firestarter_my_markets");
   });
+
+  it("surfaces a below-floor rejection instead of silently creating an unusable drop", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(400, {
+        error: "A drop can't discount a $1.05 listing without leaving the seller below the $0.50 payable minimum. This listing is priced at the payable minimum, so it can't take any drop discount — raise its price first.",
+        code: "DROP_BELOW_FLOOR",
+      })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_create_drop({ program_id: "apg_1", listing_id: "lst_cheap", discount_cents: 50, max_claims: 20 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/payable minimum/i);
+  });
 });
 
 // The owner can CREATE a drop but, until this tool, had no MCP way to SEE the
