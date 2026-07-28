@@ -141,6 +141,38 @@ describe("MCP firestarter_drops", () => {
 });
 
 describe("MCP firestarter_create_drop (owner)", () => {
+  // Phase B: a drop the owner's own wallet fully covers self-funds and skips
+  // seller approval entirely — the API signals this via drop.funding_mode.
+  it("creates a self-funded (owner_wallet) drop and confirms it's live with no seller approval needed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "POST" && String(url).endsWith("/v1/attribution/programs/apg_1/drops")) {
+          return jsonResponse(201, {
+            drop: {
+              id: "drop_wallet", listing_id: "lst_other", discount_cents: 500, max_claims: 20,
+              claims_used: 0, min_tier: 0, priority_until: null, expires_at: "2026-08-01T00:00:00Z",
+              status: "active", funding_mode: "owner_wallet",
+            },
+            status: "active",
+          });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_create_drop({ program_id: "apg_1", listing_id: "lst_other", discount_cents: 500, max_claims: 20 });
+    expect(res.isError).toBeFalsy();
+    const text = textOf(res);
+    expect(text).toMatch(/funding it from your wallet/i);
+    expect(text).toContain("$5.00");
+    expect(text).toMatch(/no seller approval needed/i);
+    expect(text).not.toMatch(/pending the seller's approval/i);
+    expect(text).not.toContain("firestarter_cancel_drop");
+  });
+
   it("creates a drop on the owner's program and confirms it's LIVE when status is active", async () => {
     vi.stubGlobal(
       "fetch",
@@ -517,5 +549,162 @@ describe("MCP firestarter_untrust_community_drops (seller)", () => {
     const res = await tools.firestarter_untrust_community_drops({ program_id: "apg_3" });
     expect(res.isError).toBeFalsy();
     expect(textOf(res)).toMatch(/wasn't trusted/i);
+  });
+});
+
+// Phase B: owner-funded drop wallet — deposit (Stripe Checkout), balance, and
+// withdraw (idempotent payout). Distinct from firestarter_connect_payouts,
+// which is the Stripe Connect account market-fee earnings pay out to.
+describe("MCP firestarter_fund_wallet (owner)", () => {
+  it("returns the Stripe Checkout deposit URL", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        const body = init?.body ? JSON.parse(init.body) : undefined;
+        fetchCalls.push({ method, url: String(url), body });
+        if (method === "POST" && String(url).endsWith("/v1/drops/wallet/deposit")) {
+          expect(body).toMatchObject({ amount_cents: 2000 });
+          return jsonResponse(200, { url: "https://checkout.stripe.com/pay/cs_test_123", session_id: "cs_test_123" });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_fund_wallet({ amount_cents: 2000 });
+    expect(res.isError).toBeFalsy();
+    const text = textOf(res);
+    expect(text).toContain("https://checkout.stripe.com/pay/cs_test_123");
+    expect(text).toContain("$20.00");
+    // Self-funded framing: once funded, drops the owner creates need no seller approval.
+    expect(text).toMatch(/no seller approval needed/i);
+  });
+
+  it("maps INVALID_AMOUNT to a clear $1 minimum message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(400, { error: "amount_cents must be an integer of at least 100 ($1.00).", code: "INVALID_AMOUNT" })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_fund_wallet({ amount_cents: 50 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/\$1\.00/);
+  });
+});
+
+describe("MCP firestarter_wallet_balance (owner)", () => {
+  it("renders balance, reserved, deposited and withdrawn", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "GET" && String(url).endsWith("/v1/drops/wallet")) {
+          return jsonResponse(200, { balance_cents: 4500, reserved_cents: 1000, deposited_cents: 10000, withdrawn_cents: 4500 });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_wallet_balance({});
+    expect(res.isError).toBeFalsy();
+    const text = textOf(res);
+    expect(text).toContain("$45.00");
+    expect(text).toContain("$10.00");
+    expect(text).toContain("$100.00");
+    expect(text).toContain("$45.00");
+  });
+
+  it("surfaces a fetch error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(500, { error: "Internal error" })));
+    const tools = captureTools();
+    const res = await tools.firestarter_wallet_balance({});
+    expect(res.isError).toBe(true);
+  });
+});
+
+describe("MCP firestarter_withdraw_wallet (owner)", () => {
+  it("sends a fresh Idempotency-Key header and confirms the payout on ok", async () => {
+    let capturedHeaders: any;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        const body = init?.body ? JSON.parse(init.body) : undefined;
+        fetchCalls.push({ method, url: String(url), body });
+        if (method === "POST" && String(url).endsWith("/v1/drops/wallet/withdraw")) {
+          capturedHeaders = init?.headers;
+          expect(body).toMatchObject({ amount_cents: 1500 });
+          return jsonResponse(200, { ok: true, balance_cents: 3000, transfer_id: "tr_123" });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_withdraw_wallet({ amount_cents: 1500 });
+    expect(res.isError).toBeFalsy();
+    expect(capturedHeaders?.["Idempotency-Key"]).toBeTruthy();
+    expect(typeof capturedHeaders["Idempotency-Key"]).toBe("string");
+    expect(capturedHeaders["Idempotency-Key"].length).toBeGreaterThan(10);
+    const text = textOf(res);
+    expect(text).toContain("$15.00");
+    expect(text).toContain("$30.00");
+  });
+
+  it("generates a DIFFERENT Idempotency-Key on separate invocations", async () => {
+    const seenKeys: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        seenKeys.push(init?.headers?.["Idempotency-Key"]);
+        return jsonResponse(200, { ok: true, balance_cents: 1000, transfer_id: "tr_1" });
+      })
+    );
+    const tools = captureTools();
+    await tools.firestarter_withdraw_wallet({ amount_cents: 100 });
+    await tools.firestarter_withdraw_wallet({ amount_cents: 100 });
+    expect(seenKeys.length).toBe(2);
+    expect(seenKeys[0]).not.toBe(seenKeys[1]);
+  });
+
+  it("maps INSUFFICIENT_FUNDS to a 'reserved funds aren't withdrawable' message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(400, { error: "Your withdrawable balance is lower than that.", code: "INSUFFICIENT_FUNDS" })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_withdraw_wallet({ amount_cents: 999999 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/spendable balance/i);
+    expect(textOf(res)).toMatch(/reserved funds.*aren't withdrawable/i);
+  });
+
+  it("maps NOT_CONNECTED to a firestarter_connect_payouts hint", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(409, { error: "Connect a payout account first.", code: "NOT_CONNECTED" })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_withdraw_wallet({ amount_cents: 500 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("firestarter_connect_payouts");
+  });
+
+  it("maps PREVIOUS_ATTEMPT_FAILED to a 'try a fresh withdrawal' message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(409, { error: "A withdrawal with this Idempotency-Key already failed.", code: "PREVIOUS_ATTEMPT_FAILED" })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_withdraw_wallet({ amount_cents: 500 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/already attempted and failed/i);
+    expect(textOf(res)).toMatch(/fresh withdrawal/i);
+  });
+
+  it("maps STRIPE_ERROR to a 'temporary payout issue' message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(502, { error: "Payment provider error", code: "STRIPE_ERROR" })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_withdraw_wallet({ amount_cents: 500 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/temporary payout issue/i);
   });
 });

@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 76 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 79 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -1798,6 +1798,49 @@
             "description": "Owner's 2-letter country code (ISO-3166-1 alpha-2), e.g. 'US', 'GB'. Only needed if onboarding asks."
           }
         }
+      }
+    },
+    {
+      "name": "firestarter_fund_wallet",
+      "description": "Deposit money into your drop wallet via Stripe Checkout — the prepaid balance that self-funds drops you create (firestarter_create_drop). Once a drop's whole pot (max_claims x discount) is covered by your wallet balance, it goes LIVE IMMEDIATELY with no seller approval needed, because you're paying for the discount yourself rather than asking the seller to eat it. $1.00 minimum deposit. Returns a Stripe Checkout link to open in a browser; the wallet credits once payment completes (poll with firestarter_wallet_balance). Use when an owner asks to fund/top up/add money to their drop wallet.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 100,
+            "description": "Amount to deposit, in cents. Minimum 100 ($1.00)."
+          }
+        },
+        "required": [
+          "amount_cents"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_wallet_balance",
+      "description": "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_withdraw_wallet",
+      "description": "Cash out unused drop-wallet balance to your connected Stripe payout account (set one up with firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn — funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; check firestarter_wallet_balance first if unsure. $1.00 minimum. Each call is deduped against accidental double-withdrawal, so it's safe to call again if you're unsure whether a prior attempt went through.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 100,
+            "description": "Amount to withdraw, in cents. Minimum 100 ($1.00)."
+          }
+        },
+        "required": [
+          "amount_cents"
+        ]
       }
     },
     {

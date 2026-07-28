@@ -234,12 +234,19 @@ class ApiError extends Error {
 }
 
 export function makeApiRequest(apiKey: string, apiBase: string) {
-  return async function apiRequest(method: string, path: string, body?: unknown, timeoutMs: number = API_REQUEST_TIMEOUT_MS) {
+  return async function apiRequest(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs: number = API_REQUEST_TIMEOUT_MS,
+    extraHeaders?: Record<string, string>,
+  ) {
     const url = `${apiBase}${path}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       "X-Firestarter-Source": "mcp",
+      ...extraHeaders,
     };
 
     const res = await fetch(url, {
@@ -4375,13 +4382,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // Seller-approval lifecycle (Phase A): a drop on the requester's own
           // listing, or on a listing whose seller has granted this program standing
           // trust, goes live immediately; otherwise it's parked pending the
-          // seller's decision. The API is the source of truth for which happened
-          // (`res.status`) — this tool never guesses from the input alone.
+          // seller's decision. Phase B adds a second live path: a drop the OWNER'S
+          // OWN wallet fully covers is self-funded and also skips approval — the
+          // API is the source of truth for both (`res.status` / `d.funding_mode`),
+          // this tool never guesses from the input alone.
           const pending = res?.status === "pending_seller_approval";
+          const selfFunded = !pending && d.funding_mode === "owner_wallet";
           const lines = [
             pending
               ? `**Drop requested — pending the seller's approval.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`
-              : `**Drop is live.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`,
+              : selfFunded
+                ? `**Drop live — you're funding it from your wallet.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"} ($${dollars} reserved from your wallet as each member claims). No seller approval needed.`
+                : `**Drop is live.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`,
           ];
           if (Number(d.min_tier) > 0 && d.priority_until) {
             lines.push(`Early access for tier ${d.min_tier}+ until ${new Date(d.priority_until).toISOString().slice(0, 10)}, then it opens to everyone.`);
@@ -4389,6 +4401,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (d.expires_at) lines.push(`Expires ${new Date(d.expires_at).toISOString().slice(0, 10)}.`);
           if (pending) {
             lines.push("They've been notified; members can't claim it until they approve (or grant your community standing approval). You can withdraw it with firestarter_cancel_drop.");
+          } else if (selfFunded) {
+            lines.push("Members reserve a slot with firestarter_drops (action 'claim'); the discount is drawn from your wallet at claim time — nothing comes out of the seller's proceeds. Check your balance with firestarter_wallet_balance.");
           } else {
             lines.push("Members reserve a slot with firestarter_drops (action 'claim'); the discount then applies at checkout.");
           }
@@ -4702,6 +4716,108 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: "That country code isn't valid — use a 2-letter ISO code like 'US' or 'GB'." }], isError: true };
           }
           return { content: [{ type: "text" as const, text: `Couldn't start payout setup: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    // ── Owner-funded drop wallet (Phase B) ──
+    // A prepaid balance an owner deposits and draws down to self-fund drops on
+    // firestarter_create_drop: when the wallet covers the whole pot (max_claims x
+    // discount) the drop goes live immediately with NO seller approval, because
+    // the owner — not the seller — is paying for the discount. Distinct from
+    // firestarter_connect_payouts (a Stripe Connect account for CASHING OUT
+    // market-fee earnings); this wallet is money IN (deposit) that funds drops,
+    // with cash-out of the unused balance via firestarter_withdraw_wallet.
+
+    server.tool(
+      "firestarter_fund_wallet",
+      "Deposit money into your drop wallet via Stripe Checkout — the prepaid balance that self-funds drops you create (firestarter_create_drop). Once a drop's whole pot (max_claims x discount) is covered by your wallet balance, it goes LIVE IMMEDIATELY with no seller approval needed, because you're paying for the discount yourself rather than asking the seller to eat it. $1.00 minimum deposit. Returns a Stripe Checkout link to open in a browser; the wallet credits once payment completes (poll with firestarter_wallet_balance). Use when an owner asks to fund/top up/add money to their drop wallet.",
+      {
+        amount_cents: z.number().int().min(100).describe("Amount to deposit, in cents. Minimum 100 ($1.00)."),
+      },
+      async ({ amount_cents }) => {
+        try {
+          const res = await apiRequest("POST", "/v1/drops/wallet/deposit", { amount_cents });
+          const url = res?.url;
+          if (!url) {
+            return { content: [{ type: "text" as const, text: "Started a deposit, but no Checkout link was returned. Try again shortly." }], isError: true };
+          }
+          const dollars = (amount_cents / 100).toFixed(2);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `**Fund your drop wallet:** open this link to deposit $${dollars} via Stripe Checkout —\n${url}\n\nOnce it clears, drops you create that draw fully on this balance go live immediately — self-funded, no seller approval needed. Check the credited balance with firestarter_wallet_balance.`,
+            }],
+          };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "INVALID_AMOUNT") {
+            return { content: [{ type: "text" as const, text: "Deposits need to be at least $1.00 — pass amount_cents of 100 or more." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't start the deposit: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_wallet_balance",
+      "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
+      {},
+      async () => {
+        try {
+          const res = await apiRequest("GET", "/v1/drops/wallet");
+          const balance = ((Number(res?.balance_cents) || 0) / 100).toFixed(2);
+          const reserved = ((Number(res?.reserved_cents) || 0) / 100).toFixed(2);
+          const deposited = ((Number(res?.deposited_cents) || 0) / 100).toFixed(2);
+          const withdrawn = ((Number(res?.withdrawn_cents) || 0) / 100).toFixed(2);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `**Drop wallet: $${balance} spendable**\nReserved for live drops (claimed, not yet released to the seller): $${reserved}\nLifetime deposited: $${deposited} · Lifetime withdrawn: $${withdrawn}\n\nTop up with firestarter_fund_wallet; cash out the spendable balance with firestarter_withdraw_wallet.`,
+            }],
+          };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't fetch your wallet balance: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_withdraw_wallet",
+      "Cash out unused drop-wallet balance to your connected Stripe payout account (set one up with firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn — funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; check firestarter_wallet_balance first if unsure. $1.00 minimum. Each call is deduped against accidental double-withdrawal, so it's safe to call again if you're unsure whether a prior attempt went through.",
+      {
+        amount_cents: z.number().int().min(100).describe("Amount to withdraw, in cents. Minimum 100 ($1.00)."),
+      },
+      async ({ amount_cents }) => {
+        // A fresh key per logical withdrawal, generated once here (not inside any
+        // retry loop) so a lost-response HTTP retry of THIS call reuses the same
+        // key and dedupes server-side (services/owner-drop-wallet.ts) instead of
+        // paying the owner out twice.
+        const idempotencyKey = crypto.randomUUID();
+        try {
+          const res = await apiRequest(
+            "POST",
+            "/v1/drops/wallet/withdraw",
+            { amount_cents },
+            undefined,
+            { "Idempotency-Key": idempotencyKey },
+          );
+          const dollars = (amount_cents / 100).toFixed(2);
+          const balance = ((Number(res?.balance_cents) || 0) / 100).toFixed(2);
+          return { content: [{ type: "text" as const, text: `**Withdrew $${dollars}** to your connected payout account. New drop-wallet balance: $${balance} spendable.` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "INSUFFICIENT_FUNDS") {
+            return { content: [{ type: "text" as const, text: "You can only withdraw your spendable balance — reserved funds for live drops aren't withdrawable. Check firestarter_wallet_balance." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "NOT_CONNECTED") {
+            return { content: [{ type: "text" as const, text: "Connect a payout account first — firestarter_connect_payouts." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "PREVIOUS_ATTEMPT_FAILED") {
+            return { content: [{ type: "text" as const, text: "That withdrawal was already attempted and failed; check your balance and try a fresh withdrawal." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "STRIPE_ERROR") {
+            return { content: [{ type: "text" as const, text: "Temporary payout issue — check your balance; if it didn't arrive, retry." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't withdraw: ${toErrorMessage(err)}` }], isError: true };
         }
       }
     );
