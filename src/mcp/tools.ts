@@ -4783,7 +4783,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_withdraw_wallet",
-      "Cash out unused drop-wallet balance to your connected Stripe payout account (set one up with firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn — funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; check firestarter_wallet_balance first if unsure. $1.00 minimum. Each call is deduped against accidental double-withdrawal, so it's safe to call again if you're unsure whether a prior attempt went through.",
+      "Cash out unused drop-wallet balance to your connected Stripe payout account (set one up with firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn — funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; check firestarter_wallet_balance first if unsure. $1.00 minimum. IMPORTANT: each call is an INDEPENDENT withdrawal attempt — it is NOT a deduped replay of a prior call, so calling it twice withdraws twice. If a call times out or errors and you're unsure whether the payout went through, do NOT simply call again — first check firestarter_wallet_balance (a completed withdrawal reduces the balance), and only withdraw again for the remaining amount you actually intend to move.",
       {
         amount_cents: z.number().int().min(100).describe("Amount to withdraw, in cents. Minimum 100 ($1.00)."),
       },
@@ -4805,6 +4805,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const balance = ((Number(res?.balance_cents) || 0) / 100).toFixed(2);
           return { content: [{ type: "text" as const, text: `**Withdrew $${dollars}** to your connected payout account. New drop-wallet balance: $${balance} spendable.` }] };
         } catch (err: any) {
+          if (err instanceof ApiError && err.code === "INVALID_AMOUNT") {
+            return { content: [{ type: "text" as const, text: "Withdrawals need to be at least $1.00 — pass amount_cents of 100 or more." }], isError: true };
+          }
           if (err instanceof ApiError && err.code === "INSUFFICIENT_FUNDS") {
             return { content: [{ type: "text" as const, text: "You can only withdraw your spendable balance — reserved funds for live drops aren't withdrawable. Check firestarter_wallet_balance." }], isError: true };
           }

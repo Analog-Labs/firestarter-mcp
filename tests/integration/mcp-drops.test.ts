@@ -599,7 +599,9 @@ describe("MCP firestarter_wallet_balance (owner)", () => {
         const method = init?.method || "GET";
         fetchCalls.push({ method, url: String(url), body: undefined });
         if (method === "GET" && String(url).endsWith("/v1/drops/wallet")) {
-          return jsonResponse(200, { balance_cents: 4500, reserved_cents: 1000, deposited_cents: 10000, withdrawn_cents: 4500 });
+          // Four DISTINCT values so a dropped/mislabeled figure can't hide behind
+          // a duplicate — each assertion below pins its value to its own label.
+          return jsonResponse(200, { balance_cents: 4500, reserved_cents: 1000, deposited_cents: 6000, withdrawn_cents: 500 });
         }
         throw new Error(`unexpected fetch: ${method} ${url}`);
       })
@@ -608,10 +610,10 @@ describe("MCP firestarter_wallet_balance (owner)", () => {
     const res = await tools.firestarter_wallet_balance({});
     expect(res.isError).toBeFalsy();
     const text = textOf(res);
-    expect(text).toContain("$45.00");
-    expect(text).toContain("$10.00");
-    expect(text).toContain("$100.00");
-    expect(text).toContain("$45.00");
+    expect(text).toMatch(/\$45\.00 spendable/);
+    expect(text).toMatch(/Reserved for live drops[^\n]*\$10\.00/);
+    expect(text).toMatch(/Lifetime deposited: \$60\.00/);
+    expect(text).toMatch(/Lifetime withdrawn: \$5\.00/);
   });
 
   it("surfaces a fetch error", async () => {
@@ -706,5 +708,15 @@ describe("MCP firestarter_withdraw_wallet (owner)", () => {
     const res = await tools.firestarter_withdraw_wallet({ amount_cents: 500 });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/temporary payout issue/i);
+  });
+
+  it("maps INVALID_AMOUNT to a clear $1 minimum message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(400, { error: "amount_cents must be an integer of at least 100 ($1.00).", code: "INVALID_AMOUNT" })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_withdraw_wallet({ amount_cents: 100 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/\$1\.00/);
   });
 });
