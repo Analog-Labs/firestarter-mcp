@@ -141,7 +141,7 @@ describe("MCP firestarter_drops", () => {
 });
 
 describe("MCP firestarter_create_drop (owner)", () => {
-  it("creates a drop on the owner's program and confirms its terms + slots", async () => {
+  it("creates a drop on the owner's program and confirms it's LIVE when status is active", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: any, init?: any) => {
@@ -156,6 +156,7 @@ describe("MCP firestarter_create_drop (owner)", () => {
               id: "drop_new", listing_id: "lst_9", discount_cents: 500, max_claims: 20,
               claims_used: 0, min_tier: 0, priority_until: null, expires_at: "2026-08-01T00:00:00Z", status: "active",
             },
+            status: "active",
           });
         }
         throw new Error(`unexpected fetch: ${method} ${url}`);
@@ -165,9 +166,64 @@ describe("MCP firestarter_create_drop (owner)", () => {
     const res = await tools.firestarter_create_drop({ program_id: "apg_1", listing_id: "lst_9", discount_cents: 500, max_claims: 20 });
     expect(res.isError).toBeFalsy();
     const text = textOf(res);
-    expect(text).toMatch(/Drop created/i);
+    expect(text).toMatch(/Drop is live/i);
     expect(text).toContain("$5.00");
     expect(text).toContain("20");
+    // Live drops point the agent at claiming, not at withdrawing a request.
+    expect(text).toContain("firestarter_drops");
+    expect(text).not.toContain("firestarter_cancel_drop");
+  });
+
+  // A drop on someone else's listing (no standing grant) is parked pending the
+  // seller's decision — the API is the source of truth via `status`, and the
+  // owner must be told they can't claim yet and can withdraw the ask.
+  it("renders a request on another seller's listing as PENDING the seller's approval", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "POST" && String(url).endsWith("/v1/attribution/programs/apg_1/drops")) {
+          return jsonResponse(201, {
+            drop: {
+              id: "drop_pending", listing_id: "lst_other", discount_cents: 300, max_claims: 10,
+              claims_used: 0, min_tier: 0, priority_until: null, expires_at: null, status: "pending_seller_approval",
+            },
+            status: "pending_seller_approval",
+          });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_create_drop({ program_id: "apg_1", listing_id: "lst_other", discount_cents: 300, max_claims: 10 });
+    expect(res.isError).toBeFalsy();
+    const text = textOf(res);
+    expect(text).toMatch(/pending the seller's approval/i);
+    expect(text).toContain("firestarter_cancel_drop");
+    expect(text).not.toMatch(/Drop is live/i);
+  });
+
+  it("maps DROP_DUPLICATE to an actionable 'already pending' message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(409, { error: "A pending drop request already exists for this listing.", code: "DROP_DUPLICATE" })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_create_drop({ program_id: "apg_1", listing_id: "lst_9", discount_cents: 500, max_claims: 20 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/pending drop request already exists/i);
+    expect(textOf(res)).toContain("firestarter_cancel_drop");
+  });
+
+  it("maps LISTING_NOT_SELLABLE to a 'listing isn't active' message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(400, { error: "That listing isn't active, so it can't take a drop.", code: "LISTING_NOT_SELLABLE" })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_create_drop({ program_id: "apg_1", listing_id: "lst_paused", discount_cents: 500, max_claims: 20 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/isn't active/i);
+    expect(textOf(res)).toContain("firestarter_catalog_search");
   });
 
   it("maps PROGRAM_NOT_FOUND to a firestarter_my_markets hint", async () => {
@@ -239,5 +295,227 @@ describe("MCP firestarter_market_drops (owner list)", () => {
     const res = await tools.firestarter_market_drops({ program_id: "apg_x" });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain("firestarter_my_markets");
+  });
+});
+
+// Owner withdraws a still-pending drop request before the seller decided.
+describe("MCP firestarter_cancel_drop (owner)", () => {
+  it("cancels a pending request against the program's cancel route", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "POST" && String(url).endsWith("/v1/attribution/programs/apg_1/drops/drop_pending/cancel")) {
+          return jsonResponse(200, { ok: true });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_cancel_drop({ program_id: "apg_1", drop_id: "drop_pending" });
+    expect(res.isError).toBeFalsy();
+    expect(fetchCalls.some((c) => c.method === "POST" && c.url.endsWith("/v1/attribution/programs/apg_1/drops/drop_pending/cancel"))).toBe(true);
+    expect(textOf(res)).toMatch(/cancelled/i);
+  });
+
+  it("maps PROGRAM_NOT_FOUND to a firestarter_my_markets hint", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(404, { error: "Program not found", code: "PROGRAM_NOT_FOUND" })));
+    const tools = captureTools();
+    const res = await tools.firestarter_cancel_drop({ program_id: "apg_x", drop_id: "drop_1" });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("firestarter_my_markets");
+  });
+
+  it("maps DROP_NOT_FOUND (already decided/live/gone) to an actionable message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(404, { error: "No pending drop request found to cancel", code: "DROP_NOT_FOUND", ok: false })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_cancel_drop({ program_id: "apg_1", drop_id: "drop_done" });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/no pending drop request/i);
+  });
+});
+
+// Seller review queue: drops proposed on the seller's own listings by a
+// community that doesn't (yet) have standing trust.
+describe("MCP firestarter_drop_requests (seller)", () => {
+  it("lists pending requests with community, listing, discount, slots and deadline", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "GET" && String(url).endsWith("/v1/drops/requests")) {
+          return jsonResponse(200, {
+            requests: [
+              {
+                id: "drop_req_1", program_id: "apg_1", community_name: "Analog Fans",
+                listing_id: "lst_9", product_name: "Wireless Mouse", discount_cents: 500, max_claims: 20,
+                request_expires_at: "2026-08-03T00:00:00Z",
+              },
+            ],
+          });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_drop_requests({});
+    const text = textOf(res);
+    expect(res.isError).toBeFalsy();
+    expect(fetchCalls.some((c) => c.method === "GET" && c.url.endsWith("/v1/drops/requests"))).toBe(true);
+    expect(text).toContain("drop_req_1");
+    expect(text).toContain("Analog Fans");
+    expect(text).toContain("Wireless Mouse");
+    expect(text).toContain("$5.00");
+    expect(text).toContain("20");
+    expect(text).toContain("2026-08-03");
+    expect(text).toContain("firestarter_approve_drop");
+    expect(text).toContain("firestarter_reject_drop");
+    expect(text).toContain("firestarter_trust_community_drops");
+  });
+
+  it("reports no pending requests cleanly", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { requests: [] })));
+    const tools = captureTools();
+    const res = await tools.firestarter_drop_requests({});
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/no pending drop requests/i);
+  });
+
+  it("surfaces a listing error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(500, { error: "Internal error" })));
+    const tools = captureTools();
+    const res = await tools.firestarter_drop_requests({});
+    expect(res.isError).toBe(true);
+  });
+});
+
+describe("MCP firestarter_approve_drop (seller)", () => {
+  it("approves a pending request", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "POST" && String(url).endsWith("/v1/drops/drop_req_1/approve")) {
+          return jsonResponse(200, { ok: true });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_approve_drop({ drop_id: "drop_req_1" });
+    expect(res.isError).toBeFalsy();
+    expect(fetchCalls.some((c) => c.method === "POST" && c.url.endsWith("/v1/drops/drop_req_1/approve"))).toBe(true);
+    expect(textOf(res)).toMatch(/approved/i);
+  });
+
+  it("maps NOT_PENDING to an actionable message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(409, { error: "This drop request is no longer pending — it may have already been decided or expired.", code: "NOT_PENDING" })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_approve_drop({ drop_id: "drop_req_1" });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/no longer pending/i);
+  });
+});
+
+describe("MCP firestarter_reject_drop (seller)", () => {
+  it("rejects a pending request with a reason", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        const body = init?.body ? JSON.parse(init.body) : undefined;
+        fetchCalls.push({ method, url: String(url), body });
+        if (method === "POST" && String(url).endsWith("/v1/drops/drop_req_1/reject")) {
+          expect(body).toMatchObject({ reason: "Discount too deep" });
+          return jsonResponse(200, { ok: true });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_reject_drop({ drop_id: "drop_req_1", reason: "Discount too deep" });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/declined/i);
+    expect(textOf(res)).toContain("Discount too deep");
+  });
+
+  it("maps NOT_PENDING to an actionable message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(409, {
+        error: "This drop request can't be rejected — it may not exist, may not belong to you, or may no longer be pending.",
+        code: "NOT_PENDING",
+      })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_reject_drop({ drop_id: "drop_gone" });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/can't be rejected/i);
+  });
+});
+
+describe("MCP firestarter_trust_community_drops (seller)", () => {
+  it("grants standing trust and reports auto-approved pending requests", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "POST" && String(url).endsWith("/v1/drops/programs/apg_1/trust")) {
+          return jsonResponse(200, { ok: true, approved_pending: 2 });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_trust_community_drops({ program_id: "apg_1" });
+    expect(res.isError).toBeFalsy();
+    expect(fetchCalls.some((c) => c.method === "POST" && c.url.endsWith("/v1/drops/programs/apg_1/trust"))).toBe(true);
+    expect(textOf(res)).toMatch(/trusted/i);
+    expect(textOf(res)).toContain("2 pending requests");
+  });
+
+  it("grants trust with nothing pending to auto-approve", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { ok: true, approved_pending: 0 })));
+    const tools = captureTools();
+    const res = await tools.firestarter_trust_community_drops({ program_id: "apg_2" });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/trusted/i);
+    expect(textOf(res)).not.toMatch(/pending request/i);
+  });
+});
+
+describe("MCP firestarter_untrust_community_drops (seller)", () => {
+  it("revokes standing trust", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "POST" && String(url).endsWith("/v1/drops/programs/apg_1/untrust")) {
+          return jsonResponse(200, { ok: true, revoked: true });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_untrust_community_drops({ program_id: "apg_1" });
+    expect(res.isError).toBeFalsy();
+    expect(fetchCalls.some((c) => c.method === "POST" && c.url.endsWith("/v1/drops/programs/apg_1/untrust"))).toBe(true);
+    expect(textOf(res)).toMatch(/untrusted/i);
+  });
+
+  it("reports cleanly when nothing was trusted", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { ok: true, revoked: false })));
+    const tools = captureTools();
+    const res = await tools.firestarter_untrust_community_drops({ program_id: "apg_3" });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/wasn't trusted/i);
   });
 });

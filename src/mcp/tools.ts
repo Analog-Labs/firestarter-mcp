@@ -4372,14 +4372,26 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const d = res?.drop ?? {};
           const dollars = ((Number(d.discount_cents) || discount_cents) / 100).toFixed(2);
           const slots = Number(d.max_claims) || max_claims;
+          // Seller-approval lifecycle (Phase A): a drop on the requester's own
+          // listing, or on a listing whose seller has granted this program standing
+          // trust, goes live immediately; otherwise it's parked pending the
+          // seller's decision. The API is the source of truth for which happened
+          // (`res.status`) — this tool never guesses from the input alone.
+          const pending = res?.status === "pending_seller_approval";
           const lines = [
-            `**Drop created.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`,
+            pending
+              ? `**Drop requested — pending the seller's approval.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`
+              : `**Drop is live.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`,
           ];
           if (Number(d.min_tier) > 0 && d.priority_until) {
             lines.push(`Early access for tier ${d.min_tier}+ until ${new Date(d.priority_until).toISOString().slice(0, 10)}, then it opens to everyone.`);
           }
           if (d.expires_at) lines.push(`Expires ${new Date(d.expires_at).toISOString().slice(0, 10)}.`);
-          lines.push("Members reserve a slot with firestarter_drops (action 'claim'); the discount then applies at checkout.");
+          if (pending) {
+            lines.push("They've been notified; members can't claim it until they approve (or grant your community standing approval). You can withdraw it with firestarter_cancel_drop.");
+          } else {
+            lines.push("Members reserve a slot with firestarter_drops (action 'claim'); the discount then applies at checkout.");
+          }
           return { content: [{ type: "text" as const, text: lines.join("\n") }] };
         } catch (err: any) {
           if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
@@ -4388,7 +4400,36 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (err instanceof ApiError && err.code === "INVALID_LISTING") {
             return { content: [{ type: "text" as const, text: `That listing can't back a drop: ${toErrorMessage(err)}. Find a valid listing id with firestarter_catalog_search.` }], isError: true };
           }
+          if (err instanceof ApiError && err.code === "DROP_DUPLICATE") {
+            return { content: [{ type: "text" as const, text: `Couldn't create the drop: ${toErrorMessage(err)} Check its status with firestarter_market_drops, or withdraw it with firestarter_cancel_drop before asking again.` }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "LISTING_NOT_SELLABLE") {
+            return { content: [{ type: "text" as const, text: `Couldn't create the drop: ${toErrorMessage(err)} Pick a different, active listing with firestarter_catalog_search.` }], isError: true };
+          }
           return { content: [{ type: "text" as const, text: `Couldn't create the drop: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_cancel_drop",
+      "Withdraw a drop request you created (with firestarter_create_drop) on a market you own, while it is still pending the seller's approval. Once cancelled it stops being visible to that seller and can never be approved — create a new request with firestarter_create_drop if you change your mind. This only works on still-pending requests; a drop that's already live, expired, exhausted, or already decided can't be cancelled this way.",
+      {
+        program_id: z.string().describe("The market/program id you own (from firestarter_my_markets) — the drop belongs to this program."),
+        drop_id: z.string().describe("The drop id to cancel (from firestarter_create_drop's response or firestarter_market_drops)."),
+      },
+      async ({ program_id, drop_id }) => {
+        try {
+          await apiRequest("POST", `/v1/attribution/programs/${encodeURIComponent(program_id)}/drops/${encodeURIComponent(drop_id)}/cancel`);
+          return { content: [{ type: "text" as const, text: `Cancelled — drop request \`${drop_id}\` was withdrawn before the seller decided. Create a new one anytime with firestarter_create_drop.` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "DROP_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No pending drop request found to cancel — it may already be live, decided, expired, or not exist. Check firestarter_market_drops." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't cancel the drop: ${toErrorMessage(err)}` }], isError: true };
         }
       }
     );
@@ -4424,6 +4465,127 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };
           }
           return { content: [{ type: "text" as const, text: `Couldn't list the market's drops: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    // ── Seller side of the drop approval lifecycle ──
+    // A community can propose a drop on a listing it doesn't own (firestarter_create_drop);
+    // unless the seller has already granted that community standing trust, the
+    // drop is parked pending_seller_approval until the SELLER decides here.
+
+    server.tool(
+      "firestarter_drop_requests",
+      "List the community-sponsored drop requests waiting on YOUR decision as a seller: a community owner has proposed a per-claim discount on one of your listings, and it stays invisible to buyers and unclaimable until you approve or reject it (or expires on its own). Shows the requesting community, the listing, the discount, how many members can claim it, and the deadline to decide. Use firestarter_approve_drop or firestarter_reject_drop with a request's drop id — or firestarter_trust_community_drops to stop reviewing this community's requests one by one.",
+      {},
+      async () => {
+        try {
+          const res = await apiRequest("GET", "/v1/drops/requests");
+          const requests: any[] = Array.isArray(res?.requests) ? res.requests : [];
+          if (requests.length === 0) {
+            return { content: [{ type: "text" as const, text: "No pending drop requests right now." }] };
+          }
+          const lines = requests.map((r) => {
+            const dollars = ((Number(r.discount_cents) || 0) / 100).toFixed(2);
+            const who = r.community_name || "A community";
+            const what = r.product_name || r.listing_id;
+            const deadline = r.request_expires_at ? ` · decide by ${new Date(r.request_expires_at).toISOString().slice(0, 10)}` : "";
+            return `- \`${r.id}\` — ${who} wants $${dollars} off **${what}** for up to ${Number(r.max_claims) || 0} member${Number(r.max_claims) === 1 ? "" : "s"}${deadline}`;
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: `**Pending drop requests (${requests.length}):**\n${lines.join("\n")}\n\nApprove with firestarter_approve_drop, decline with firestarter_reject_drop — each discount comes out of YOUR proceeds on the claimed sales, not Firestarter's fee. To stop reviewing a community's requests one by one, pre-approve it with firestarter_trust_community_drops.`,
+            }],
+          };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't list drop requests: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_approve_drop",
+      "Approve a pending community drop request on one of your listings (from firestarter_drop_requests), making it go live immediately so members can start claiming it. IMPORTANT: the per-claim discount comes out of YOUR proceeds on each claimed sale — not Firestarter's platform fee — so only approve amounts that still leave you a margin you're happy with. The requesting community is notified of the approval.",
+      {
+        drop_id: z.string().describe("The drop id to approve (from firestarter_drop_requests)."),
+      },
+      async ({ drop_id }) => {
+        try {
+          await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/approve`);
+          return { content: [{ type: "text" as const, text: `Approved — drop \`${drop_id}\` is now live; members can start claiming it, and the discount will come out of your proceeds on each claimed sale.` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "DROP_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "That drop request was not found." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "NOT_PENDING") {
+            return { content: [{ type: "text" as const, text: "This drop request is no longer pending — it may have already been decided or expired." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "FORBIDDEN") {
+            return { content: [{ type: "text" as const, text: "That drop request isn't on one of your listings, so you can't decide it." }], isError: true };
+          }
+          // DROP_BELOW_FLOOR / LISTING_UNAVAILABLE (and anything else) fall through
+          // to the API's own message, which is already actionable.
+          return { content: [{ type: "text" as const, text: `Couldn't approve the drop: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_reject_drop",
+      "Decline a pending community drop request on one of your listings (from firestarter_drop_requests). It never goes live, nothing is charged against your proceeds, and the requesting community owner is notified — optionally with your reason. This decides only this one request; the same community can still ask again later unless you also revoke standing trust with firestarter_untrust_community_drops.",
+      {
+        drop_id: z.string().describe("The drop id to reject (from firestarter_drop_requests)."),
+        reason: z.string().optional().describe("Optional short reason shown to the requesting community owner (e.g. 'discount too deep for this item')."),
+      },
+      async ({ drop_id, reason }) => {
+        try {
+          await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/reject`, { reason });
+          return { content: [{ type: "text" as const, text: `Declined — drop \`${drop_id}\` will not go live.${reason ? ` Reason sent to the requester: "${reason}"` : ""}` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "NOT_PENDING") {
+            return { content: [{ type: "text" as const, text: "This drop request can't be rejected — it may not exist, may not be on one of your listings, or may no longer be pending." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't reject the drop: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_trust_community_drops",
+      "Grant a community program standing approval to run drops on your listings: from now on, its drop requests go live immediately with no per-request review, and any of its requests you're currently sitting on get auto-approved right away. Use this once you're comfortable a community's asks are reasonable and you'd rather not approve/reject each one — you can always revoke it later with firestarter_untrust_community_drops (that only stops NEW requests from auto-approving; anything already live stays live). Every approved drop's discount still comes out of YOUR proceeds per claim, trust or no trust.",
+      {
+        program_id: z.string().describe("The community/market program id to trust — appears on each request from firestarter_drop_requests, or shared directly by the community owner."),
+      },
+      async ({ program_id }) => {
+        try {
+          const res = await apiRequest("POST", `/v1/drops/programs/${encodeURIComponent(program_id)}/trust`);
+          const approved = Number(res?.approved_pending) || 0;
+          const text = approved > 0
+            ? `Trusted — this community's drop requests on your listings now go live automatically. ${approved} pending request${approved === 1 ? "" : "s"} from them just auto-approved.`
+            : "Trusted — this community's drop requests on your listings now go live automatically.";
+          return { content: [{ type: "text" as const, text }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't trust that community: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_untrust_community_drops",
+      "Revoke a standing approval you granted with firestarter_trust_community_drops: this community's NEW drop requests on your listings go back to needing your manual decision via firestarter_approve_drop / firestarter_reject_drop. Anything already live from this community before the revoke keeps running until it expires or is exhausted — this does not cancel existing drops.",
+      {
+        program_id: z.string().describe("The community/market program id to stop trusting."),
+      },
+      async ({ program_id }) => {
+        try {
+          const res = await apiRequest("POST", `/v1/drops/programs/${encodeURIComponent(program_id)}/untrust`);
+          const text = res?.revoked === true
+            ? "Untrusted — this community's future drop requests on your listings now need your manual approval again."
+            : "This community wasn't trusted, so nothing changed.";
+          return { content: [{ type: "text" as const, text }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't untrust that community: ${toErrorMessage(err)}` }], isError: true };
         }
       }
     );
