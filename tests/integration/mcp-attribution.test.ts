@@ -321,7 +321,7 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
     expect(text).not.toContain("you're here"); // pre-membership: no rung marker
   });
 
-  it("firestarter_join_market hides the tier ladder on untouched defaults and skips 0 buckets", async () => {
+  it("firestarter_join_market hides the tier ladder when tiers are disabled and skips 0 buckets", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: any) => {
       if (String(url).includes("/v1/attribution/redeem")) {
         return new Response(JSON.stringify({ ok: true, created: true }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -329,7 +329,7 @@ describe("agentic attribution MCP tools (self-serve markets)", () => {
       return new Response(JSON.stringify({
         community: {
           name: "Quiet Co", picks: [{ listing_id: "lst_1", product_name: "P", price: 9, image: null, note: null, min_tier: 0 }],
-          tiers: { enabled: true, meaningful: false, ladder: [{ name: "Member", min_orders: 0 }, { name: "Regular", min_orders: 2 }] },
+          tiers: { enabled: false, meaningful: false, ladder: [{ name: "Member", min_orders: 0 }, { name: "Regular", min_orders: 2 }] },
           member_count_bucket: "0", order_count_bucket: "0", active_since: null,
         },
       }), { status: 200, headers: { "Content-Type": "application/json" } });
