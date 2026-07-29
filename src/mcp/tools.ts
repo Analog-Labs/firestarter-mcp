@@ -7,6 +7,8 @@ import { z } from "zod";
 import { marginCentsFor } from "../lib/margin.js";
 import { isRelevantMatch } from "../lib/relevance.js";
 import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS } from "./schemas.js";
+import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
+import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1050,7 +1052,14 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
 function registerToolCompat(server: McpServer, name: string, config: any, handler: any): void {
   const s = server as any;
   if (typeof s.registerTool === "function") {
-    s.registerTool(name, config, handler);
+    if (config?._meta?.ui) {
+      // UI-enabled tool (MCP Apps): route through registerAppTool so the ui
+      // metadata is normalized (modern `_meta.ui.resourceUri` + the legacy
+      // flat key) for whichever host version connects.
+      registerAppTool(server, name, config, handler);
+    } else {
+      s.registerTool(name, config, handler);
+    }
   } else {
     s.tool(name, config.description, config.inputSchema, handler);
   }
@@ -1080,6 +1089,11 @@ async function fetchAccountLine(apiRequest: ReturnType<typeof makeApiRequest>): 
 
 export function registerTools(server: McpServer, apiKey: string, apiBase: string) {
   const apiRequest = makeApiRequest(apiKey, apiBase);
+
+  // MCP App resource backing the buyer-facing shopping tools' inline product
+  // grid (firestarter_preview advertises it via _meta.ui.resourceUri). No-op on
+  // the unit-test server doubles that don't implement resources.
+  registerShoppingApp(server);
 
   // Tool: firestarter_execute
   server.tool(
@@ -1254,6 +1268,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       },
       outputSchema: previewOutputShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
+      // MCP Apps: render these results as an inline product grid (photos) in
+      // supporting hosts (Claude Desktop, VS Code). Additive — hosts without
+      // MCP Apps support ignore this and fall back to the text + image-block
+      // result the handler returns below.
+      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
     },
     async ({ query, country, city, deadline, min_price, max_price, quantity, context, limit, cursor }: {
       query: string;
