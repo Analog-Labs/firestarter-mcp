@@ -278,6 +278,23 @@ describe("MCP firestarter_create_drop (owner)", () => {
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/payable minimum/i);
   });
+
+  // #480 — an owner sponsoring the same listing twice got two identical LIVE
+  // drops. The duplicate guard now covers a live drop as well as a pending
+  // request, so DROP_DUPLICATE carries both cases through to the agent.
+  it("surfaces a duplicate-drop rejection and points at the owner's existing drops", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResponse(409, {
+        error: "This listing already has a drop in this community — either live or awaiting the seller's approval. End or wait out the existing one before starting another.",
+        code: "DROP_DUPLICATE",
+      })
+    ));
+    const tools = captureTools();
+    const res = await tools.firestarter_create_drop({ program_id: "apg_1", listing_id: "lst_9", discount_cents: 500, max_claims: 20 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/already has a drop in this community/i);
+    expect(textOf(res)).toContain("firestarter_market_drops");
+  });
 });
 
 // The owner can CREATE a drop but, until this tool, had no MCP way to SEE the
