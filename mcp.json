@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.0.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 70 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 79 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -1638,6 +1638,104 @@
       }
     },
     {
+      "name": "firestarter_cancel_drop",
+      "description": "Withdraw a drop request you created (with firestarter_create_drop) on a market you own, while it is still pending the seller's approval. Once cancelled it stops being visible to that seller and can never be approved — create a new request with firestarter_create_drop if you change your mind. This only works on still-pending requests; a drop that's already live, expired, exhausted, or already decided can't be cancelled this way.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id you own (from firestarter_my_markets) — the drop belongs to this program."
+          },
+          "drop_id": {
+            "type": "string",
+            "description": "The drop id to cancel (from firestarter_create_drop's response or firestarter_market_drops)."
+          }
+        },
+        "required": [
+          "program_id",
+          "drop_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_drop_requests",
+      "description": "List the community-sponsored drop requests waiting on YOUR decision as a seller: a community owner has proposed a per-claim discount on one of your listings, and it stays invisible to buyers and unclaimable until you approve or reject it (or expires on its own). Shows the requesting community, the listing, the discount, how many members can claim it, and the deadline to decide. Use firestarter_approve_drop or firestarter_reject_drop with a request's drop id — or firestarter_trust_community_drops to stop reviewing this community's requests one by one.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_approve_drop",
+      "description": "Approve a pending community drop request on one of your listings (from firestarter_drop_requests), making it go live immediately so members can start claiming it. IMPORTANT: the per-claim discount comes out of YOUR proceeds on each claimed sale — not Firestarter's platform fee — so only approve amounts that still leave you a margin you're happy with. The requesting community is notified of the approval.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "drop_id": {
+            "type": "string",
+            "description": "The drop id to approve (from firestarter_drop_requests)."
+          }
+        },
+        "required": [
+          "drop_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_reject_drop",
+      "description": "Decline a pending community drop request on one of your listings (from firestarter_drop_requests). It never goes live, nothing is charged against your proceeds, and the requesting community owner is notified — optionally with your reason. This decides only this one request; the same community can still ask again later unless you also revoke standing trust with firestarter_untrust_community_drops.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "drop_id": {
+            "type": "string",
+            "description": "The drop id to reject (from firestarter_drop_requests)."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional short reason shown to the requesting community owner (e.g. 'discount too deep for this item')."
+          }
+        },
+        "required": [
+          "drop_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_trust_community_drops",
+      "description": "Grant a community program standing approval to run drops on your listings: from now on, its drop requests go live immediately with no per-request review, and any of its requests you're currently sitting on get auto-approved right away. Use this once you're comfortable a community's asks are reasonable and you'd rather not approve/reject each one — you can always revoke it later with firestarter_untrust_community_drops (that only stops NEW requests from auto-approving; anything already live stays live). Every approved drop's discount still comes out of YOUR proceeds per claim, trust or no trust.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The community/market program id to trust — appears on each request from firestarter_drop_requests, or shared directly by the community owner."
+          }
+        },
+        "required": [
+          "program_id"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_untrust_community_drops",
+      "description": "Revoke a standing approval you granted with firestarter_trust_community_drops: this community's NEW drop requests on your listings go back to needing your manual decision via firestarter_approve_drop / firestarter_reject_drop. Anything already live from this community before the revoke keeps running until it expires or is exhausted — this does not cancel existing drops.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The community/market program id to stop trusting."
+          }
+        },
+        "required": [
+          "program_id"
+        ]
+      }
+    },
+    {
       "name": "firestarter_set_market_picks",
       "description": "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent. Picks are OTHER sellers' listings you recommend (your own listings are rejected). Up to 15. action 'replace' (default), 'add', or 'remove'. Each pick may carry a short note buyers see.",
       "inputSchema": {
@@ -1700,6 +1798,49 @@
             "description": "Owner's 2-letter country code (ISO-3166-1 alpha-2), e.g. 'US', 'GB'. Only needed if onboarding asks."
           }
         }
+      }
+    },
+    {
+      "name": "firestarter_fund_wallet",
+      "description": "Deposit money into your drop wallet via Stripe Checkout — the prepaid balance that self-funds drops you create (firestarter_create_drop). Once a drop's whole pot (max_claims x discount) is covered by your wallet balance, it goes LIVE IMMEDIATELY with no seller approval needed, because you're paying for the discount yourself rather than asking the seller to eat it. $1.00 minimum deposit. Returns a Stripe Checkout link to open in a browser; the wallet credits once payment completes (poll with firestarter_wallet_balance). Use when an owner asks to fund/top up/add money to their drop wallet.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 100,
+            "description": "Amount to deposit, in cents. Minimum 100 ($1.00)."
+          }
+        },
+        "required": [
+          "amount_cents"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_wallet_balance",
+      "description": "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "firestarter_withdraw_wallet",
+      "description": "Cash out unused drop-wallet balance to your connected Stripe payout account (set one up with firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn — funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; check firestarter_wallet_balance first if unsure. $1.00 minimum. IMPORTANT: each call is an INDEPENDENT withdrawal attempt — it is NOT a deduped replay of a prior call, so calling it twice withdraws twice. If a call times out or errors and you're unsure whether the payout went through, do NOT simply call again — first check firestarter_wallet_balance (a completed withdrawal reduces the balance), and only withdraw again for the remaining amount you actually intend to move.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 100,
+            "description": "Amount to withdraw, in cents. Minimum 100 ($1.00)."
+          }
+        },
+        "required": [
+          "amount_cents"
+        ]
       }
     },
     {

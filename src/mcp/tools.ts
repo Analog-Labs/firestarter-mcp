@@ -234,12 +234,19 @@ class ApiError extends Error {
 }
 
 export function makeApiRequest(apiKey: string, apiBase: string) {
-  return async function apiRequest(method: string, path: string, body?: unknown, timeoutMs: number = API_REQUEST_TIMEOUT_MS) {
+  return async function apiRequest(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs: number = API_REQUEST_TIMEOUT_MS,
+    extraHeaders?: Record<string, string>,
+  ) {
     const url = `${apiBase}${path}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       "X-Firestarter-Source": "mcp",
+      ...extraHeaders,
     };
 
     const res = await fetch(url, {
@@ -4372,14 +4379,33 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const d = res?.drop ?? {};
           const dollars = ((Number(d.discount_cents) || discount_cents) / 100).toFixed(2);
           const slots = Number(d.max_claims) || max_claims;
+          // Seller-approval lifecycle (Phase A): a drop on the requester's own
+          // listing, or on a listing whose seller has granted this program standing
+          // trust, goes live immediately; otherwise it's parked pending the
+          // seller's decision. Phase B adds a second live path: a drop the OWNER'S
+          // OWN wallet fully covers is self-funded and also skips approval — the
+          // API is the source of truth for both (`res.status` / `d.funding_mode`),
+          // this tool never guesses from the input alone.
+          const pending = res?.status === "pending_seller_approval";
+          const selfFunded = !pending && d.funding_mode === "owner_wallet";
           const lines = [
-            `**Drop created.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`,
+            pending
+              ? `**Drop requested — pending the seller's approval.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`
+              : selfFunded
+                ? `**Drop live — you're funding it from your wallet.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"} ($${dollars} reserved from your wallet as each member claims). No seller approval needed.`
+                : `**Drop is live.** $${dollars} off ${d.listing_id ?? listing_id} for the first ${slots} member${slots === 1 ? "" : "s"}.`,
           ];
           if (Number(d.min_tier) > 0 && d.priority_until) {
             lines.push(`Early access for tier ${d.min_tier}+ until ${new Date(d.priority_until).toISOString().slice(0, 10)}, then it opens to everyone.`);
           }
           if (d.expires_at) lines.push(`Expires ${new Date(d.expires_at).toISOString().slice(0, 10)}.`);
-          lines.push("Members reserve a slot with firestarter_drops (action 'claim'); the discount then applies at checkout.");
+          if (pending) {
+            lines.push("They've been notified; members can't claim it until they approve (or grant your community standing approval). You can withdraw it with firestarter_cancel_drop.");
+          } else if (selfFunded) {
+            lines.push("Members reserve a slot with firestarter_drops (action 'claim'); the discount is drawn from your wallet at claim time — nothing comes out of the seller's proceeds. Check your balance with firestarter_wallet_balance.");
+          } else {
+            lines.push("Members reserve a slot with firestarter_drops (action 'claim'); the discount then applies at checkout.");
+          }
           return { content: [{ type: "text" as const, text: lines.join("\n") }] };
         } catch (err: any) {
           if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
@@ -4388,7 +4414,36 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (err instanceof ApiError && err.code === "INVALID_LISTING") {
             return { content: [{ type: "text" as const, text: `That listing can't back a drop: ${toErrorMessage(err)}. Find a valid listing id with firestarter_catalog_search.` }], isError: true };
           }
+          if (err instanceof ApiError && err.code === "DROP_DUPLICATE") {
+            return { content: [{ type: "text" as const, text: `Couldn't create the drop: ${toErrorMessage(err)} Check its status with firestarter_market_drops, or withdraw it with firestarter_cancel_drop before asking again.` }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "LISTING_NOT_SELLABLE") {
+            return { content: [{ type: "text" as const, text: `Couldn't create the drop: ${toErrorMessage(err)} Pick a different, active listing with firestarter_catalog_search.` }], isError: true };
+          }
           return { content: [{ type: "text" as const, text: `Couldn't create the drop: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_cancel_drop",
+      "Withdraw a drop request you created (with firestarter_create_drop) on a market you own, while it is still pending the seller's approval. Once cancelled it stops being visible to that seller and can never be approved — create a new request with firestarter_create_drop if you change your mind. This only works on still-pending requests; a drop that's already live, expired, exhausted, or already decided can't be cancelled this way.",
+      {
+        program_id: z.string().describe("The market/program id you own (from firestarter_my_markets) — the drop belongs to this program."),
+        drop_id: z.string().describe("The drop id to cancel (from firestarter_create_drop's response or firestarter_market_drops)."),
+      },
+      async ({ program_id, drop_id }) => {
+        try {
+          await apiRequest("POST", `/v1/attribution/programs/${encodeURIComponent(program_id)}/drops/${encodeURIComponent(drop_id)}/cancel`);
+          return { content: [{ type: "text" as const, text: `Cancelled — drop request \`${drop_id}\` was withdrawn before the seller decided. Create a new one anytime with firestarter_create_drop.` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "DROP_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No pending drop request found to cancel — it may already be live, decided, expired, or not exist. Check firestarter_market_drops." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't cancel the drop: ${toErrorMessage(err)}` }], isError: true };
         }
       }
     );
@@ -4424,6 +4479,127 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };
           }
           return { content: [{ type: "text" as const, text: `Couldn't list the market's drops: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    // ── Seller side of the drop approval lifecycle ──
+    // A community can propose a drop on a listing it doesn't own (firestarter_create_drop);
+    // unless the seller has already granted that community standing trust, the
+    // drop is parked pending_seller_approval until the SELLER decides here.
+
+    server.tool(
+      "firestarter_drop_requests",
+      "List the community-sponsored drop requests waiting on YOUR decision as a seller: a community owner has proposed a per-claim discount on one of your listings, and it stays invisible to buyers and unclaimable until you approve or reject it (or expires on its own). Shows the requesting community, the listing, the discount, how many members can claim it, and the deadline to decide. Use firestarter_approve_drop or firestarter_reject_drop with a request's drop id — or firestarter_trust_community_drops to stop reviewing this community's requests one by one.",
+      {},
+      async () => {
+        try {
+          const res = await apiRequest("GET", "/v1/drops/requests");
+          const requests: any[] = Array.isArray(res?.requests) ? res.requests : [];
+          if (requests.length === 0) {
+            return { content: [{ type: "text" as const, text: "No pending drop requests right now." }] };
+          }
+          const lines = requests.map((r) => {
+            const dollars = ((Number(r.discount_cents) || 0) / 100).toFixed(2);
+            const who = r.community_name || "A community";
+            const what = r.product_name || r.listing_id;
+            const deadline = r.request_expires_at ? ` · decide by ${new Date(r.request_expires_at).toISOString().slice(0, 10)}` : "";
+            return `- \`${r.id}\` — ${who} wants $${dollars} off **${what}** for up to ${Number(r.max_claims) || 0} member${Number(r.max_claims) === 1 ? "" : "s"}${deadline}`;
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text: `**Pending drop requests (${requests.length}):**\n${lines.join("\n")}\n\nApprove with firestarter_approve_drop, decline with firestarter_reject_drop — each discount comes out of YOUR proceeds on the claimed sales, not Firestarter's fee. To stop reviewing a community's requests one by one, pre-approve it with firestarter_trust_community_drops.`,
+            }],
+          };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't list drop requests: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_approve_drop",
+      "Approve a pending community drop request on one of your listings (from firestarter_drop_requests), making it go live immediately so members can start claiming it. IMPORTANT: the per-claim discount comes out of YOUR proceeds on each claimed sale — not Firestarter's platform fee — so only approve amounts that still leave you a margin you're happy with. The requesting community is notified of the approval.",
+      {
+        drop_id: z.string().describe("The drop id to approve (from firestarter_drop_requests)."),
+      },
+      async ({ drop_id }) => {
+        try {
+          await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/approve`);
+          return { content: [{ type: "text" as const, text: `Approved — drop \`${drop_id}\` is now live; members can start claiming it, and the discount will come out of your proceeds on each claimed sale.` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "DROP_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "That drop request was not found." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "NOT_PENDING") {
+            return { content: [{ type: "text" as const, text: "This drop request is no longer pending — it may have already been decided or expired." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "FORBIDDEN") {
+            return { content: [{ type: "text" as const, text: "That drop request isn't on one of your listings, so you can't decide it." }], isError: true };
+          }
+          // DROP_BELOW_FLOOR / LISTING_UNAVAILABLE (and anything else) fall through
+          // to the API's own message, which is already actionable.
+          return { content: [{ type: "text" as const, text: `Couldn't approve the drop: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_reject_drop",
+      "Decline a pending community drop request on one of your listings (from firestarter_drop_requests). It never goes live, nothing is charged against your proceeds, and the requesting community owner is notified — optionally with your reason. This decides only this one request; the same community can still ask again later unless you also revoke standing trust with firestarter_untrust_community_drops.",
+      {
+        drop_id: z.string().describe("The drop id to reject (from firestarter_drop_requests)."),
+        reason: z.string().optional().describe("Optional short reason shown to the requesting community owner (e.g. 'discount too deep for this item')."),
+      },
+      async ({ drop_id, reason }) => {
+        try {
+          await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/reject`, { reason });
+          return { content: [{ type: "text" as const, text: `Declined — drop \`${drop_id}\` will not go live.${reason ? ` Reason sent to the requester: "${reason}"` : ""}` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "NOT_PENDING") {
+            return { content: [{ type: "text" as const, text: "This drop request can't be rejected — it may not exist, may not be on one of your listings, or may no longer be pending." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't reject the drop: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_trust_community_drops",
+      "Grant a community program standing approval to run drops on your listings: from now on, its drop requests go live immediately with no per-request review, and any of its requests you're currently sitting on get auto-approved right away. Use this once you're comfortable a community's asks are reasonable and you'd rather not approve/reject each one — you can always revoke it later with firestarter_untrust_community_drops (that only stops NEW requests from auto-approving; anything already live stays live). Every approved drop's discount still comes out of YOUR proceeds per claim, trust or no trust.",
+      {
+        program_id: z.string().describe("The community/market program id to trust — appears on each request from firestarter_drop_requests, or shared directly by the community owner."),
+      },
+      async ({ program_id }) => {
+        try {
+          const res = await apiRequest("POST", `/v1/drops/programs/${encodeURIComponent(program_id)}/trust`);
+          const approved = Number(res?.approved_pending) || 0;
+          const text = approved > 0
+            ? `Trusted — this community's drop requests on your listings now go live automatically. ${approved} pending request${approved === 1 ? "" : "s"} from them just auto-approved.`
+            : "Trusted — this community's drop requests on your listings now go live automatically.";
+          return { content: [{ type: "text" as const, text }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't trust that community: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_untrust_community_drops",
+      "Revoke a standing approval you granted with firestarter_trust_community_drops: this community's NEW drop requests on your listings go back to needing your manual decision via firestarter_approve_drop / firestarter_reject_drop. Anything already live from this community before the revoke keeps running until it expires or is exhausted — this does not cancel existing drops.",
+      {
+        program_id: z.string().describe("The community/market program id to stop trusting."),
+      },
+      async ({ program_id }) => {
+        try {
+          const res = await apiRequest("POST", `/v1/drops/programs/${encodeURIComponent(program_id)}/untrust`);
+          const text = res?.revoked === true
+            ? "Untrusted — this community's future drop requests on your listings now need your manual approval again."
+            : "This community wasn't trusted, so nothing changed.";
+          return { content: [{ type: "text" as const, text }] };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't untrust that community: ${toErrorMessage(err)}` }], isError: true };
         }
       }
     );
@@ -4540,6 +4716,111 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: "That country code isn't valid — use a 2-letter ISO code like 'US' or 'GB'." }], isError: true };
           }
           return { content: [{ type: "text" as const, text: `Couldn't start payout setup: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    // ── Owner-funded drop wallet (Phase B) ──
+    // A prepaid balance an owner deposits and draws down to self-fund drops on
+    // firestarter_create_drop: when the wallet covers the whole pot (max_claims x
+    // discount) the drop goes live immediately with NO seller approval, because
+    // the owner — not the seller — is paying for the discount. Distinct from
+    // firestarter_connect_payouts (a Stripe Connect account for CASHING OUT
+    // market-fee earnings); this wallet is money IN (deposit) that funds drops,
+    // with cash-out of the unused balance via firestarter_withdraw_wallet.
+
+    server.tool(
+      "firestarter_fund_wallet",
+      "Deposit money into your drop wallet via Stripe Checkout — the prepaid balance that self-funds drops you create (firestarter_create_drop). Once a drop's whole pot (max_claims x discount) is covered by your wallet balance, it goes LIVE IMMEDIATELY with no seller approval needed, because you're paying for the discount yourself rather than asking the seller to eat it. $1.00 minimum deposit. Returns a Stripe Checkout link to open in a browser; the wallet credits once payment completes (poll with firestarter_wallet_balance). Use when an owner asks to fund/top up/add money to their drop wallet.",
+      {
+        amount_cents: z.number().int().min(100).describe("Amount to deposit, in cents. Minimum 100 ($1.00)."),
+      },
+      async ({ amount_cents }) => {
+        try {
+          const res = await apiRequest("POST", "/v1/drops/wallet/deposit", { amount_cents });
+          const url = res?.url;
+          if (!url) {
+            return { content: [{ type: "text" as const, text: "Started a deposit, but no Checkout link was returned. Try again shortly." }], isError: true };
+          }
+          const dollars = (amount_cents / 100).toFixed(2);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `**Fund your drop wallet:** open this link to deposit $${dollars} via Stripe Checkout —\n${url}\n\nOnce it clears, drops you create that draw fully on this balance go live immediately — self-funded, no seller approval needed. Check the credited balance with firestarter_wallet_balance.`,
+            }],
+          };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "INVALID_AMOUNT") {
+            return { content: [{ type: "text" as const, text: "Deposits need to be at least $1.00 — pass amount_cents of 100 or more." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't start the deposit: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_wallet_balance",
+      "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
+      {},
+      async () => {
+        try {
+          const res = await apiRequest("GET", "/v1/drops/wallet");
+          const balance = ((Number(res?.balance_cents) || 0) / 100).toFixed(2);
+          const reserved = ((Number(res?.reserved_cents) || 0) / 100).toFixed(2);
+          const deposited = ((Number(res?.deposited_cents) || 0) / 100).toFixed(2);
+          const withdrawn = ((Number(res?.withdrawn_cents) || 0) / 100).toFixed(2);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `**Drop wallet: $${balance} spendable**\nReserved for live drops (claimed, not yet released to the seller): $${reserved}\nLifetime deposited: $${deposited} · Lifetime withdrawn: $${withdrawn}\n\nTop up with firestarter_fund_wallet; cash out the spendable balance with firestarter_withdraw_wallet.`,
+            }],
+          };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: `Couldn't fetch your wallet balance: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_withdraw_wallet",
+      "Cash out unused drop-wallet balance to your connected Stripe payout account (set one up with firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn — funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; check firestarter_wallet_balance first if unsure. $1.00 minimum. IMPORTANT: each call is an INDEPENDENT withdrawal attempt — it is NOT a deduped replay of a prior call, so calling it twice withdraws twice. If a call times out or errors and you're unsure whether the payout went through, do NOT simply call again — first check firestarter_wallet_balance (a completed withdrawal reduces the balance), and only withdraw again for the remaining amount you actually intend to move.",
+      {
+        amount_cents: z.number().int().min(100).describe("Amount to withdraw, in cents. Minimum 100 ($1.00)."),
+      },
+      async ({ amount_cents }) => {
+        // A fresh key per logical withdrawal, generated once here (not inside any
+        // retry loop) so a lost-response HTTP retry of THIS call reuses the same
+        // key and dedupes server-side (services/owner-drop-wallet.ts) instead of
+        // paying the owner out twice.
+        const idempotencyKey = crypto.randomUUID();
+        try {
+          const res = await apiRequest(
+            "POST",
+            "/v1/drops/wallet/withdraw",
+            { amount_cents },
+            undefined,
+            { "Idempotency-Key": idempotencyKey },
+          );
+          const dollars = (amount_cents / 100).toFixed(2);
+          const balance = ((Number(res?.balance_cents) || 0) / 100).toFixed(2);
+          return { content: [{ type: "text" as const, text: `**Withdrew $${dollars}** to your connected payout account. New drop-wallet balance: $${balance} spendable.` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "INVALID_AMOUNT") {
+            return { content: [{ type: "text" as const, text: "Withdrawals need to be at least $1.00 — pass amount_cents of 100 or more." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "INSUFFICIENT_FUNDS") {
+            return { content: [{ type: "text" as const, text: "You can only withdraw your spendable balance — reserved funds for live drops aren't withdrawable. Check firestarter_wallet_balance." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "NOT_CONNECTED") {
+            return { content: [{ type: "text" as const, text: "Connect a payout account first — firestarter_connect_payouts." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "PREVIOUS_ATTEMPT_FAILED") {
+            return { content: [{ type: "text" as const, text: "That withdrawal was already attempted and failed; check your balance and try a fresh withdrawal." }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "STRIPE_ERROR") {
+            return { content: [{ type: "text" as const, text: "Temporary payout issue — check your balance; if it didn't arrive, retry." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't withdraw: ${toErrorMessage(err)}` }], isError: true };
         }
       }
     );
