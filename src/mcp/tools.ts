@@ -2804,9 +2804,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Supports four providers: Stripe (46 countries), PayPal (200+ countries), Wise (80+ currencies, best for APAC), and Payoneer (190+ countries, popular with TikTok Shop/Amazon sellers). Call with no arguments to check current status. Pass `provider` to set up a new method. If the seller is outside the US/EU, suggest PayPal (easiest), Wise (best rates for APAC), or Payoneer (if they already have one from TikTok/Amazon).",
+    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (46 countries) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Outside the US/EU, suggest PayPal — it is the global option and needs only the account email.",
     {
-      provider: z.enum(["stripe", "paypal", "wise", "payoneer"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/EU), 'paypal' = PayPal email (global), 'wise' = Wise bank transfer (APAC/global), 'payoneer' = Payoneer (190+ countries, TikTok/Amazon sellers)."),
+      // Wise/Payoneer are implemented but not selectable — neither connect flow
+      // yields a destination its adapter can spend. Narrowing the enum stops an
+      // agent proposing a rail the API will refuse. See services/payouts/providers.ts.
+      provider: z.enum(["stripe", "paypal"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/EU/UK), 'paypal' = PayPal email (global, easiest outside the US/EU)."),
       country: z.string().optional().describe("ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Needed for Stripe onboarding for non-US sellers."),
       paypal_email: z.string().optional().describe("PayPal email for receiving payouts. Required when provider='paypal'."),
       wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
