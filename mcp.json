@@ -1580,7 +1580,7 @@
     },
     {
       "name": "firestarter_create_drop",
-      "description": "Create a community-sponsored DROP on a market you own: fund a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). YOU fund the discount — it applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Use when a community owner wants to reward members with a real DISCOUNT incentive — distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
+      "description": "Create a community-sponsored DROP on a market you own: a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). It applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Who funds it depends on whose listing it is: on YOUR OWN listing it goes live immediately and the discount comes out of your own seller proceeds (no wallet needed); on ANOTHER seller's listing it goes live now only if your drop wallet covers the whole pot (max_claims × discount, topped up via firestarter_fund_wallet, and the seller is made whole from it) or that seller has granted your community standing approval — otherwise it waits as a request for the seller to approve (firestarter_drop_requests). Distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
       "inputSchema": {
         "type": "object",
         "properties": {
