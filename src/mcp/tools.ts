@@ -4381,7 +4381,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_create_drop",
-      "Create a community-sponsored DROP on a market you own: fund a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). YOU fund the discount — it applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Use when a community owner wants to reward members with a real DISCOUNT incentive — distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
+      "Create a community-sponsored DROP on a market you own: a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). It applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Who funds it depends on whose listing it is: on YOUR OWN listing it goes live immediately with no approval needed — funded from your drop wallet if it covers the whole pot (max_claims × discount), otherwise from your own seller proceeds; on ANOTHER seller's listing it goes live now only if your drop wallet covers the pot (topped up via firestarter_fund_wallet, and the seller is made whole from it) or that seller has granted your community standing approval — otherwise it waits as a request for the seller to approve (firestarter_drop_requests). Distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
       {
         program_id: z.string().describe("The market/program id you own (from firestarter_my_markets)."),
         listing_id: z.string().describe("The listing (lst_...) to discount — find one with firestarter_catalog_search. Must be a real, sellable listing."),
@@ -4472,7 +4472,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_market_drops",
-      "List the community-sponsored drops on a market you OWN (created with firestarter_create_drop): each drop's discount, how many slots have been claimed vs the cap, its status (active, expired, or exhausted), the listing it discounts, any tier gate, and when it expires. Use when an owner asks 'how are my drops doing?', 'how many people claimed my drop?', or wants to see what drops are still live before creating another. Read-only. This is the OWNER view; buyers discover and claim drops on a specific listing with firestarter_drops.",
+      "List the community-sponsored drops on a market you OWN (created with firestarter_create_drop): each drop's id, discount, how many slots have been claimed vs the cap, its status (active, exhausted, expired, or still pending_seller_approval for a drop on another seller's listing), the listing it discounts, any tier gate, and when it expires. The drop id shown is what firestarter_cancel_drop needs to withdraw a still-pending request. Use when an owner asks 'how are my drops doing?', 'how many people claimed my drop?', or wants to see what drops are still live before creating another. Read-only. This is the OWNER view; buyers discover and claim drops on a specific listing with firestarter_drops.",
       {
         program_id: z.string().describe("The market/program id you own (from firestarter_my_markets)."),
       },
@@ -4486,16 +4486,22 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const blocks = drops.map((d) => {
             const dollars = ((Number(d.discount_cents) || 0) / 100).toFixed(2);
             const claimed = `${Number(d.claims_used) || 0}/${Number(d.max_claims) || 0} claimed`;
-            const lines = [`• $${dollars} off ${d.listing_id} — ${claimed} · ${d.status}`];
+            // Lead with the drop id — it's what firestarter_cancel_drop needs to
+            // withdraw a still-pending request (market_drops is the owner surface
+            // that surfaces it).
+            const lines = [`• \`${d.id}\` — $${dollars} off ${d.listing_id} — ${claimed} · ${d.status}`];
             // Only while the priority window is genuinely still open — a past
             // window would misreport an open drop as gated.
             if (Number(d.min_tier) > 0 && d.priority_until && new Date(d.priority_until) > new Date()) {
               lines.push(`  early access for tier ${d.min_tier}+ until ${new Date(d.priority_until).toISOString().slice(0, 10)}, then open to all`);
             }
             if (d.expires_at) lines.push(`  expires ${new Date(d.expires_at).toISOString().slice(0, 10)}`);
+            else if (d.request_expires_at) lines.push(`  awaiting the seller's approval — decide by ${new Date(d.request_expires_at).toISOString().slice(0, 10)}`);
             return lines.join("\n");
           });
-          return { content: [{ type: "text" as const, text: `**Drops on this market (${drops.length}):**\n${blocks.join("\n")}` }] };
+          const hasPending = drops.some((d) => d.status === "pending_seller_approval");
+          const footer = hasPending ? "\n\nWithdraw a still-pending request with firestarter_cancel_drop and the drop id shown above." : "";
+          return { content: [{ type: "text" as const, text: `**Drops on this market (${drops.length}):**\n${blocks.join("\n")}${footer}` }] };
         } catch (err: any) {
           if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
             return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };

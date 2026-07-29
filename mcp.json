@@ -1580,7 +1580,7 @@
     },
     {
       "name": "firestarter_create_drop",
-      "description": "Create a community-sponsored DROP on a market you own: fund a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). YOU fund the discount — it applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Use when a community owner wants to reward members with a real DISCOUNT incentive — distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
+      "description": "Create a community-sponsored DROP on a market you own: a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). It applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Who funds it depends on whose listing it is: on YOUR OWN listing it goes live immediately with no approval needed — funded from your drop wallet if it covers the whole pot (max_claims × discount), otherwise from your own seller proceeds; on ANOTHER seller's listing it goes live now only if your drop wallet covers the pot (topped up via firestarter_fund_wallet, and the seller is made whole from it) or that seller has granted your community standing approval — otherwise it waits as a request for the seller to approve (firestarter_drop_requests). Distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1623,7 +1623,7 @@
     },
     {
       "name": "firestarter_market_drops",
-      "description": "List the community-sponsored drops on a market you OWN (created with firestarter_create_drop): each drop's discount, claimed vs cap, status (active, expired, or exhausted), the listing it discounts, any tier gate, and expiry. Use when an owner asks how their drops are doing or how many members claimed one. Read-only owner view — buyers discover and claim drops on a listing with firestarter_drops.",
+      "description": "List the community-sponsored drops on a market you OWN (created with firestarter_create_drop): each drop's id, discount, claimed vs cap, status (active, exhausted, expired, or pending_seller_approval), the listing it discounts, any tier gate, and expiry. The id shown is what firestarter_cancel_drop needs to withdraw a still-pending request. Use when an owner asks how their drops are doing or how many members claimed one. Read-only owner view — buyers discover and claim drops on a listing with firestarter_drops.",
       "inputSchema": {
         "type": "object",
         "properties": {
