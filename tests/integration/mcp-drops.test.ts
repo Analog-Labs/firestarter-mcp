@@ -328,6 +328,36 @@ describe("MCP firestarter_market_drops (owner list)", () => {
     expect(text).toContain("$5.00 off lst_9 — 3/20 claimed · active");
     expect(text).toContain("tier 2+");
     expect(text).toContain("$10.00 off lst_x — 10/10 claimed · exhausted");
+    // Each row leads with the drop id so firestarter_cancel_drop can use it.
+    expect(text).toContain("`drop_a`");
+    expect(text).toContain("`drop_b`");
+  });
+
+  it("surfaces a pending request's id + decision deadline + cancel hint", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        fetchCalls.push({ method, url: String(url), body: undefined });
+        if (method === "GET" && String(url).endsWith("/v1/attribution/programs/apg_1/drops")) {
+          return jsonResponse(200, {
+            drops: [
+              { id: "drop_pending", listing_id: "lst_other", discount_cents: 200, max_claims: 2, claims_used: 0, min_tier: 0, priority_until: null, expires_at: null, request_expires_at: "2999-03-01T00:00:00Z", status: "pending_seller_approval" },
+            ],
+          });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+    const res = await tools.firestarter_market_drops({ program_id: "apg_1" });
+    const text = textOf(res);
+    expect(res.isError).toBeFalsy();
+    expect(text).toContain("`drop_pending`");
+    expect(text).toContain("pending_seller_approval");
+    expect(text).toContain("awaiting the seller's approval");
+    // A pending drop is cancelable → the tool tells the owner how, with the id.
+    expect(text).toContain("firestarter_cancel_drop");
   });
 
   it("reports no drops cleanly with a create hint", async () => {

@@ -1578,7 +1578,7 @@
     },
     {
       "name": "firestarter_market_drops",
-      "description": "List the community-sponsored drops on a market you OWN (created with firestarter_create_drop): each drop's discount, claimed vs cap, status (active, expired, or exhausted), the listing it discounts, any tier gate, and expiry. Use when an owner asks how their drops are doing or how many members claimed one. Read-only owner view — buyers discover and claim drops on a listing with firestarter_drops.",
+      "description": "List the community-sponsored drops on a market you OWN (created with firestarter_create_drop): each drop's id, discount, claimed vs cap, status (active, exhausted, expired, or pending_seller_approval), the listing it discounts, any tier gate, and expiry. The id shown is what firestarter_cancel_drop needs to withdraw a still-pending request. Use when an owner asks how their drops are doing or how many members claimed one. Read-only owner view — buyers discover and claim drops on a listing with firestarter_drops.",
       "inputSchema": {
         "type": "object",
         "properties": {
