@@ -78,6 +78,34 @@ describe("MCP order and shipping context", () => {
     expect(text).toContain("$51.20 all-in");
   });
 
+  it("states a voucher/drop discount in the shipping-options item subtotal (subtotal is gross)", async () => {
+    // Regression: fee_breakdown.subtotal_cents is GROSS, and each option's
+    // all_in_cents already nets the discount out server-side — this pins that
+    // the subtotal line surfaces the discount instead of hiding it.
+    vi.stubGlobal("fetch", vi.fn(async (url: any) => {
+      if (String(url).includes("/shipping-options")) {
+        return response({
+          product_title: "Coffee set",
+          fee_breakdown: { subtotal_cents: 4000, discount_cents: 500, tax_cents: 320 },
+          options: [{
+            index: 0,
+            label: "UPS Ground",
+            price_cents: 800,
+            all_in_cents: 4620, // 4000 - 500 + 800 + 320
+            delivery_days: 3,
+            badges: [],
+            is_estimated: false,
+          }],
+        });
+      }
+      return response({ developer_margin: null });
+    }));
+
+    const text = textOf(await captureTools().firestarter_shipping_options({ execution_id: "exec_1" }));
+    expect(text).toContain("Item subtotal: $40.00 (- $5.00 discount)");
+    expect(text).toContain("$46.20 all-in");
+  });
+
   it("renders canonical tracking status, origin, provider, and paid fees", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response({
       tracking_number: "1Z123",
@@ -100,5 +128,43 @@ describe("MCP order and shipping context", () => {
     expect(text).toContain("Status: shipped");
     expect(text).toContain("Fees: item $40.00 + shipping $8.00 + tax $3.20 = $51.20");
     expect(text).toContain("Shipped via UPS (1Z123)");
+  });
+
+  it("subtracts a voucher/drop discount in the tracking fee breakdown (subtotal is gross)", async () => {
+    // Regression: fee_breakdown.subtotal_cents is GROSS, so a discounted order
+    // used to render "item $40.00 + shipping ... = $46.20" with no sign of the
+    // $5 discount already baked into that total.
+    vi.stubGlobal("fetch", vi.fn(async () => response({
+      tracking_number: "1Z999",
+      carrier: "UPS",
+      status: "shipped",
+      order_status: "shipped",
+      shipping_method: { provider: "shippo", carrier: "UPS", service: "Ground" },
+      fee_breakdown: { subtotal_cents: 4000, discount_cents: 500, shipping_cents: 800, tax_cents: 320, total_cents: 4620 },
+      events: [],
+    })));
+
+    const text = textOf(await captureTools().firestarter_track_order({ execution_id: "exec_1" }));
+    expect(text).toContain("Fees: item $40.00 - $5.00 discount + shipping $8.00 + tax $3.20 = $46.20");
+  });
+
+  it("states a voucher/drop discount on the receipt (subtotal is gross)", async () => {
+    // Regression: the receipt's subtotal_cents is GROSS (discount is already
+    // subtracted into total_cents) — this pins that the discount is stated
+    // explicitly rather than silently vanishing between the two lines.
+    vi.stubGlobal("fetch", vi.fn(async () => response({
+      product_title: "Coffee set",
+      subtotal_cents: 4000,
+      discount_cents: 500,
+      shipping_cents: 800,
+      tax_cents: 320,
+      total_cents: 4620,
+      payment_method: "Card on file",
+    })));
+
+    const text = textOf(await captureTools().firestarter_receipt({ execution_id: "exec_1" }));
+    expect(text).toContain("Subtotal: $40.00");
+    expect(text).toContain("Discount: -$5.00");
+    expect(text).toContain("**Total: $46.20**");
   });
 });

@@ -49,6 +49,16 @@ describe("renderDeliveryOptions", () => {
     expect(lines).toContain("$67.99 all-in");
   });
 
+  it("subtracts a voucher/drop discount from the all-in (subtotal is gross)", () => {
+    // Regression: subtotal is GROSS, so a discounted option used to preview an
+    // all-in that overstated the real charge by the discount amount.
+    const lines = renderDeliveryOptions(purchasableOpt({ discount: 10 }), null).join("\n");
+    // standard: 4500 - 1000 + 699 + 0 = 4199
+    expect(lines).toContain("$41.99 all-in");
+    // express: 4500 - 1000 + 2299 + 0 = 5799
+    expect(lines).toContain("$57.99 all-in");
+  });
+
   it("adds the app integration margin to the all-in, matching the charge path", () => {
     // 2% margin, no cap. standard base 5199 -> +104 (round(5199*0.02)) = 5303
     const lines = renderDeliveryOptions(purchasableOpt(), { margin_bps: 200 }).join("\n");

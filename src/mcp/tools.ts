@@ -604,6 +604,10 @@ export function renderDeliveryOptions(opt: any, dm: any): string[] {
   if (methods.length === 0) return [];
 
   const subtotalCents = Math.round(Number(opt.subtotal ?? 0) * 100);
+  // `subtotal` is GROSS — subtract any voucher/community-drop discount so this
+  // preview all-in matches the total the charge path (and firestarter_approve)
+  // actually computes, instead of overstating it by the discount amount.
+  const discountCents = Math.min(subtotalCents, Math.max(0, Math.round(Number(opt.discount ?? 0) * 100)));
   const taxCents = Math.round(Number(opt.tax ?? 0) * 100);
   const marginBps = dm && typeof dm.margin_bps === "number" ? dm.margin_bps : 0;
   const capCents = dm && typeof dm.per_transaction_cap_cents === "number" ? dm.per_transaction_cap_cents : undefined;
@@ -624,7 +628,7 @@ export function renderDeliveryOptions(opt: any, dm: any): string[] {
       || "Shipping";
     let allIn: string | null = null;
     if (Number.isFinite(priceCents)) {
-      const baseCents = subtotalCents + priceCents + taxCents;
+      const baseCents = subtotalCents - discountCents + priceCents + taxCents;
       const withMargin = marginBps > 0 ? baseCents + marginCentsFor(baseCents, marginBps, capCents) : baseCents;
       allIn = `$${(withMargin / 100).toFixed(2)} all-in`;
     }
@@ -918,7 +922,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // no context read as a mismatch against a $45.81 listing).
       if (opt.total != null) {
         const costParts: string[] = [];
-        if (opt.subtotal != null) costParts.push(`$${opt.subtotal} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`);
+        if (opt.subtotal != null) {
+          const itemPart = `$${opt.subtotal} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`;
+          // `subtotal` is GROSS — a voucher/community-drop discount is subtracted
+          // separately into `total`, so it must show here too or the joined parts
+          // sum to more than the all-in total (looked like a checkout overcharge).
+          costParts.push(opt.discount != null && Number(opt.discount) > 0 ? `${itemPart} - $${opt.discount} discount` : itemPart);
+        }
         // Always state shipping — a silently-dropped shipping line makes shipping
         // look unresolved. >0 shows the amount, 0 shows "free shipping", and a
         // genuinely-unknown shipping (browse-only / not rated) shows "shipping
@@ -1621,7 +1631,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (to) lines.push(`Ships to: ${to}`);
         }
         if (data.fee_breakdown) {
-          lines.push(`Item subtotal: ${fmt(data.fee_breakdown.subtotal_cents || 0)} · Tax: ${fmt(data.fee_breakdown.tax_cents || 0)} · Shipping: shown per option below`);
+          // subtotal is GROSS — state the discount (already netted into each
+          // option's all-in below) so "item" + "shipping" visibly account for it.
+          const discountSuffix = Number(data.fee_breakdown.discount_cents || 0) > 0
+            ? ` (- ${fmt(data.fee_breakdown.discount_cents)} discount)`
+            : "";
+          lines.push(`Item subtotal: ${fmt(data.fee_breakdown.subtotal_cents || 0)}${discountSuffix} · Tax: ${fmt(data.fee_breakdown.tax_cents || 0)} · Shipping: shown per option below`);
           // "Is this a real carrier rate or a placeholder?" — answer it instead
           // of leaving an internal enum invisible.
           const prov = provenanceLine(data.fee_breakdown.shipping_provenance);
@@ -1965,7 +1980,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (data.fee_breakdown) {
           const f = data.fee_breakdown;
           const money = (cents: number) => `$${(Number(cents || 0) / 100).toFixed(2)}`;
-          text += `Fees: item ${money(f.subtotal_cents)} + shipping ${money(f.shipping_cents)} + tax ${money(f.tax_cents)} = ${money(f.total_cents)}\n`;
+          // subtotal is GROSS; show the discount that's already subtracted into
+          // total so the itemized parts sum to it (see mapOption/tools.ts fix).
+          const discountPart = Number(f.discount_cents || 0) > 0 ? ` - ${money(f.discount_cents)} discount` : "";
+          text += `Fees: item ${money(f.subtotal_cents)}${discountPart} + shipping ${money(f.shipping_cents)} + tax ${money(f.tax_cents)} = ${money(f.total_cents)}\n`;
           const prov = provenanceLine(f.shipping_provenance);
           if (prov) text += `${prov}\n`;
         }
@@ -2131,6 +2149,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `Date: ${data.paid_at || data.created_at || "N/A"}\n`;
         if (data.product_title) text += `Item: ${data.product_title}\n`;
         if (data.subtotal_cents != null) text += `Subtotal: $${(data.subtotal_cents / 100).toFixed(2)}\n`;
+        // subtotal is GROSS — state the discount so it doesn't look silently
+        // dropped between the subtotal and the (already-net) total below.
+        if (data.discount_cents != null && data.discount_cents > 0) text += `Discount: -$${(data.discount_cents / 100).toFixed(2)}\n`;
         if (data.shipping_cents != null && data.shipping_cents > 0) text += `Shipping: $${(data.shipping_cents / 100).toFixed(2)}\n`;
         if (data.tax_cents != null && data.tax_cents > 0) text += `Tax: $${(data.tax_cents / 100).toFixed(2)}\n`;
         if (data.total_cents != null) text += `**Total: $${(data.total_cents / 100).toFixed(2)}**\n`;

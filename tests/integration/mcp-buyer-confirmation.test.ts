@@ -160,6 +160,22 @@ describe("#256 buyer confirmation - rendering (firestarter_status)", () => {
     expect(text).not.toContain("no tax");
   });
 
+  it("R3: subtracts a voucher/drop discount in the item line so the parts sum to the all-in total", async () => {
+    // Regression: subtotal/shipping are GROSS (the discount is only baked into
+    // `total`), so a discounted option used to render "$20 item + $52.19
+    // shipping" (= $72.19) next to a correct "$67.19 all-in" - the itemization
+    // silently failed to account for the $5 discount.
+    installStatusFetch(approvalExec([{
+      ...INTERNAL_OPT,
+      subtotal: "20.00",
+      shipping: "52.19",
+      discount: "5.00",
+      total: "67.19",
+    }]));
+    const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
+    expect(text).toContain("**$67.19 all-in** - $20.00 item - $5.00 discount + $52.19 shipping, no tax");
+  });
+
   it("R3: pluralizes the item line when quantity > 1", async () => {
     installStatusFetch(approvalExec([{ ...INTERNAL_OPT, quantity: 2 }]));
     const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
