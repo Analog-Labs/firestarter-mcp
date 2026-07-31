@@ -167,4 +167,22 @@ describe("MCP order and shipping context", () => {
     expect(text).toContain("Discount: -$5.00");
     expect(text).toContain("**Total: $46.20**");
   });
+
+  it("names the voucher code on the receipt when the discount came from one", async () => {
+    // Regression: the receipt route now returns voucher_code, but nothing
+    // rendered it — a receipt with a discount gave no attribution.
+    vi.stubGlobal("fetch", vi.fn(async () => response({
+      product_title: "Coffee set",
+      subtotal_cents: 4000,
+      discount_cents: 500,
+      voucher_code: "SAVE5",
+      shipping_cents: 800,
+      tax_cents: 320,
+      total_cents: 4620,
+      payment_method: "Card on file",
+    })));
+
+    const text = textOf(await captureTools().firestarter_receipt({ execution_id: "exec_1" }));
+    expect(text).toContain("Discount: -$5.00 (voucher SAVE5)");
+  });
 });

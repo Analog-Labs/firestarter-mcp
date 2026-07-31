@@ -176,6 +176,58 @@ describe("#256 buyer confirmation - rendering (firestarter_status)", () => {
     expect(text).toContain("**$67.19 all-in** - $20.00 item - $5.00 discount + $52.19 shipping, no tax");
   });
 
+  it("R3: names the voucher that applied", async () => {
+    // Regression: the quote step stamps voucher_code/voucher_discount_cents on
+    // the option's metadata, but nothing ever read it back — a buyer saw the
+    // correct discounted total with no idea a voucher was involved.
+    installStatusFetch(approvalExec([{
+      ...INTERNAL_OPT,
+      subtotal: "20.00",
+      shipping: "52.19",
+      discount: "5.00",
+      total: "67.19",
+      metadata: { image: "https://cdn.example.com/hub.jpg", voucher_code: "SAVE5", voucher_discount_cents: 500 },
+    }]));
+    const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
+    expect(text).toContain("Voucher SAVE5 applied: -$5.00");
+  });
+
+  it("R3: explains why an explicit voucher_code didn't apply, per the tool's own doc promise", async () => {
+    // Regression: firestarter_execute's voucher_code param docs promise "the
+    // response explains why it didn't apply" — voucher_rejected was stamped on
+    // the option by the quote step but never rendered anywhere.
+    installStatusFetch(approvalExec([{
+      ...INTERNAL_OPT,
+      metadata: {
+        image: "https://cdn.example.com/hub.jpg",
+        voucher_rejected: { code: "EXPIRED10", reason: "EXPIRED", message: "That code has expired." },
+      },
+    }]));
+    const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
+    expect(text).toContain('Voucher code "EXPIRED10" didn\'t apply: That code has expired.');
+  });
+
+  it("R3: shows both the rejected explicit code and the voucher auto-apply fell back to", async () => {
+    installStatusFetch(approvalExec([{
+      ...INTERNAL_OPT,
+      subtotal: "20.00",
+      shipping: "52.19",
+      discount: "2.00",
+      total: "70.19",
+      metadata: {
+        image: "https://cdn.example.com/hub.jpg",
+        voucher_rejected: { code: "EXPIRED10", reason: "EXPIRED", message: "That code has expired." },
+        voucher_code: "SAVE2",
+        voucher_discount_cents: 200,
+      },
+    }]));
+    const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
+    const rejectedIdx = text.indexOf('Voucher code "EXPIRED10" didn\'t apply');
+    const appliedIdx = text.indexOf("Voucher SAVE2 applied");
+    expect(rejectedIdx).toBeGreaterThan(-1);
+    expect(appliedIdx).toBeGreaterThan(rejectedIdx);
+  });
+
   it("R3: pluralizes the item line when quantity > 1", async () => {
     installStatusFetch(approvalExec([{ ...INTERNAL_OPT, quantity: 2 }]));
     const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));

@@ -940,6 +940,24 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
         const breakdown = costParts.length > 0 ? `${costParts.join(" + ")}, ${taxPhrase}` : taxPhrase;
         optLines.push(`  **$${opt.total} all-in** - ${breakdown}`);
       }
+      // #discount-source: state WHICH voucher applied, or why an explicit
+      // voucher_code didn't — firestarter_execute's voucher_code param promises
+      // "the response explains why it didn't apply", but nothing ever read the
+      // voucher_rejected/voucher_code metadata the quote step already stamps on
+      // the option, so a buyer got a correct total with no idea a code was
+      // tried or which one won. Rejection first (explains the code the buyer
+      // gave), then whatever auto-apply fell back to, if anything.
+      {
+        const rejected = (opt.metadata as any)?.voucher_rejected;
+        if (rejected && typeof rejected === "object" && rejected.code) {
+          optLines.push(`  Voucher code "${rejected.code}" didn't apply: ${rejected.message || "not eligible for this order"}`);
+        }
+        const voucherCode = typeof (opt.metadata as any)?.voucher_code === "string" ? (opt.metadata as any).voucher_code : null;
+        const voucherDiscountCents = Number((opt.metadata as any)?.voucher_discount_cents) || 0;
+        if (voucherCode && voucherDiscountCents > 0) {
+          optLines.push(`  Voucher ${voucherCode} applied: -$${(voucherDiscountCents / 100).toFixed(2)}`);
+        }
+      }
       // #256: tell the buyer when it arrives (delivery_estimate is a DATE).
       if (opt.delivery_estimate) {
         const d = new Date(opt.delivery_estimate);
@@ -2151,7 +2169,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (data.subtotal_cents != null) text += `Subtotal: $${(data.subtotal_cents / 100).toFixed(2)}\n`;
         // subtotal is GROSS — state the discount so it doesn't look silently
         // dropped between the subtotal and the (already-net) total below.
-        if (data.discount_cents != null && data.discount_cents > 0) text += `Discount: -$${(data.discount_cents / 100).toFixed(2)}\n`;
+        if (data.discount_cents != null && data.discount_cents > 0) {
+          // Name the source when it's a voucher code — a community drop has no
+          // buyer-supplied code to show, so it stays an unattributed discount.
+          text += data.voucher_code
+            ? `Discount: -$${(data.discount_cents / 100).toFixed(2)} (voucher ${data.voucher_code})\n`
+            : `Discount: -$${(data.discount_cents / 100).toFixed(2)}\n`;
+        }
         if (data.shipping_cents != null && data.shipping_cents > 0) text += `Shipping: $${(data.shipping_cents / 100).toFixed(2)}\n`;
         if (data.tax_cents != null && data.tax_cents > 0) text += `Tax: $${(data.tax_cents / 100).toFixed(2)}\n`;
         if (data.total_cents != null) text += `**Total: $${(data.total_cents / 100).toFixed(2)}**\n`;
