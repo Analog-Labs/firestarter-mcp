@@ -55,12 +55,27 @@ describe("firestarter_connect_store", () => {
     installFetch([]);
     const tools = captureTools();
     await tools.firestarter_connect_store({
-      platform: "woocommerce", shop_domain: "https://mystore.com",
+      // shop_domain is a BARE domain, no scheme — the woocommerceAdapter builds
+      // `https://${shop_domain}/wp-json/...` itself, so a scheme here would
+      // produce a broken "https://https://..." request URL.
+      platform: "woocommerce", shop_domain: "mystore.com",
       consumer_key: "ck_123", consumer_secret: "cs_456",
     });
     const post = fetchCalls.find((c) => c.method === "POST" && c.url.endsWith("/v1/connections"));
     expect(post?.body.platform).toBe("woocommerce");
+    expect(post?.body.shop_domain).toBe("mystore.com");
     expect(post?.body.access_token).toBe(Buffer.from("ck_123:cs_456").toString("base64"));
+  });
+
+  it("strips a leading https:// from shop_domain for woocommerce (defensive, in case an agent includes it anyway)", async () => {
+    installFetch([]);
+    const tools = captureTools();
+    await tools.firestarter_connect_store({
+      platform: "woocommerce", shop_domain: "https://mystore.com",
+      consumer_key: "ck_123", consumer_secret: "cs_456",
+    });
+    const post = fetchCalls.find((c) => c.method === "POST" && c.url.endsWith("/v1/connections"));
+    expect(post?.body.shop_domain).toBe("mystore.com");
   });
 
   it("rejects shopify and tiktok_shop without calling the API", async () => {
