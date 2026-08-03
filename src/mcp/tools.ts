@@ -1814,7 +1814,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       city: z.string().describe("City"),
       state: z.string().optional().describe("State / province / region"),
       zip: z.string().optional().describe("Postal / ZIP code"),
-      country: z.string().optional().describe("ISO country code (e.g. US, PK, KE). Defaults to US."),
+      country: z.string().optional().describe("ISO country code (e.g. US, PK, KE, NG). ALWAYS pass it when the buyer's country is known or named anywhere in the address — omitting it makes the API infer the country from the address text, falling back to US only as a last resort."),
       name: z.string().optional().describe("Recipient name"),
       phone: z.string().optional().describe("Phone number for delivery"),
       label: z.string().optional().describe("Label for this address (e.g. 'Home', 'Office', 'Warehouse'). If omitted, a default label is assigned."),
@@ -1822,11 +1822,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     },
     async (args) => {
       try {
+        // #449: no blind `country: "US"` default here — a Lagos, Nigeria address
+        // saved without an ISO code was stored as country US, which broke every
+        // live rate lookup against it. When the agent omits country, the API
+        // infers it from the address text instead (delivery-address.ts).
         const body: Record<string, unknown> = {
           street1: args.street1,
           city: args.city,
-          country: args.country || "US",
         };
+        if (args.country) body.country = args.country;
         if (args.street2) body.street2 = args.street2;
         if (args.state) body.state = args.state;
         if (args.zip) body.zip = args.zip;
