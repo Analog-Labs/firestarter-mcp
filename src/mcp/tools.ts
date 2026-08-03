@@ -9,6 +9,7 @@ import { isRelevantMatch } from "../lib/relevance.js";
 import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS } from "./schemas.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
+import { listingDetailFields } from "../schemas/listing-details.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -2551,8 +2552,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         countries: z.array(z.string()).optional(),
         exclude: z.array(z.string()).optional(),
       }).optional().describe("Where the seller is willing to ship this item. Omit to default to WORLDWIDE (ships anywhere the platform hard rules allow; cross-border buyers are shown a duties disclosure). mode 'domestic' = home country only; mode 'list' with countries:['CA','GB',...] = home country plus those ISO alpha-2 destinations; mode 'worldwide' (optionally exclude:['BR',...]) = everywhere except excluded codes. Sanctioned/embargoed destinations are always blocked regardless of this setting."),
+      ...listingDetailFields,
     },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, shipping, ship_from, shipping_policy }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, shipping, ship_from, shipping_policy, ...details }) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -2565,6 +2567,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         void shipping;
         if (ship_from) body.ship_from = ship_from;
         if (shipping_policy) body.shipping_policy = shipping_policy;
+        for (const [key, value] of Object.entries(details)) {
+          if (value !== undefined) body[key] = value;
+        }
         const listing = await apiRequest("POST", "/v1/listings", body);
         let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
@@ -3562,8 +3567,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
       image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      ...listingDetailFields,
     },
-    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls }) => {
+    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, ...details }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
@@ -3573,6 +3579,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (status !== undefined) body.status = status;
         if (image_urls !== undefined) body.images = image_urls;
+        for (const [key, value] of Object.entries(details)) {
+          if (value !== undefined) body[key] = value;
+        }
         if (Object.keys(body).length === 0) {
           return { content: [{ type: "text" as const, text: "No updates provided. Specify at least one field to change." }], isError: true };
         }
