@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 79 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 80 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -622,6 +622,86 @@
         "required": [
           "product_name",
           "base_price"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_bulk_list",
+      "description": "Create MANY products at once — for migrating an existing catalog (e.g. from a CSV or spreadsheet the seller pasted/described). Each product needs product_name and base_price at minimum; everything firestarter_list accepts per-item is accepted here too (brand, condition, sku, variants, etc.). Up to 100 products per call — for more, call this tool again with the next batch. One bad item never blocks the others: the response reports exactly which products were created and which failed, with why. For a SINGLE product, use firestarter_list instead — it has richer per-listing guidance in its response.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "products": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "product_name": {
+                  "type": "string"
+                },
+                "base_price": {
+                  "type": "number"
+                },
+                "category": {
+                  "type": "string"
+                },
+                "inventory_qty": {
+                  "type": "number"
+                },
+                "image_urls": {
+                  "type": "array"
+                },
+                "brand": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "condition": {
+                  "type": "string"
+                },
+                "return_policy": {
+                  "type": "string"
+                },
+                "ship_time_days": {
+                  "type": "number"
+                },
+                "country_of_origin": {
+                  "type": "string"
+                },
+                "length_in": {
+                  "type": "number"
+                },
+                "width_in": {
+                  "type": "number"
+                },
+                "height_in": {
+                  "type": "number"
+                },
+                "weight_oz": {
+                  "type": "number"
+                },
+                "materials": {
+                  "type": "array"
+                },
+                "tags": {
+                  "type": "array"
+                },
+                "variants": {
+                  "type": "array"
+                }
+              },
+              "required": [
+                "product_name",
+                "base_price"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "products"
         ]
       }
     },

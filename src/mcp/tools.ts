@@ -2647,6 +2647,50 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_bulk_list
+  // Same shape as firestarter_list, but accepts many products in one call —
+  // for a seller migrating an existing catalog. Calls POST /v1/listings/bulk
+  // (same REST hop every other listing tool here makes via apiRequest).
+  server.tool(
+    "firestarter_bulk_list",
+    "Create MANY products at once — for migrating an existing catalog (e.g. from a CSV or spreadsheet the seller pasted/described). Each product needs product_name and base_price at minimum; everything firestarter_list accepts per-item is accepted here too (brand, condition, sku, variants, etc.). Up to 100 products per call — for more, call this tool again with the next batch. One bad item never blocks the others: the response reports exactly which products were created and which failed, with why. For a SINGLE product, use firestarter_list instead — it has richer per-listing guidance in its response.",
+    {
+      products: z.array(z.object({
+        product_name: z.string().describe("REQUIRED. What's being sold."),
+        base_price: z.number().describe("REQUIRED. Sale price in USD."),
+        category: z.string().optional(),
+        inventory_qty: z.number().optional(),
+        image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is primary)."),
+        ...listingDetailFields,
+      })).min(1).max(100).describe("The products to create, up to 100 per call."),
+    },
+    async ({ products }) => {
+      try {
+        const body = {
+          products: products.map(({ image_urls, ...rest }) => ({
+            ...rest,
+            ...(image_urls?.length ? { images: image_urls } : {}),
+          })),
+        };
+        const result = await apiRequest("POST", "/v1/listings/bulk", body);
+        const created: any[] = result.created || [];
+        const failed: any[] = result.failed || [];
+        let text = `**Bulk import: ${created.length} created, ${failed.length} failed** (of ${products.length} submitted)\n`;
+        if (created.length) {
+          text += `\nCreated:\n`;
+          for (const c of created) text += `- [${c.index}] \`${c.id}\` (${c.status}) — ${products[c.index]?.product_name || ""}\n`;
+        }
+        if (failed.length) {
+          text += `\nFailed:\n`;
+          for (const f of failed) text += `- [${f.index}] ${products[f.index]?.product_name || ""}: ${f.error} (${f.code})\n`;
+        }
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error bulk-creating listings: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_import
   // A2: the Cole-chat seller claim funnel. Wraps POST /v1/listings/import -
   // the draft is reviewed in chat, then activated via firestarter_update_listing.
