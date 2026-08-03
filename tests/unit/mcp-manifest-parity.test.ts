@@ -167,6 +167,47 @@ describe("MCP manifest param drift (#Phase4/C9)", () => {
     }
     expect(drifts, `mcp.json required params drifted from the live Zod schema:\n${drifts.join("\n")}`).toEqual([]);
   });
+
+  it("firestarter_bulk_list nested items.required matches the zod schema's per-item optional/required fields", () => {
+    // Capture the actual zod schema from the tool registration
+    let bulkListSchema: any = undefined;
+    const stub = {
+      tool: (name: string, _d: string, _s: any) => {
+        if (name === "firestarter_bulk_list") bulkListSchema = _s;
+      },
+    } as any;
+    delete process.env.ATTRIBUTION_SELF_SERVE_ENABLED;
+    registerTools(stub, "fs_test_parity", "http://local");
+
+    if (!bulkListSchema) {
+      throw new Error("firestarter_bulk_list schema not captured");
+    }
+
+    // Extract the per-item required fields from the zod schema
+    // For z.array(z.object(...)), the structure is: products._def.element._def.shape
+    const productsZod = bulkListSchema.products;
+    if (!productsZod || !productsZod._def || !productsZod._def.element) {
+      throw new Error("products zod schema structure unexpected");
+    }
+    const itemShape = productsZod._def.element._def.shape;
+    const runtimeItemRequired = Object.keys(itemShape)
+      .filter((k) => {
+        const zt = itemShape[k];
+        return typeof zt.isOptional === "function" ? !zt.isOptional() : true;
+      })
+      .sort();
+
+    // Extract the per-item required fields from the manifest
+    const manifestTool = manifest.tools?.find((t: any) => t.name === "firestarter_bulk_list");
+    const manifestItemRequired = manifestTool?.inputSchema?.properties?.products?.items?.required || [];
+
+    const runtimeStr = runtimeItemRequired.join(",");
+    const manifestStr = [...manifestItemRequired].sort().join(",");
+    expect(
+      runtimeStr,
+      `firestarter_bulk_list nested items.required (manifest: [${manifestStr}]) drifted from zod schema: [${runtimeStr}]`
+    ).toBe(manifestStr);
+  });
 });
 
 // The installable stdio manifest (apps/api/mcp.json) is a SECOND tool-listing

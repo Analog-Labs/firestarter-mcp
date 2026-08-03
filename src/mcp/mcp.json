@@ -691,10 +691,7 @@
                   "type": "array"
                 }
               },
-              "required": [
-                "product_name",
-                "base_price"
-              ]
+              "required": []
             },
             "minItems": 1,
             "maxItems": 100
