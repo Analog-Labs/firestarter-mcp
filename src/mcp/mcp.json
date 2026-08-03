@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.1.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 79 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify & TikTok Shop, monitor prices. 80 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -828,6 +828,38 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "firestarter_connect_store",
+      "description": "Connect a seller's BigCommerce, Shopee, Lazada, Wix, or WooCommerce store to Firestarter. For Shopify use firestarter_connect_shopify instead (one-click install link); for TikTok Shop use firestarter_connect_tiktok. Call with just `platform` first to check for an existing connection or get platform-specific credential instructions; call again with credentials to connect.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "enum": [
+              "bigcommerce",
+              "shopee",
+              "lazada",
+              "wix",
+              "woocommerce"
+            ]
+          },
+          "access_token": {
+            "type": "string"
+          },
+          "shop_domain": {
+            "type": "string"
+          },
+          "consumer_key": {
+            "type": "string"
+          },
+          "consumer_secret": {
+            "type": "string"
+          }
+        },
+        "required": ["platform"]
       }
     },
     {
