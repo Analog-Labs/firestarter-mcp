@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { z } from "zod";
 import { registerTools } from "../../src/mcp/tools.js";
 
 type ToolHandler = (args: any) => Promise<any>;
 
-function captureTools(): Record<string, ToolHandler> {
-  const tools: Record<string, ToolHandler> = {};
-  const fakeServer = { tool: (name: string, _d: string, _s: any, handler: ToolHandler) => { tools[name] = handler; } };
+interface CapturedTool {
+  handler: ToolHandler;
+  schema?: any;
+}
+
+function captureTools(): Record<string, CapturedTool> {
+  const tools: Record<string, CapturedTool> = {};
+  const fakeServer = { tool: (name: string, _d: string, _s: any, handler: ToolHandler) => { tools[name] = { handler, schema: _s }; } };
   registerTools(fakeServer as any, "fsk_test_key", "http://api.test");
   return tools;
 }
@@ -38,7 +44,7 @@ describe("firestarter_bulk_list", () => {
   it("forwards the products array to POST /v1/listings/bulk", async () => {
     installFetch();
     const tools = captureTools();
-    await tools.firestarter_bulk_list({
+    await tools.firestarter_bulk_list.handler({
       products: [
         { product_name: "Widget A", base_price: 10 },
         { product_name: "Widget B" },
@@ -52,7 +58,7 @@ describe("firestarter_bulk_list", () => {
   it("summarizes created and failed counts in the response text", async () => {
     installFetch();
     const tools = captureTools();
-    const result = await tools.firestarter_bulk_list({
+    const result = await tools.firestarter_bulk_list.handler({
       products: [{ product_name: "Widget A", base_price: 10 }, { product_name: "Widget B" }],
     });
     const text = result.content[0].text as string;
@@ -60,5 +66,43 @@ describe("firestarter_bulk_list", () => {
     expect(text).toMatch(/1 failed/i);
     expect(text).toContain("lst_bulk1");
     expect(text).toMatch(/MISSING_BASE_PRICE|base_price is required/);
+  });
+
+  it("the per-item schema tolerates a missing base_price (so the array still validates and the per-item failure surfaces from the REST layer, not a schema rejection)", () => {
+    const tools = captureTools();
+    const toolSchema = tools.firestarter_bulk_list.schema;
+    expect(toolSchema).toBeDefined();
+
+    // Reconstruct the zod schema to validate it accepts missing base_price
+    const schema = z.object(toolSchema);
+    const testInput = {
+      products: [
+        { product_name: "Widget A", base_price: 10 },
+        { product_name: "Widget B" }, // missing base_price
+      ],
+    };
+
+    const result = schema.safeParse(testInput);
+    expect(result.success).toBe(true);
+    expect(result.data?.products).toHaveLength(2);
+  });
+
+  it("the per-item schema also tolerates a missing product_name (per-item failure, not array rejection)", () => {
+    const tools = captureTools();
+    const toolSchema = tools.firestarter_bulk_list.schema;
+    expect(toolSchema).toBeDefined();
+
+    // Reconstruct the zod schema to validate it accepts missing product_name
+    const schema = z.object(toolSchema);
+    const testInput = {
+      products: [
+        { product_name: "Widget A", base_price: 10 },
+        { base_price: 20 }, // missing product_name
+      ],
+    };
+
+    const result = schema.safeParse(testInput);
+    expect(result.success).toBe(true);
+    expect(result.data?.products).toHaveLength(2);
   });
 });

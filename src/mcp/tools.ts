@@ -2656,8 +2656,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "Create MANY products at once — for migrating an existing catalog (e.g. from a CSV or spreadsheet the seller pasted/described). Each product needs product_name and base_price at minimum; everything firestarter_list accepts per-item is accepted here too (brand, condition, sku, variants, etc.). Up to 100 products per call — for more, call this tool again with the next batch. One bad item never blocks the others: the response reports exactly which products were created and which failed, with why. For a SINGLE product, use firestarter_list instead — it has richer per-listing guidance in its response.",
     {
       products: z.array(z.object({
-        product_name: z.string().describe("REQUIRED. What's being sold."),
-        base_price: z.number().describe("REQUIRED. Sale price in USD."),
+        product_name: z.string().optional().describe("REQUIRED per item — an item missing this will fail and be reported in the response's failed list; other items still succeed."),
+        base_price: z.number().optional().describe("REQUIRED per item — an item missing this will fail and be reported in the response's failed list; other items still succeed."),
         category: z.string().optional(),
         inventory_qty: z.number().optional(),
         image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is primary)."),
