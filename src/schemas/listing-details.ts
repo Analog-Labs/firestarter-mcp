@@ -6,32 +6,53 @@ import { z } from "zod";
  * in services/catalog-sync/types.ts) with `label` for manually-created
  * variants. NOT a checkout-level construct — Firestarter execution/orders
  * still resolve at the listing level only (see the plan's "Deviations" note).
+ *
+ * The preprocess step tolerates the legacy/catalog-sync shape transparently: a
+ * variant object may arrive with `title` (NormalizedVariant's field name, and
+ * what the one-time migration backfill copied verbatim from
+ * attributes->'variants') instead of `label`. Without this, every
+ * catalog-synced listing whose variants predate this normalization becomes
+ * uneditable — the very next save fails validation trying to round-trip its
+ * own existing variants. `inventory_qty`/`price` are similarly relaxed to
+ * accept real-world Shopify data: oversold stock goes negative, and free/
+ * sample variants are priced at 0.
  */
-export const variantSchema = z.object({
-  sku: z.string().optional(),
-  label: z.string(),
-  price: z.number().positive().optional(),
-  currency: z.string().optional(),
-  compare_at_price: z.number().positive().optional(),
-  inventory_qty: z.number().int().nonnegative().optional(),
-  attributes: z.record(z.string(), z.string()).optional(),
-  external_id: z.string().optional(),
-});
+export const variantSchema = z.preprocess(
+  (val) => {
+    if (val && typeof val === "object" && !Array.isArray(val)) {
+      const v = val as Record<string, unknown>;
+      if (v.label === undefined && typeof v.title === "string") {
+        return { ...v, label: v.title };
+      }
+    }
+    return val;
+  },
+  z.object({
+    sku: z.string().optional(),
+    label: z.string(),
+    price: z.number().nonnegative().optional(),
+    currency: z.string().optional(),
+    compare_at_price: z.number().positive().optional(),
+    inventory_qty: z.number().int().optional(),
+    attributes: z.record(z.string(), z.string()).optional(),
+    external_id: z.string().optional(),
+  })
+);
 
 export const listingDetailFields = {
-  brand: z.string().max(200).optional(),
-  sku: z.string().max(100).optional(),
-  condition: z.enum(["new", "used_like_new", "used_good", "used_fair", "refurbished"]).optional(),
-  return_policy: z.string().max(2000).optional(),
-  ship_time_days: z.number().int().nonnegative().optional(),
-  country_of_origin: z.string().length(2).transform((v) => v.toUpperCase()).optional(),
-  length_in: z.number().positive().optional(),
-  width_in: z.number().positive().optional(),
-  height_in: z.number().positive().optional(),
-  weight_oz: z.number().positive().optional(),
-  materials: z.array(z.string()).optional(),
-  tags: z.array(z.string()).optional(),
-  variants: z.array(variantSchema).optional(),
+  brand: z.string().max(200).optional().describe("Manufacturer or brand name, e.g. 'Logitech'."),
+  sku: z.string().max(100).optional().describe("Seller's own inventory/stock-keeping code for this listing. Distinct from any barcode/UPC — seller-internal, never shown to buyers."),
+  condition: z.enum(["new", "used_like_new", "used_good", "used_fair", "refurbished"]).optional().describe("Item condition. Omit for new/unspecified."),
+  return_policy: z.string().max(2000).optional().describe("Free-text return policy shown to buyers, e.g. '30-day returns, buyer pays return shipping.'"),
+  ship_time_days: z.number().int().nonnegative().nullable().optional().describe("Typical number of days from order to dispatch (handling time), not transit time."),
+  country_of_origin: z.string().length(2).transform((v) => v.toUpperCase()).nullable().optional().describe("ISO 3166-1 alpha-2 country code where the item was made, e.g. 'US', 'VN'."),
+  length_in: z.number().positive().nullable().optional().describe("Packaged length, in inches."),
+  width_in: z.number().positive().nullable().optional().describe("Packaged width, in inches."),
+  height_in: z.number().positive().nullable().optional().describe("Packaged height, in inches."),
+  weight_oz: z.number().positive().nullable().optional().describe("Packaged weight, in ounces."),
+  materials: z.array(z.string()).optional().describe("Materials the item is made of, e.g. ['cotton', 'polyester']."),
+  tags: z.array(z.string()).optional().describe("Freeform search/discovery tags, e.g. ['summer', 'unisex']."),
+  variants: z.array(variantSchema).optional().describe("Size/color/option variants for display and inventory tracking (not a checkout-level construct — orders still resolve at the listing level)."),
 };
 
 export const listingDetailFieldsSchema = z.object(listingDetailFields);
