@@ -2647,6 +2647,50 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_bulk_list
+  // Same shape as firestarter_list, but accepts many products in one call —
+  // for a seller migrating an existing catalog. Calls POST /v1/listings/bulk
+  // (same REST hop every other listing tool here makes via apiRequest).
+  server.tool(
+    "firestarter_bulk_list",
+    "Create MANY products at once — for migrating an existing catalog (e.g. from a CSV or spreadsheet the seller pasted/described). Each product needs product_name and base_price at minimum; everything firestarter_list accepts per-item is accepted here too (brand, condition, sku, variants, etc.). Up to 100 products per call — for more, call this tool again with the next batch. One bad item never blocks the others: the response reports exactly which products were created and which failed, with why. For a SINGLE product, use firestarter_list instead — it has richer per-listing guidance in its response.",
+    {
+      products: z.array(z.object({
+        product_name: z.string().optional().describe("REQUIRED per item — an item missing this will fail and be reported in the response's failed list; other items still succeed."),
+        base_price: z.number().optional().describe("REQUIRED per item — an item missing this will fail and be reported in the response's failed list; other items still succeed."),
+        category: z.string().optional(),
+        inventory_qty: z.number().optional(),
+        image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is primary)."),
+        ...listingDetailFields,
+      })).min(1).max(100).describe("The products to create, up to 100 per call."),
+    },
+    async ({ products }) => {
+      try {
+        const body = {
+          products: products.map(({ image_urls, ...rest }) => ({
+            ...rest,
+            ...(image_urls?.length ? { images: image_urls } : {}),
+          })),
+        };
+        const result = await apiRequest("POST", "/v1/listings/bulk", body);
+        const created: any[] = result.created || [];
+        const failed: any[] = result.failed || [];
+        let text = `**Bulk import: ${created.length} created, ${failed.length} failed** (of ${products.length} submitted)\n`;
+        if (created.length) {
+          text += `\nCreated:\n`;
+          for (const c of created) text += `- [${c.index}] \`${c.id}\` (${c.status}) — ${products[c.index]?.product_name || ""}\n`;
+        }
+        if (failed.length) {
+          text += `\nFailed:\n`;
+          for (const f of failed) text += `- [${f.index}] ${products[f.index]?.product_name || ""}: ${f.error} (${f.code})\n`;
+        }
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error bulk-creating listings: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_import
   // A2: the Cole-chat seller claim funnel. Wraps POST /v1/listings/import -
   // the draft is reviewed in chat, then activated via firestarter_update_listing.
@@ -3105,6 +3149,77 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
         return { content: [{ type: "text" as const, text: `Error connecting TikTok Shop: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_connect_store
+  // Covers the platforms without a dedicated tool. Shopify/TikTok Shop keep
+  // their own richer tools (one-click link / documented OAuth-pending flow) -
+  // this one is deliberately generic since the other 5 platforms all connect
+  // the same way /v1/connections already expects: a manually-obtained token.
+  server.tool(
+    "firestarter_connect_store",
+    "Connect a seller's BigCommerce, Shopee, Lazada, Wix, or WooCommerce store to Firestarter. For Shopify use firestarter_connect_shopify instead (one-click install link); for TikTok Shop use firestarter_connect_tiktok. Call with just `platform` first to check for an existing connection or get platform-specific credential instructions; call again with credentials to connect.",
+    {
+      platform: z.enum(["bigcommerce", "shopee", "lazada", "wix", "woocommerce"]),
+      access_token: z.string().optional().describe("Required for bigcommerce/shopee/lazada/wix. Not used for woocommerce — use consumer_key/consumer_secret instead."),
+      shop_domain: z.string().optional().describe("Store identifier: BigCommerce store hash, Shopee/Lazada shop id, Wix account id, or — for WooCommerce — your store's domain WITHOUT `https://` (e.g. `mystore.com`)."),
+      consumer_key: z.string().optional().describe("WooCommerce only — from WooCommerce > Settings > Advanced > REST API."),
+      consumer_secret: z.string().optional().describe("WooCommerce only — paired with consumer_key."),
+    },
+    async ({ platform, access_token, shop_domain, consumer_key, consumer_secret }) => {
+      if ((platform as string) === "shopify" || (platform as string) === "tiktok_shop") {
+        return { content: [{ type: "text" as const, text: `Use firestarter_connect_shopify or firestarter_connect_tiktok for ${platform} — this tool only covers bigcommerce/shopee/lazada/wix/woocommerce.` }] };
+      }
+      try {
+        const conns = await apiRequest("GET", "/v1/connections");
+        const existing = (conns.connections || []).find((c: any) => c.platform === platform);
+        if (existing) {
+          let text = `**${platform} store connected:** ${existing.shop_name || existing.shop_domain}\n`;
+          text += `Status: ${existing.status}\n`;
+          if (existing.last_synced_at) text += `Last catalog sync: ${existing.last_synced_at}\n`;
+          if (existing.error_message) text += `Error: ${existing.error_message}\n`;
+          text += `\nProducts from this store are listed on Firestarter and discoverable by buyers' agents.`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+
+        const credentialInstructions: Record<string, string> = {
+          bigcommerce: "Go to your BigCommerce admin > Settings > API > API Accounts > Create API Account. Give it read-only access to Products and Orders. Copy the Access Token (as access_token) and use your store hash as shop_domain.",
+          shopee: "Go to Shopee Open Platform > My Apps. Generate an access token (as access_token) and provide your shop id as shop_domain.",
+          lazada: "Go to Lazada Open Platform > App Console. Generate an access token (as access_token) and provide your shop identifier as shop_domain.",
+          wix: "Go to your Wix dashboard > Developer Tools > API Keys > Generate API Key with 'Wix Stores - Read Products' permission (as access_token), and your account id as shop_domain.",
+          woocommerce: "Go to your WordPress admin > WooCommerce > Settings > Advanced > REST API > 'Add Key', set permissions to 'Read'. Provide the Consumer Key and Consumer Secret separately (consumer_key/consumer_secret, not access_token) and your store's domain WITHOUT `https://` (e.g. `mystore.com`) as shop_domain.",
+        };
+
+        if (platform === "woocommerce") {
+          if (!consumer_key || !consumer_secret || !shop_domain) {
+            return { content: [{ type: "text" as const, text: `**No WooCommerce store connected.**\n\n${credentialInstructions.woocommerce}` }] };
+          }
+          // Defensive: the adapter (catalog-sync/adapters.ts's woocommerceAdapter)
+          // builds its request URL as `https://${shop_domain}/wp-json/...` — a
+          // leading scheme here would produce "https://https://mystore.com/..."
+          // and every sync request would fail. Strip one if a well-meaning agent
+          // included it anyway despite the bare-domain instructions above.
+          const wooDomain = shop_domain.replace(/^https?:\/\//i, "");
+          const encoded = Buffer.from(`${consumer_key}:${consumer_secret}`).toString("base64");
+          await apiRequest("POST", "/v1/connections", { platform, access_token: encoded, shop_domain: wooDomain });
+          return { content: [{ type: "text" as const, text: `**WooCommerce connected: ${wooDomain}**\nCatalog sync started - check results with firestarter_listings shortly.` }] };
+        }
+
+        if (!access_token || !shop_domain) {
+          return { content: [{ type: "text" as const, text: `**No ${platform} store connected.**\n\n${credentialInstructions[platform]}` }] };
+        }
+        await apiRequest("POST", "/v1/connections", { platform, access_token, shop_domain });
+        return { content: [{ type: "text" as const, text: `**${platform} connected: ${shop_domain}**\nCatalog sync started - check results with firestarter_listings shortly.` }] };
+      } catch (err: any) {
+        if (err?.code === "NO_SELLER_PROFILE") {
+          return { content: [{ type: "text" as const, text: "The seller isn't registered on Firestarter yet. Call `firestarter_register_seller` with their business name first, then connect their store." }], isError: true };
+        }
+        if (err?.code === "ALREADY_CONNECTED") {
+          return { content: [{ type: "text" as const, text: `A ${platform} store is already connected for this seller. Disconnect it from the dashboard before reconnecting.` }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: `Error connecting ${platform}: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
