@@ -2758,13 +2758,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // mint a claim link, but THE BUYER delivers it to the seller themselves.
   server.tool(
     "firestarter_request_escrow",
-    "BUYER-side tool: the user found a listing on another site (Craigslist, Facebook Marketplace, Gumtree, ...) and wants to pay through Firestarter escrow instead of cash/wire. Creates an escrow invite with a claim link for the SELLER, plus a ready-to-send message. The buyer must send that message to the seller themselves through the platform where they found the listing - Firestarter never contacts external sellers, and neither should you (never automate messages to Craigslist or marketplace posters). Needs the listing URL and the buyer's email (ask for it - that is where the goes-live notification lands). For Facebook Marketplace / eBay / Etsy / OfferUp / Mercari the page cannot be fetched, so also ask for the item title and price and pass them along.",
+    "BUYER-side tool: the user found a listing on another site (Craigslist, Facebook Marketplace, Gumtree, ...) and wants to pay through Firestarter escrow instead of cash/wire. Creates an escrow invite with a claim link for the SELLER, plus a ready-to-send message. The buyer must send that message to the seller themselves through the platform where they found the listing - Firestarter never contacts external sellers, and neither should you (never automate messages to Craigslist or marketplace posters). Needs the listing URL and the buyer's email (ask for it - that is where the goes-live notification lands). Facebook Marketplace / eBay / Etsy / OfferUp / Mercari usually block the fetch - a fetch is still attempted, but also ask the buyer for the item title and price and pass them along so the invite has real data even if it fails.",
     {
       source_url: z.string().describe("URL of the external listing the buyer wants to purchase"),
       buyer_email: z.string().describe("Buyer's email address - notified when the seller claims and the listing goes live"),
       buyer_name: z.string().optional().describe("Buyer's first name (shown to the seller on the claim page)"),
-      title: z.string().optional().describe("Item title, buyer-supplied. Required in practice for platforms that block fetches (Facebook Marketplace etc.)."),
-      price: z.number().optional().describe("Asking price in the listing's currency, buyer-supplied (for blocked platforms)"),
+      title: z.string().optional().describe("Item title, buyer-supplied. Ask for this up front for platforms that usually block fetches (Facebook Marketplace etc.) - the fetch is tried but is unlikely to succeed."),
+      price: z.number().optional().describe("Asking price in the listing's currency, buyer-supplied (for platforms that usually block fetches)"),
     },
     async ({ source_url, buyer_email, buyer_name, title, price }) => {
       try {
