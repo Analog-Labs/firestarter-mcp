@@ -2466,7 +2466,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
 
-        const res = await apiRequest("POST", "/seller/products/upload-image", {
+        const res = await apiRequest("POST", "/v1/sellers/upload-image", {
           image_base64,
           filename,
         });
@@ -2556,9 +2556,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         countries: z.array(z.string()).optional(),
         exclude: z.array(z.string()).optional(),
       }).optional().describe("Where the seller is willing to ship this item. Omit to default to WORLDWIDE (ships anywhere the platform hard rules allow; cross-border buyers are shown a duties disclosure). mode 'domestic' = home country only; mode 'list' with countries:['CA','GB',...] = home country plus those ISO alpha-2 destinations; mode 'worldwide' (optionally exclude:['BR',...]) = everywhere except excluded codes. Sanctioned/embargoed destinations are always blocked regardless of this setting."),
+      allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
+      allow_duplicate: z.boolean().optional().describe("Create this listing even though the seller already has one with the same name. Only pass true if the seller confirms they genuinely want a second, separate listing."),
       ...listingDetailFields,
     },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, shipping, ship_from, shipping_policy, ...details }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, shipping, ship_from, shipping_policy, allow_imageless, allow_duplicate, ...details }) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -2571,6 +2573,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         void shipping;
         if (ship_from) body.ship_from = ship_from;
         if (shipping_policy) body.shipping_policy = shipping_policy;
+        if (allow_imageless !== undefined) body.allow_imageless = allow_imageless;
+        if (allow_duplicate !== undefined) body.allow_duplicate = allow_duplicate;
         for (const [key, value] of Object.entries(details)) {
           if (value !== undefined) body[key] = value;
         }
@@ -3162,7 +3166,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_connect_store",
     "Connect a seller's BigCommerce, Shopee, Lazada, Wix, or WooCommerce store to Firestarter. For Shopify use firestarter_connect_shopify instead (one-click install link); for TikTok Shop use firestarter_connect_tiktok. Call with just `platform` first to check for an existing connection or get platform-specific credential instructions; call again with credentials to connect.",
     {
-      platform: z.enum(["bigcommerce", "shopee", "lazada", "wix", "woocommerce"]),
+      // shopify/tiktok_shop are accepted here ONLY so the handler below can catch
+      // them and redirect to the right tool with a friendly message — a strict
+      // 5-value enum previously rejected those two at the schema-parse stage,
+      // before the handler's redirect code ever ran, surfacing a raw MCP
+      // validation error instead.
+      platform: z.enum(["bigcommerce", "shopee", "lazada", "wix", "woocommerce", "shopify", "tiktok_shop"]),
       access_token: z.string().optional().describe("Required for bigcommerce/shopee/lazada/wix. Not used for woocommerce — use consumer_key/consumer_secret instead."),
       shop_domain: z.string().optional().describe("Store identifier: BigCommerce store hash, Shopee/Lazada shop id, Wix account id, or — for WooCommerce — your store's domain WITHOUT `https://` (e.g. `mystore.com`)."),
       consumer_key: z.string().optional().describe("WooCommerce only — from WooCommerce > Settings > Advanced > REST API."),
@@ -3381,9 +3390,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_listings
   server.tool(
     "firestarter_listings",
-    "View your own product listings (seller side): name, current price, inventory, status, demand, and live share link when available. Pass listing_id for full detail on one listing; omit it to list all active listings. Use this when a seller wants to see, verify, or share what they have listed. Active live listings have a public share link; sandbox and draft listings do not.",
+    "View your own product listings (seller side): name, current price, inventory, status, demand, and live share link when available. Pass listing_id for full detail on one listing; omit it to list every listing you have, including drafts that still need to be activated. Use this when a seller wants to see, verify, or share what they have listed. Active live listings have a public share link; sandbox and draft listings do not.",
     {
-      listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list all active listings."),
+      listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list every listing you have, drafts included."),
     },
     async ({ listing_id: rawListingId }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
@@ -3402,6 +3411,25 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (l.inventory_qty != null) text += `Inventory: ${l.inventory_qty}\n`;
           if (l.category) text += `Category: ${l.category}\n`;
           if (l.description) text += `Description: ${String(l.description).slice(0, 300)}\n`;
+          const attrBits: string[] = [];
+          if (l.brand) attrBits.push(`brand ${l.brand}`);
+          if (l.sku) attrBits.push(`sku ${l.sku}`);
+          if (l.condition) attrBits.push(l.condition.replace(/_/g, " "));
+          if (attrBits.length) text += `${attrBits.join(", ")}\n`;
+          const dims = [l.length_in, l.width_in, l.height_in].filter((v) => v != null);
+          if (dims.length === 3) text += `Dimensions: ${dims.join(" x ")} in\n`;
+          if (l.weight_oz != null) text += `Weight: ${l.weight_oz} oz\n`;
+          if (l.country_of_origin) text += `Country of origin: ${l.country_of_origin}\n`;
+          if (Array.isArray(l.materials) && l.materials.length) text += `Materials: ${l.materials.join(", ")}\n`;
+          if (Array.isArray(l.tags) && l.tags.length) text += `Tags: ${l.tags.join(", ")}\n`;
+          if (Array.isArray(l.variants) && l.variants.length) {
+            text += `Variants (${l.variants.length}): ${l.variants.map((v: any) => v.label || v.sku || "?").join(", ")}\n`;
+          }
+          if (l.return_policy) text += `Return policy: ${l.return_policy}\n`;
+          if (l.ship_time_days != null) text += `Dispatch time: ${l.ship_time_days} day(s)\n`;
+          if (l.verification_status && l.verification_status !== "verified") {
+            text += `Verification: ${l.verification_status}${l.verification_code ? ` (code ${l.verification_code})` : ""}${l.verification_reason ? ` — ${l.verification_reason}` : ""}\n`;
+          }
           if (Array.isArray(l.images) && l.images.length > 0) {
             if (l.images.length === 1) {
               text += `Image: ${l.images[0]}\n`;
@@ -3481,7 +3509,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().optional().describe("Specific listing ID to check demand for"),
       category: z.string().optional().describe("Check demand for a category (e.g. 'electronics/audio')"),
     },
-    async ({ listing_id: rawListingId }) => {
+    async ({ listing_id: rawListingId, category }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         let data: any;
@@ -3490,7 +3518,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         } else {
           data = await apiRequest("GET", "/v1/demand/feed?hours=24");
         }
-        const items = data.signals || data.demand || [data];
+        // /v1/demand/feed returns { feed: [...] }; the single-listing endpoint
+        // returns a bare object (no listing-array shape at all — wrap it in one).
+        let items = data.feed || data.signals || data.demand || [data];
+        if (!listing_id && category && Array.isArray(items)) {
+          const needle = category.toLowerCase();
+          items = items.filter((item: any) => typeof item?.category === "string" && item.category.toLowerCase().includes(needle));
+        }
         if (!items || (Array.isArray(items) && items.length === 0)) {
           return { content: [{ type: "text" as const, text: "No demand signals found for the given criteria." }] };
         }
@@ -3663,8 +3697,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const listing = await apiRequest("PATCH", `/v1/listings/${listing_id}`, body);
         let text = `**Listing ${listing_id} updated**\n`;
         if (listing.base_price !== undefined) text += `Base price: $${listing.base_price}\n`;
-        if (listing.floor_price !== undefined) text += `Floor: $${listing.floor_price}\n`;
-        if (listing.ceiling_price !== undefined) text += `Ceiling: $${listing.ceiling_price}\n`;
+        if (listing.floor_price != null) text += `Floor: $${listing.floor_price}\n`;
+        if (listing.ceiling_price != null) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing !== undefined) text += `Dynamic pricing: ${listing.dynamic_pricing ? "enabled" : "disabled"}\n`;
         text += `Shipping: estimated at checkout by the delivery provider, based on the buyer's destination\n`;
         return { content: [{ type: "text" as const, text }] };
@@ -3686,9 +3720,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
       image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       ...listingDetailFields,
     },
-    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, ...details }) => {
+    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, allow_imageless, ...details }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
@@ -3698,6 +3733,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (status !== undefined) body.status = status;
         if (image_urls !== undefined) body.images = image_urls;
+        if (allow_imageless !== undefined) body.allow_imageless = allow_imageless;
         for (const [key, value] of Object.entries(details)) {
           if (value !== undefined) body[key] = value;
         }
