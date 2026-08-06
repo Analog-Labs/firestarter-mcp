@@ -1157,6 +1157,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .optional()
         .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
     },
+    // Creates a pending execution and returns priced options — it does not
+    // charge anything. Payment happens in firestarter_approve, which is the
+    // tool marked destructive. openWorld: it searches the live catalog.
+    { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by, voucher_code }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
@@ -1396,6 +1400,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       execution_id: z.string().optional().describe("Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."),
       status_filter: z.string().optional().describe("Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ execution_id, status_filter }) => {
       // Environment is determined by the API key prefix (auth.ts): fs_test_* ->
       // sandbox, anything else -> live. Surfaced so the agent can correctly
@@ -1446,6 +1451,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       confirm_total: z.number().nonnegative().optional().describe("Exact updated total in USD from a prior PRICE_CHANGED response. Pass only after showing that total to the buyer and receiving a new explicit confirmation; never guess or pre-fill it on the first approval."),
       consent_nonce: z.string().optional().describe("The single-use consent_nonce string from a prior PRICE_CHANGED response. Pass it VERBATIM together with confirm_total when re-approving a price change. It is one-time-use and cannot be guessed — never fabricate it; only echo the exact value the last PRICE_CHANGED returned."),
     },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     async ({ execution_id, selected_option, option_id, delivery_address, address_id, shipping_option_index, confirm_total, consent_nonce }) => {
       try {
         // Bare "approve" (no execution_id): resolve the pending purchase so a
@@ -1606,6 +1612,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       select_index: z.number().int().min(0).optional().describe("Preview a specific delivery speed: the [number] from the menu. Shows that speed's new all-in total and the exact shipping_option_index to approve with. Does NOT select or pay — it's a preview."),
       refresh: z.boolean().optional().describe("Re-fetch live carrier rates and persist them before showing the menu. Use when the stored rates may be stale (e.g. >30 min old). Off by default."),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ execution_id, option_id, select_index, refresh }) => {
       try {
         const qs = new URLSearchParams();
@@ -1731,6 +1738,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       zip: z.string().optional().describe("Destination ZIP/postal code. Country + ZIP is enough for a real estimate — no street needed."),
       city: z.string().optional().describe("Destination city — an alternative locality when the buyer has no ZIP handy."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ listing_id, address_id, country, zip, city }) => {
       try {
         const body: any = { listing_id: cleanListingId(listing_id) };
@@ -1774,6 +1782,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_addresses",
     "List the buyer's saved shipping addresses (masked). Use this to see if they already have an address on file BEFORE asking them to type one — then pass the matching `address_id` to firestarter_execute or firestarter_approve. The default address (used automatically at approval) is marked. Values are masked (partial street, no zip/phone); you don't need the full address to reference it by id.",
     {},
+    { readOnlyHint: true, destructiveHint: false },
     async () => {
       try {
         const data = await apiRequest("GET", "/v1/addresses");
@@ -1821,6 +1830,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       label: z.string().optional().describe("Label for this address (e.g. 'Home', 'Office', 'Warehouse'). If omitted, a default label is assigned."),
       is_default: z.boolean().optional().describe("Set to true to make this the default shipping address."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async (args) => {
       try {
         // #449: no blind `country: "US"` default here — a Lagos, Nigeria address
@@ -1867,6 +1877,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().optional().describe("Listing to list drops for (required for action 'list')."),
       drop_id: z.string().optional().describe("Drop to claim (required for action 'claim')."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ action, listing_id, drop_id }) => {
       try {
         if (action === "claim") {
@@ -1897,6 +1908,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_payment_method",
     "Check the buyer's payment method status and get a link to add or update their card. IMPORTANT — the card is the LAST step of a purchase, NOT a precondition: run firestarter_execute first and let the buyer see the shipping estimate and pick a delivery speed (shipping_option_index) BEFORE any card is collected. A card is only genuinely needed once an order is parked at awaiting_payment_method (after approval), or when the buyer explicitly asks to add one now. Do NOT collect a card up front just to browse, quote, or compare shipping — none of those need one. Use this tool when the buyer asks about payment or an order is waiting on a card. Returns a no-login Stripe setup link (works from any channel - WhatsApp, Slack, Telegram) plus a dashboard link.",
     {},
+    { readOnlyHint: false, destructiveHint: false },
     async () => {
       try {
         const methods = await apiRequest("GET", "/v1/payments/methods");
@@ -1931,6 +1943,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       execution_id: z.string().describe("The execution ID to cancel"),
       reason: z.string().optional().describe("Reason for cancellation"),
     },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     async ({ execution_id, reason }) => {
       try {
         await apiRequest("POST", `/v1/executions/${execution_id}/cancel`, { reason });
@@ -2067,6 +2080,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       execution_id: z.string().describe("The execution/order ID to confirm delivery for (exec_...)"),
     },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     async ({ execution_id }) => {
       try {
         // Find the order ID from the execution
@@ -2093,6 +2107,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       rating: z.number().int().min(1).max(5).describe("Rating from 1 (poor) to 5 (excellent)"),
       comment: z.string().max(1000).optional().describe("Optional text review (max 1000 chars)"),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ execution_id, rating, comment }) => {
       try {
         // Find the order ID from the execution
@@ -2126,6 +2141,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       alert_threshold_pct: z.number().int().min(1).max(100).optional().describe("Fire a warning when monthly spend reaches this % of the cap. Default 80."),
       disable: z.boolean().optional().describe("Set to true to remove the spend cap entirely (no limit)."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ spend_cap_dollars, alert_threshold_pct, disable }) => {
       try {
         if (disable) {
@@ -2277,6 +2293,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       execution_id: z.string().describe("The execution ID to message"),
       message: z.string().describe("Follow-up message (e.g. 'I prefer organic options' or 'Can you find something cheaper?')"),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ execution_id, message }) => {
       try {
         await apiRequest("POST", `/v1/executions/${execution_id}/message`, { message });
@@ -2300,6 +2317,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       goal: z.string().optional().describe("Natural language goal for AI-powered meaningful change detection (e.g. 'price drops below $180')"),
       webhook_url: z.string().optional().describe("Webhook URL to receive change notifications"),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ name, query, schedule, price_drop_pct, goal, webhook_url }) => {
       try {
         const body: any = { name, type: "product", targets: [{ query }], schedule: schedule || "daily", conditions: {} };
@@ -2327,6 +2345,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       monitor_id: z.string().optional().describe("Get details for a specific monitor ID. Omit to list all monitors."),
       include_checks: z.boolean().optional().describe("Include recent check history (default: true for single monitor, false for list)"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ monitor_id, include_checks }) => {
       try {
         if (monitor_id) {
@@ -2385,6 +2404,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       monitor_id: z.string().describe("The monitor ID to pause or delete"),
       action: z.enum(["pause", "resume", "delete"]).describe("Action to take: pause (stop checks, keep history), resume (restart checks), delete (permanent)"),
     },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     async ({ monitor_id, action }) => {
       try {
         if (action === "delete") {
@@ -2406,6 +2426,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       monitor_id: z.string().describe("The monitor ID to check now"),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ monitor_id }) => {
       try {
         await apiRequest("POST", `/v1/monitors/${monitor_id}/run`);
@@ -2452,6 +2473,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       image_base64: z.string().describe("The image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here."),
       filename: z.string().optional().describe("Optional original filename (used to detect format: png, webp, gif). Defaults to jpeg if omitted."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ image_base64, filename }) => {
       try {
         const base64Part = String(image_base64).includes(",") ? String(image_base64).split(",", 2)[1] : String(image_base64);
@@ -2490,6 +2512,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       business_name: z.string().describe("REQUIRED. The seller's business or brand name, e.g. \"Tania's Art Studio\" or \"QuickShip Electronics\"."),
       type: z.enum(["retailer", "wholesaler", "manufacturer", "reseller"]).optional().describe("Optional. Seller type. Defaults to 'retailer'. Only ask if the seller mentions they're a wholesaler/manufacturer."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ business_name, type }) => {
       try {
         const body: any = { business_name };
@@ -2561,6 +2584,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       allow_duplicate: z.boolean().optional().describe("Create this listing even though the seller already has one with the same name. Only pass true if the seller confirms they genuinely want a second, separate listing."),
       ...listingDetailFields,
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, source_url, shipping, ship_from, shipping_policy, allow_imageless, allow_duplicate, ...details }) => {
       try {
         const body: any = { product_name, base_price };
@@ -2670,6 +2694,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         ...listingDetailFields,
       })).min(1).max(100).describe("The products to create, up to 100 per call."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ products }) => {
       try {
         const body = {
@@ -2708,6 +2733,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       raw_text: z.string().optional().describe("Pasted listing text (title, price, description - at least 10 characters). Send this alongside source_url up front for known bot-blocking platforms (Amazon, eBay, etc.) - a fetch will still be tried but is unlikely to succeed. Required whenever source_url is omitted or a fetch fails; also fills gaps URL extraction missed."),
       photo_urls: z.array(z.string()).optional().describe("Photo URLs for the listing, e.g. image links the seller pasted in chat. Seller photos lead the images array."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ source_url, raw_text, photo_urls }) => {
       try {
         const body: any = {};
@@ -2772,6 +2798,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       title: z.string().optional().describe("Item title, buyer-supplied. Ask for this up front for platforms that usually block fetches (Facebook Marketplace etc.) - the fetch is tried but is unlikely to succeed."),
       price: z.number().optional().describe("Asking price in the listing's currency, buyer-supplied (for platforms that usually block fetches)"),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ source_url, buyer_email, buyer_name, title, price }) => {
       try {
         const body: any = { source_url, buyer_email };
@@ -2832,6 +2859,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       needs_disassembly: z.boolean().optional(),
       declared_value_cents: z.number().optional().describe("Item value in cents, for courier insurance on high-value items"),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async (a) => {
       try {
         const r = await apiRequest("POST", "/v1/assist/quote", {
@@ -2879,6 +2907,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().optional(),
       fee_cents: z.number().optional().describe("The confirmed quote fee, for the booking record"),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async (a) => {
       try {
         const r = await apiRequest("POST", "/v1/assist/book", {
@@ -2919,6 +2948,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
       payoneer_email: z.string().optional().describe("Payoneer account email. Required when provider='payoneer'."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ provider, country, paypal_email, wise_recipient_id, payoneer_email }) => {
       try {
         // If no provider specified, check current status
@@ -2988,6 +3018,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       shop_handle: z.string().optional().describe("Optional. The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit on the first call to check existing connection status — only needed when no store is connected yet. Accepts the bare handle or the full myshopify.com domain (it's normalized). If the seller doesn't know it, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ shop_handle }) => {
       try {
         // Check existing connections first
@@ -3074,6 +3105,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       access_token: z.string().optional().describe("The seller's TikTok Shop access token (from TikTok Shop Partner Center authorization). Omit to check status or get instructions. This is a secret — never echo it back."),
       shop_domain: z.string().optional().describe("The seller's TikTok Shop identifier (shop id, shop cipher, or region/store name). Required together with access_token to create the connection."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ access_token, shop_domain }) => {
       try {
         // Check existing connection first.
@@ -3179,6 +3211,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       consumer_key: z.string().optional().describe("WooCommerce only — from WooCommerce > Settings > Advanced > REST API."),
       consumer_secret: z.string().optional().describe("WooCommerce only — paired with consumer_key."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ platform, access_token, shop_domain, consumer_key, consumer_secret }) => {
       if ((platform as string) === "shopify" || (platform as string) === "tiktok_shop") {
         return { content: [{ type: "text" as const, text: `Use firestarter_connect_shopify or firestarter_connect_tiktok for ${platform} — this tool only covers bigcommerce/shopee/lazada/wix/woocommerce.` }] };
@@ -3245,6 +3278,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       connection_id: z.string().optional().describe("Optional. The platform connection id (conn_...) to re-sync. Omit to sync the seller's Shopify store automatically — only needed to disambiguate when the seller has connected more than one platform."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ connection_id }) => {
       try {
         const conns = await apiRequest("GET", "/v1/connections");
@@ -3322,6 +3356,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       buyable_only: z.boolean().optional().describe("If true, return only listings that can be purchased now (seller checkout enabled). Default false (includes browse-only listings, which are clearly tagged)."),
       limit: z.number().optional().describe("Max results to return, 1-50. Default 20."),
     },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async ({ query, category, country, min_price, max_price, buyable_only, limit }) => {
       try {
         const params = new URLSearchParams();
@@ -3396,6 +3431,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list every listing you have, drafts included."),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ listing_id: rawListingId }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
@@ -3511,6 +3547,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().optional().describe("Specific listing ID to check demand for"),
       category: z.string().optional().describe("Check demand for a category (e.g. 'electronics/audio')"),
     },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ listing_id: rawListingId, category }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
@@ -3577,6 +3614,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       discoverable: z.boolean().optional().describe("Default true: buyer agents can find and auto-apply it. Set false for a targeted code usable only by someone you give it to."),
       confirm_deep_discount: z.boolean().optional().describe("Required to create a discount above 50%. Only pass it after the seller has confirmed that exact number."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ code, discount_percent, discount_amount_cents, free_shipping, ...rest }) => {
       try {
         const body: any = { code, ...rest };
@@ -3616,6 +3654,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_vouchers",
     "List your vouchers (coupons / promo codes / discount codes) with their status and what each one has cost you so far. Status is one of active, scheduled (start date not reached), expired, exhausted (hit its usage cap), or paused. Use this to answer 'what discounts am I running?' or 'how is SUMMER20 doing?'.",
     {},
+    { readOnlyHint: true, destructiveHint: false },
     async () => {
       try {
         const { vouchers } = await apiRequest("GET", "/v1/sellers/vouchers");
@@ -3653,6 +3692,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       per_buyer_limit: z.number().int().min(1).optional().describe("New per-buyer cap."),
       min_order_cents: z.number().int().min(0).optional().describe("New minimum order subtotal in cents."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ voucher_id, ...patch }) => {
       try {
         if (Object.values(patch).every((v) => v === undefined)) {
@@ -3683,6 +3723,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       dynamic_pricing: z.boolean().optional().describe("Enable/disable dynamic pricing"),
       shipping: z.number().optional().describe("Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination. Accepted for backward compatibility only."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ listing_id: rawListingId, base_price, floor_price, ceiling_price, dynamic_pricing, shipping }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
@@ -3725,6 +3766,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       ...listingDetailFields,
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, allow_imageless, ...details }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
@@ -3788,6 +3830,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       countries: z.array(z.string()).optional().describe("mode 'list' only: ISO alpha-2 destination codes to serve, e.g. ['CA','GB']. The ship-from country is always included automatically."),
       exclude: z.array(z.string()).optional().describe("mode 'worldwide' only: ISO alpha-2 codes to carve out, e.g. ['BR']."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ listing_id: rawListingId, mode, countries, exclude }) => {
       const listing_id = cleanListingId(rawListingId);
       if (mode === "list" && !(countries && countries.length > 0)) {
@@ -3857,6 +3900,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       label: z.string().optional().describe("Label, e.g. 'Bangkok warehouse'"),
       is_primary: z.boolean().optional().describe("Make this the primary (rate-quote origin)."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ location_id, is_primary, ...addr }) => {
       const hasAddress = Object.values(addr).some((v) => typeof v === "string" && v.trim());
       try {
@@ -3893,6 +3937,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       location_id: z.string().describe("The location id (floc_...) to delete"),
     },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     async ({ location_id }) => {
       try {
         await apiRequest("DELETE", `/v1/sellers/locations/${location_id}`);
@@ -3915,6 +3960,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().describe("The listing ID (lst_...) that needs possession verification"),
       photo_url: z.string().describe("Public https URL of the seller's photo showing the item next to the handwritten verification code"),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ listing_id, photo_url }) => {
       try {
         const r = await apiRequest("POST", `/v1/listings/${listing_id}/verification`, { photo_url }, VERIFY_TIMEOUT_MS);
@@ -3968,6 +4014,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       listing_id: z.string().describe("The listing ID (lst_...) to delist"),
     },
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     async ({ listing_id: rawListingId }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
@@ -3997,6 +4044,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_seller_orders",
     "View the seller's incoming orders — product, quantity, amount, net payout, order status, payout status, and carrier tracking when shipped. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
     {},
+    { readOnlyHint: true, destructiveHint: false },
     async () => {
       try {
         const data = await apiRequest("GET", "/v1/sellers/orders");
@@ -4034,6 +4082,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       order_id: z.string().describe("REQUIRED. The order_id from firestarter_seller_orders (the seller_earnings id, not the exec_... execution id)."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ order_id }) => {
       try {
         await apiRequest("PUT", `/v1/sellers/orders/${order_id}/confirm`);
@@ -4060,6 +4109,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       tracking_number: z.string().describe("REQUIRED. The carrier's tracking number for the shipment."),
       carrier: z.string().optional().describe("Optional. Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL'). Defaults to USPS when omitted — don't ask the seller unless they used a non-USPS carrier."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ order_id, tracking_number, carrier }) => {
       try {
         const body: any = { tracking_number };
@@ -4084,6 +4134,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_seller_analytics",
     "View seller revenue and order analytics - total revenue, order count, average order value, and 30-day daily breakdown. Use when a seller asks about their performance, earnings, or sales trends.",
     {},
+    { readOnlyHint: true, destructiveHint: false },
     async () => {
       try {
         const data = await apiRequest("GET", "/v1/sellers/analytics");
@@ -4121,6 +4172,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       seller_pct: z.number().min(0).max(100).optional().describe("For action 'split': percent the seller keeps. buyer_pct + seller_pct must equal 100."),
       reasoning: z.string().optional().describe("Optional note explaining the decision, recorded on the dispute and shown to the buyer."),
     },
+    { readOnlyHint: false, destructiveHint: false },
     async ({ dispute_id, action, buyer_pct, seller_pct, reasoning }) => {
       try {
         if (dispute_id) {
@@ -4210,6 +4262,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         buyer_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent YOU (the buyer) would be refunded. buyer_pct + seller_pct must equal 100."),
         seller_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent the seller keeps. buyer_pct + seller_pct must equal 100."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ action, execution_id, dispute_id, reason, type, message, image_base64, offer_id, buyer_pct, seller_pct }) => {
         try {
           // ── OPEN a new dispute ─────────────────────────────────────────────
@@ -4399,6 +4452,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         tagline: z.string().max(80).optional().describe("One-line 'what this community is about', shown under the name on the join page and in firestarter_market_preview. Change it later with firestarter_update_market."),
         handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/i, "handle must be 2-31 chars: letters, digits and hyphens, starting with a letter or digit").optional().describe("Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase), so 'Analog' and 'analog' are the same handle. Must be unique; the API rejects handles that are reserved or shaped like a share code. If it's taken the whole create fails, so retry with a different handle (or omit it and claim one later with firestarter_set_market_handle)."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ share_bps, type, display_name, tagline, handle }) => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps, display_name, tagline, slug: handle?.toLowerCase() });
@@ -4429,6 +4483,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         channel: z.string().optional().describe("Optional channel tag, e.g. 'discord', 'x', 'telegram'."),
         campaign: z.string().optional().describe("Optional campaign tag for tracking."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ program_id, channel, campaign }) => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/links", { program_id, channel, campaign });
@@ -4448,6 +4503,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         program_id: z.string().describe("The market/program id from firestarter_create_market."),
         handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/i, "handle must be 2-31 chars: letters, digits and hyphens, starting with a letter or digit").describe("Vanity handle for the community URL — firestarter.network/m/<handle>. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase). Must be unique; reserved words and share-code-shaped strings are rejected."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ program_id, handle }) => {
         try {
           const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, { slug: handle.toLowerCase() });
@@ -4477,6 +4533,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         tagline: z.string().max(80).optional().describe("One-line description shown under the name. Empty string clears it."),
         discoverable: z.boolean().optional().describe("Whether this market appears in the public 'Discover communities' list (firestarter_discover_markets)."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ program_id, display_name, tagline, discoverable }) => {
         const body: Record<string, unknown> = {};
         if (display_name !== undefined) body.display_name = display_name === "" ? null : display_name;
@@ -4506,6 +4563,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_market_earnings",
       "Show the earnings of the markets you own: override earnings pending vs paid out, and transaction counts. Use when a community owner asks how much they have earned or wants their attribution dashboard.",
       {},
+      { readOnlyHint: true, destructiveHint: false },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/attribution/earnings");
@@ -4534,6 +4592,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_my_markets",
       "List the community markets you OWN (created with firestarter_create_market): each one's program id, buyer-facing name, community URL/handle, share code, status, your fee share, and current member count. Use when an owner asks 'what markets do I have?', needs a market's program_id for another tool (firestarter_market_link, firestarter_set_market_handle, firestarter_set_market_picks), or wants an at-a-glance view. Read-only. For earnings use firestarter_market_earnings; to preview a community's public shelf use firestarter_market_preview.",
       {},
+      { readOnlyHint: true, destructiveHint: false },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/attribution/programs");
@@ -4570,6 +4629,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           min_orders: z.number().int().min(0).max(100).optional().describe("Qualifying orders needed. Ignored for the first rung, which is always 0 (everyone who joins). Must increase down the list."),
         })).min(2).max(4).optional().describe("2-4 rungs, cheapest first. Omit to keep the platform defaults."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ program_id, enabled, tiers }) => {
         try {
           const tier_config = tiers
@@ -4602,6 +4662,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         priority_hours: z.number().min(0).optional().describe("Hours the drop stays tier-gated (to min_tier and up) before opening to everyone. Omit or 0 = open to all immediately."),
         expires_in_hours: z.number().positive().optional().describe("Hours until the drop expires. Default 168 (7 days)."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ program_id, listing_id, discount_cents, max_claims, min_tier, priority_hours, expires_in_hours }) => {
         try {
           const body: Record<string, unknown> = { listing_id, discount_cents, max_claims };
@@ -4665,6 +4726,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         program_id: z.string().describe("The market/program id you own (from firestarter_my_markets) — the drop belongs to this program."),
         drop_id: z.string().describe("The drop id to cancel (from firestarter_create_drop's response or firestarter_market_drops)."),
       },
+      { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
       async ({ program_id, drop_id }) => {
         try {
           await apiRequest("POST", `/v1/attribution/programs/${encodeURIComponent(program_id)}/drops/${encodeURIComponent(drop_id)}/cancel`);
@@ -4687,6 +4749,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         program_id: z.string().describe("The market/program id you own (from firestarter_my_markets)."),
       },
+      { readOnlyHint: true, destructiveHint: false },
       async ({ program_id }) => {
         try {
           const res = await apiRequest("GET", `/v1/attribution/programs/${encodeURIComponent(program_id)}/drops`);
@@ -4731,6 +4794,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_drop_requests",
       "List the community-sponsored drop requests waiting on YOUR decision as a seller: a community owner has proposed a per-claim discount on one of your listings, and it stays invisible to buyers and unclaimable until you approve or reject it (or expires on its own). Shows the requesting community, the listing, the discount, how many members can claim it, and the deadline to decide. Use firestarter_approve_drop or firestarter_reject_drop with a request's drop id — or firestarter_trust_community_drops to stop reviewing this community's requests one by one.",
       {},
+      { readOnlyHint: true, destructiveHint: false },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/drops/requests");
@@ -4763,6 +4827,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         drop_id: z.string().describe("The drop id to approve (from firestarter_drop_requests)."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ drop_id }) => {
         try {
           await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/approve`);
@@ -4791,6 +4856,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         drop_id: z.string().describe("The drop id to reject (from firestarter_drop_requests)."),
         reason: z.string().optional().describe("Optional short reason shown to the requesting community owner (e.g. 'discount too deep for this item')."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ drop_id, reason }) => {
         try {
           await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/reject`, { reason });
@@ -4810,6 +4876,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         program_id: z.string().describe("The community/market program id to trust — appears on each request from firestarter_drop_requests, or shared directly by the community owner."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ program_id }) => {
         try {
           const res = await apiRequest("POST", `/v1/drops/programs/${encodeURIComponent(program_id)}/trust`);
@@ -4830,6 +4897,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         program_id: z.string().describe("The community/market program id to stop trusting."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ program_id }) => {
         try {
           const res = await apiRequest("POST", `/v1/drops/programs/${encodeURIComponent(program_id)}/untrust`);
@@ -4855,6 +4923,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         })).min(1).describe("The picks to set/add/remove. For 'remove', only each listing_id is used."),
         action: z.enum(["replace", "add", "remove"]).optional().describe("replace (default): the picks become the exact shelf, in order. add: append to the current shelf. remove: drop the given listing ids."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ program_id, picks, action }) => {
         const mode = action ?? "replace";
         const incoming = picks.map((p) => ({
@@ -4937,6 +5006,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         country: z.string().length(2).optional().describe("Owner's 2-letter country code (ISO-3166-1 alpha-2), e.g. 'US', 'GB'. Only needed if onboarding asks."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ country }) => {
         try {
           const status = await apiRequest("GET", "/v1/attribution/connect/status");
@@ -4974,6 +5044,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         amount_cents: z.number().int().min(100).describe("Amount to deposit, in cents. Minimum 100 ($1.00)."),
       },
+      { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
       async ({ amount_cents }) => {
         try {
           const res = await apiRequest("POST", "/v1/drops/wallet/deposit", { amount_cents });
@@ -5001,6 +5072,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_wallet_balance",
       "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
       {},
+      { readOnlyHint: true, destructiveHint: false },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/drops/wallet");
@@ -5026,6 +5098,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         amount_cents: z.number().int().min(100).describe("Amount to withdraw, in cents. Minimum 100 ($1.00)."),
       },
+      { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
       async ({ amount_cents }) => {
         // A fresh key per logical withdrawal, generated once here (not inside any
         // retry loop) so a lost-response HTTP retry of THIS call reuses the same
@@ -5070,6 +5143,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         code: z.string().describe("The community's share code or vanity handle (e.g. the <code> in firestarter.network/m/<code>)."),
       },
+      { readOnlyHint: true, destructiveHint: false },
       async ({ code }) => {
         const cleaned = code.trim();
         const community = await fetchPublicCommunity(apiRequest, cleaned);
@@ -5101,6 +5175,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         limit: z.number().int().min(1).max(24).optional().describe("Max communities to return (default 12, max 24)."),
       },
+      { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
       async ({ limit }) => {
         try {
           const qs = limit ? `?limit=${Math.max(1, Math.min(24, Math.floor(limit)))}` : "";
@@ -5135,6 +5210,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         code: z.string().describe("The market share code the community gave you."),
       },
+      { readOnlyHint: false, destructiveHint: false },
       async ({ code }) => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/redeem", { code });
@@ -5179,6 +5255,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_my_market",
       "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, AND what the community recommends (its curated shelf, each pick buyable via firestarter_execute). Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
       {},
+      { readOnlyHint: true, destructiveHint: false },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/attribution/me");
@@ -5232,6 +5309,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_leave_market",
       "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch to another one. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
       {},
+      { readOnlyHint: false, destructiveHint: false },
       async () => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/disconnect", {});

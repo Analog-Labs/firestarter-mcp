@@ -19,7 +19,7 @@ type ToolHandler = (args: any) => Promise<any>;
 function captureTools(): Record<string, ToolHandler> {
   const tools: Record<string, ToolHandler> = {};
   registerTools(
-    { tool: (n: string, _d: string, _s: any, h: ToolHandler) => { tools[n] = h; } } as any,
+    { tool: (n: string, ...rest: any[]) => { tools[n] = rest[rest.length - 1] as ToolHandler; } } as any,
     "fs_test_key",
     "http://api.test",
   );

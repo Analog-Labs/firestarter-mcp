@@ -43,7 +43,11 @@ type ToolHandler = (args: any) => Promise<any>;
 function captureTools(): Record<string, { handler: ToolHandler; description: string }> {
   const tools: Record<string, { handler: ToolHandler; description: string }> = {};
   const fakeServer = {
-    tool: (name: string, description: string, schema: any, handler: ToolHandler) => {
+    tool: (name: string, ...rest: any[]) => {
+      // (description, schema, [annotations], handler) — annotations is
+      // optional, so the handler is always the last argument.
+      const [description, schema] = rest;
+      const handler = rest[rest.length - 1];
       const shape = z.object(schema);
       tools[name] = { description, handler: (args: any) => handler(shape.parse(args)) };
     },

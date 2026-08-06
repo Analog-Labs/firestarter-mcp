@@ -13,8 +13,8 @@ type ToolHandler = (args: any) => Promise<any>;
 function captureTools(): Record<string, ToolHandler> {
   const tools: Record<string, ToolHandler> = {};
   const fakeServer = {
-    tool: (name: string, _desc: string, _schema: any, handler: ToolHandler) => {
-      tools[name] = handler;
+    tool: (name: string, ...rest: any[]) => {
+      tools[name] = rest[rest.length - 1] as ToolHandler;
     },
   };
   registerTools(fakeServer as any, "fs_test_status_account", "http://api.test");

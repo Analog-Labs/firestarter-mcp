@@ -11,7 +11,9 @@ interface CapturedTool {
 
 function captureTools(): Record<string, CapturedTool> {
   const tools: Record<string, CapturedTool> = {};
-  const fakeServer = { tool: (name: string, _d: string, _s: any, handler: ToolHandler) => { tools[name] = { handler, schema: _s }; } };
+  // Args are (description, schema, [annotations], handler) after the name —
+  // the annotations argument is optional, so take the handler from the end.
+  const fakeServer = { tool: (name: string, ...rest: any[]) => { tools[name] = { handler: rest[rest.length - 1], schema: rest[1] }; } };
   registerTools(fakeServer as any, "fsk_test_key", "http://api.test");
   return tools;
 }

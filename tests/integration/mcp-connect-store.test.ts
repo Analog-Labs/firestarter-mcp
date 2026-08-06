@@ -5,7 +5,7 @@ type ToolHandler = (args: any) => Promise<any>;
 
 function captureTools(): Record<string, ToolHandler> {
   const tools: Record<string, ToolHandler> = {};
-  const fakeServer = { tool: (name: string, _d: string, _s: any, handler: ToolHandler) => { tools[name] = handler; } };
+  const fakeServer = { tool: (name: string, ...rest: any[]) => { tools[name] = rest[rest.length - 1] as ToolHandler; } };
   registerTools(fakeServer as any, "fsk_test_key", "http://api.test");
   return tools;
 }

@@ -12,7 +12,7 @@ import { registerTools } from "../../src/mcp/tools.js";
 type ToolHandler = (args: any) => Promise<any>;
 function captureTools(): Record<string, ToolHandler> {
   const tools: Record<string, ToolHandler> = {};
-  registerTools({ tool: (n: string, _d: string, _s: any, h: ToolHandler) => { tools[n] = h; } } as any, "fsk_test", "http://api.test");
+  registerTools({ tool: (n: string, ...rest: any[]) => { tools[n] = rest[rest.length - 1] as ToolHandler; } } as any, "fsk_test", "http://api.test");
   return tools;
 }
 function installFetch(json: any) {
