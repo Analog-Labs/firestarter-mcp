@@ -44,8 +44,16 @@ await build({
   logLevel: "info",
 });
 
-// 3. Copy the manifest next to the bundle.
+// 3. Copy the manifest next to the bundle, plus the icon assets it references
+//    (icon/icons paths are resolved inside the packed bundle, so shipping the
+//    manifest without them yields an extension that installs with no icon).
 cpSync(join(mcpbDir, "manifest.json"), join(stageDir, "manifest.json"));
+//    Only the rendered PNGs ship; assets/icon.svg is the source they are
+//    generated from and nothing in the bundle references it.
+cpSync(join(mcpbDir, "assets"), join(stageDir, "assets"), {
+  recursive: true,
+  filter: (src) => !src.endsWith(".svg"),
+});
 
 // 4. Pack into a .mcpb (zip) with the official tool.
 const mcpbBin = join(root, "node_modules", ".bin", existsSync(join(root, "node_modules", ".bin", "mcpb.cmd")) ? "mcpb.cmd" : "mcpb");

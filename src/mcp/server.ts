@@ -19,7 +19,10 @@ if (!API_KEY) {
 
 const server = new McpServer({
   name: "firestarter",
-  version: "1.1.0",
+  // Kept in lockstep with mcpb/manifest.json — this string is what every
+  // connecting client sees in the initialize handshake, so a drift makes an
+  // installed extension misreport which build it is.
+  version: "2.0.0",
 });
 
 registerTools(server, API_KEY, API_BASE);
