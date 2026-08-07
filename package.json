@@ -73,6 +73,22 @@
       "default": "./dist/platform.js"
     },
     "./mcp.json": "./mcp.json",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./schemas": {
+      "types": "./dist/mcp/schemas.d.ts",
+      "default": "./dist/mcp/schemas.js"
+    },
+    "./resources": {
+      "types": "./dist/mcp/resources.d.ts",
+      "default": "./dist/mcp/resources.js"
+    },
+    "./prompts": {
+      "types": "./dist/mcp/prompts.d.ts",
+      "default": "./dist/mcp/prompts.js"
+    },
+    "./server": {
+      "types": "./dist/mcp/server.d.ts",
+      "default": "./dist/mcp/server.js"
+    }
   }
 }
