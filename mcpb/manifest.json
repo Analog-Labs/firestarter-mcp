@@ -11,7 +11,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Analog-Labs/firestarter-commerce"
+    "url": "https://github.com/Analog-Labs/firestarter-mcp"
   },
   "homepage": "https://firestarter.network",
   "documentation": "https://firestarter.network/mcp",
@@ -21,11 +21,26 @@
   ],
   "icon": "assets/icon-512.png",
   "icons": [
-    { "src": "assets/icon-32.png", "size": "32x32" },
-    { "src": "assets/icon-64.png", "size": "64x64" },
-    { "src": "assets/icon-128.png", "size": "128x128" },
-    { "src": "assets/icon-256.png", "size": "256x256" },
-    { "src": "assets/icon-512.png", "size": "512x512" }
+    {
+      "src": "assets/icon-32.png",
+      "size": "32x32"
+    },
+    {
+      "src": "assets/icon-64.png",
+      "size": "64x64"
+    },
+    {
+      "src": "assets/icon-128.png",
+      "size": "128x128"
+    },
+    {
+      "src": "assets/icon-256.png",
+      "size": "256x256"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "size": "512x512"
+    }
   ],
   "license": "ISC",
   "keywords": [
@@ -68,16 +83,46 @@
   },
   "tools_generated": true,
   "tools": [
-    { "name": "firestarter_execute", "description": "Start a purchase: find products matching a request, verify the seller, and return ranked options with real pricing and delivery choices — awaiting your approval, nothing is paid yet." },
-    { "name": "firestarter_approve", "description": "Approve an execution and pay for the selected option and delivery speed." },
-    { "name": "firestarter_status", "description": "Check the status of an execution or list recent ones." },
-    { "name": "firestarter_receipt", "description": "Retrieve proof of payment for a completed order." },
-    { "name": "firestarter_track_order", "description": "Track delivery for a shipped order." },
-    { "name": "firestarter_cancel", "description": "Cancel an execution and trigger a refund if it was already paid." },
-    { "name": "firestarter_return", "description": "Initiate a return for a completed order." },
-    { "name": "firestarter_watch", "description": "Create a price or stock monitor on a product." },
-    { "name": "firestarter_list", "description": "Create a new seller listing." },
-    { "name": "firestarter_seller_orders", "description": "View incoming orders as a seller." }
+    {
+      "name": "firestarter_execute",
+      "description": "Start a purchase: find products matching a request, verify the seller, and return ranked options with real pricing and delivery choices — awaiting your approval, nothing is paid yet."
+    },
+    {
+      "name": "firestarter_approve",
+      "description": "Approve an execution and pay for the selected option and delivery speed."
+    },
+    {
+      "name": "firestarter_status",
+      "description": "Check the status of an execution or list recent ones."
+    },
+    {
+      "name": "firestarter_receipt",
+      "description": "Retrieve proof of payment for a completed order."
+    },
+    {
+      "name": "firestarter_track_order",
+      "description": "Track delivery for a shipped order."
+    },
+    {
+      "name": "firestarter_cancel",
+      "description": "Cancel an execution and trigger a refund if it was already paid."
+    },
+    {
+      "name": "firestarter_return",
+      "description": "Initiate a return for a completed order."
+    },
+    {
+      "name": "firestarter_watch",
+      "description": "Create a price or stock monitor on a product."
+    },
+    {
+      "name": "firestarter_list",
+      "description": "Create a new seller listing."
+    },
+    {
+      "name": "firestarter_seller_orders",
+      "description": "View incoming orders as a seller."
+    }
   ],
   "compatibility": {
     "claude_desktop": ">=1.0.0",

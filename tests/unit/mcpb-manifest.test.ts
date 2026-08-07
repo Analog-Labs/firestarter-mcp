@@ -67,7 +67,11 @@ describe("mcpb/manifest.json — bundle contract", () => {
     // Local connectors must carry the policy in BOTH places. The directory
     // docs are explicit that a missing README section is an immediate
     // rejection, and the manifest array alone does not satisfy it.
-    const readme = readFileSync(resolve(API_ROOT, "..", "..", "README.md"), "utf8");
+    // This package's README sits at its root; when the server lived in the
+    // firestarter-commerce monorepo it was two levels up. Accept either so
+    // the test travels with the code.
+    const candidates = [resolve(API_ROOT, "README.md"), resolve(API_ROOT, "..", "..", "README.md")];
+    const readme = readFileSync(candidates.find((p) => existsSync(p))!, "utf8");
     expect(readme).toMatch(/^##+ *Privacy Policy/mi);
     for (const url of manifest.privacy_policies) {
       expect(readme, "README must link the same policy URL the manifest declares").toContain(url);

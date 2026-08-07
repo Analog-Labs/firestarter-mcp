@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Typecheck, test, bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Building the extension is part of CI, not just release: a manifest or
+      # asset mistake otherwise stays invisible until submission day.
+      - name: Build extension bundle
+        run: npm run build:mcpb
+
+      - name: Validate bundle manifest
+        run: npx mcpb validate mcpb/manifest.json
+
+      # Proves the packed artifact actually speaks MCP — a bundle that builds
+      # but can't complete a handshake is the failure that matters.
+      - name: Smoke-test the packed bundle
+        run: node scripts/smoke-bundle.mjs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firestarter-mcpb
+          path: mcpb/dist/*.mcpb
+          if-no-files-found: error

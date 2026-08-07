@@ -1,0 +1,55 @@
+name: Release
+
+# Tag a version to cut a release:
+#   npm version 2.1.0 && git push --follow-tags
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and attach the extension bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Same gates as CI — a tag must never ship something main wouldn't.
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:mcpb
+      - run: npx mcpb validate mcpb/manifest.json
+      - run: node scripts/smoke-bundle.mjs
+
+      # The tag is the source of truth for the release; the manifest version is
+      # what users see once installed. A mismatch ships a bundle whose tag lies.
+      - name: Check the tag matches the manifest version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          manifest_version="$(node -p 'require("./mcpb/manifest.json").version')"
+          if [ "$TAG" != "v${manifest_version}" ]; then
+            echo "::error::tag $TAG does not match mcpb/manifest.json version $manifest_version"
+            exit 1
+          fi
+          echo "tag $TAG matches manifest version $manifest_version"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" mcpb/dist/*.mcpb \
+            --title "$TAG" \
+            --generate-notes

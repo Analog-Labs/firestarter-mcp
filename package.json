@@ -1,0 +1,47 @@
+{
+  "name": "@firestarter/mcp-server",
+  "version": "2.0.0",
+  "description": "Firestarter MCP server — AI-native commerce execution: search products, buy with approval, track orders, manage listings, connect Shopify, and monitor prices.",
+  "license": "ISC",
+  "type": "module",
+  "homepage": "https://firestarter.network",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Analog-Labs/firestarter-mcp.git"
+  },
+  "bin": {
+    "firestarter-mcp": "dist/mcp/server.js"
+  },
+  "files": [
+    "dist",
+    "mcp.json"
+  ],
+  "scripts": {
+    "build:ui": "node scripts/build-shopping-ui.mjs",
+    "build": "node scripts/build-shopping-ui.mjs && tsc",
+    "build:mcpb": "node scripts/build-mcpb.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "mcp": "tsx src/mcp/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "hono": "^4.12.31",
+    "jimp": "^1.6.0",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "^1.2.0",
+    "@types/node": "^25.9.1",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.12",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
