@@ -57,18 +57,33 @@ function listingShareUrl(listing: any): string | null {
   return null;
 }
 
-function toErrorMessage(err: unknown): string {
+export function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
-  // Authentication/credential failures (401/403) must not be relayed as a generic
+  // Authentication/credential failures must not be relayed as a generic
   // "shopping service" outage. The upstream agent (e.g. the WhatsApp/Cole bridge)
   // otherwise tells the buyer the search failed — and may fabricate that a search
   // ran. Nothing is searched on these: auth runs before any provider/execution
-  // call, so the right action is to re-provision the key, not to retry.
+  // call.
+  //
+  // #556: but a 401 is not always "the key is dead". Only the codes the API-key
+  // middleware emits for a genuinely bad key (INVALID_KEY / INVALID_KEY_FORMAT)
+  // earn the "re-provision" instruction — an API key sent to a JWT-only
+  // user-session route 401s with INVALID_TOKEN, and telling the operator to
+  // re-provision a perfectly good key sends them down the wrong path.
   if (err instanceof ApiError) {
     const isAuthCode =
       err.code === "INVALID_KEY" || err.code === "INVALID_KEY_FORMAT" || err.code === "MISSING_AUTH";
     if (err.status === 401 || isAuthCode) {
-      return "Authentication failed: the Firestarter API key is invalid or revoked. This is a credential/configuration problem, not a product-search outage — no search was performed. Do not retry; the integration's API key must be re-provisioned.";
+      if (err.code === "INVALID_KEY" || err.code === "INVALID_KEY_FORMAT") {
+        return "Authentication failed: the Firestarter API key is invalid or revoked. This is a credential/configuration problem, not a product-search outage — no search was performed. Do not retry; the integration's API key must be re-provisioned.";
+      }
+      if (err.code === "MISSING_AUTH") {
+        return "Authentication failed: no credentials reached the Firestarter API (missing Authorization header). This is an integration configuration problem, not an outage — no search was performed. Do not retry until the integration attaches its API key.";
+      }
+      if (err.code === "INVALID_TOKEN") {
+        return "Authentication failed: this endpoint expects a signed-in user session (JWT) and rejected the API key. The key itself may be perfectly valid — do NOT re-provision it. The integration is calling a user-session endpoint with an API key; fix the endpoint or auth scheme. No search was performed.";
+      }
+      return `Authentication failed (${err.code || "401"}): ${msg} This is a credential/configuration problem, not a product-search outage — no search was performed.`;
     }
   }
   if (msg.includes("timed out") || msg.includes("aborted")) {
@@ -224,7 +239,7 @@ function tidyProductUrl(url: string): string {
  * possession-verification payload on 409s). Keep them on the thrown error so
  * tool catch blocks can render specifics instead of a flattened string.
  */
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number;
   code: string | null;
   body: any;
