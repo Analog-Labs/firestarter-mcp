@@ -14,7 +14,8 @@
   },
   "files": [
     "dist",
-    "mcp.json"
+    "mcp.json",
+    "mcpb/dist"
   ],
   "scripts": {
     "build:ui": "node scripts/build-shopping-ui.mjs",
@@ -24,7 +25,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "mcp": "tsx src/mcp/server.ts",
-    "prepare": "node scripts/build-shopping-ui.mjs && tsc"
+    "prepare": "node scripts/build-shopping-ui.mjs && tsc && node scripts/build-mcpb.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
