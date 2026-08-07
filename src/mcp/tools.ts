@@ -9,6 +9,7 @@ import { isRelevantMatch } from "../lib/relevance.js";
 import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS } from "./schemas.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
+import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -407,11 +408,16 @@ function extractBlobId(url: string): string | null {
  *  ~270KB of base64 PER option and can exceed a client's inline-render budget.
  *  Falls back to the full blob (undecodable source), then null (HTTP retry). */
 async function readBlobDirect(id: string): Promise<{ data: string; mimeType: string } | null> {
+  // Both reads need a database. Standalone (stdio / this package on its own)
+  // there isn't one, so we skip straight to the HTTP fallback; the Firestarter
+  // API injects its pool at boot and gets the fast path.
+  const { pool, imageStore } = getPlatformAdapters();
+  if (!pool && !imageStore) return null;
+
   try {
-    const store = await import("../services/image-store.js");
     // Thumbnail first — small, fast, and always a supported JPEG.
     try {
-      const thumb = await store.getOrCreateThumb(id);
+      const thumb = imageStore ? await imageStore.getOrCreateThumb(id) : null;
       if (thumb?.bytes) {
         const tmime = (thumb.contentType || "").split(";")[0].trim().toLowerCase();
         const mimeType = SUPPORTED_IMAGE_MIME.has(tmime) ? tmime : sniffImageMime(new Uint8Array(thumb.bytes));
@@ -419,7 +425,7 @@ async function readBlobDirect(id: string): Promise<{ data: string; mimeType: str
       }
     } catch { /* thumb unavailable (e.g. Jimp can't decode) — fall back to full */ }
 
-    const { pool } = await import("../db/pool.js");
+    if (!pool) return null;
     const r = await pool.query(
       "SELECT content_type, bytes FROM listing_image_blobs WHERE id = $1",
       [id],

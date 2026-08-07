@@ -23,7 +23,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "mcp": "tsx src/mcp/server.ts"
+    "mcp": "tsx src/mcp/server.ts",
+    "prepare": "node scripts/build-shopping-ui.mjs && tsc"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5",
@@ -43,5 +44,35 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "main": "./dist/mcp/route.js",
+  "types": "./dist/mcp/route.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/mcp/route.d.ts",
+      "default": "./dist/mcp/route.js"
+    },
+    "./route": {
+      "types": "./dist/mcp/route.d.ts",
+      "default": "./dist/mcp/route.js"
+    },
+    "./ws-transport": {
+      "types": "./dist/mcp/ws-transport.d.ts",
+      "default": "./dist/mcp/ws-transport.js"
+    },
+    "./ucp-schema": {
+      "types": "./dist/mcp/ucp-schema.d.ts",
+      "default": "./dist/mcp/ucp-schema.js"
+    },
+    "./tools": {
+      "types": "./dist/mcp/tools.d.ts",
+      "default": "./dist/mcp/tools.js"
+    },
+    "./platform": {
+      "types": "./dist/platform.d.ts",
+      "default": "./dist/platform.js"
+    },
+    "./mcp.json": "./mcp.json",
+    "./package.json": "./package.json"
   }
 }
