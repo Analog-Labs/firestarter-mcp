@@ -2150,40 +2150,60 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_spend_cap
   server.tool(
     "firestarter_spend_cap",
-    "Read, raise, lower, set, or remove the buyer's monthly spend cap - the safety limit on total monthly spend. THIS is the tool for changing the spending limit: call it whenever the buyer wants to increase, raise, bump, set, lower, or change their cap (e.g. 'increase my spending cap to $100', 'raise my limit to $X', 'set a spending limit', 'cap my spending at $X', 'what's my budget?'). IMPORTANT: when a purchase is rejected with SPEND_CAP_EXCEEDED and the buyer wants to proceed, call THIS tool with a higher spend_cap_dollars and then retry the purchase - never tell the buyer you cannot change the cap. Pass no arguments to read the current cap; set disable:true to remove it entirely. Also shows/sets the alert threshold (default 80%) at which a warning fires.",
+    "Read the buyer's monthly spend cap - the safety limit on total monthly spend - and the alert threshold at which a warning fires. Read-only: use firestarter_set_spend_cap to raise, lower, set, or remove the cap (including after a purchase is rejected with SPEND_CAP_EXCEEDED).",
+    {},
+    { title: "Check Spending Cap", readOnlyHint: true, destructiveHint: false },
+    async () => {
+      try {
+        const balance = await apiRequest("GET", "/v1/billing/balance");
+        const cap = balance.spend_cap_cents;
+        const threshold = balance.alert_threshold_pct || 80;
+        if (!cap) {
+          return { content: [{ type: "text" as const, text: `**No spend cap set.** There is currently no monthly spending limit. Use \`firestarter_set_spend_cap\` with \`spend_cap_dollars\` to set one.` }] };
+        }
+        return { content: [{ type: "text" as const, text: `**Monthly spend cap: $${(cap / 100).toFixed(2)}**\nAlert threshold: ${threshold}%\n\nPurchases that would exceed $${(cap / 100).toFixed(2)} in a calendar month are automatically rejected.` }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error reading spend cap: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_set_spend_cap
+  server.tool(
+    "firestarter_set_spend_cap",
+    "Raise, lower, set, or remove the buyer's monthly spend cap - the safety limit on total monthly spend. Call this whenever the buyer wants to increase, raise, bump, set, lower, or change their cap (e.g. 'increase my spending cap to $100', 'raise my limit to $X', 'cap my spending at $X'). IMPORTANT: when a purchase is rejected with SPEND_CAP_EXCEEDED and the buyer wants to proceed, call this with a higher spend_cap_dollars and then retry the purchase - never tell the buyer you cannot change the cap. Set disable:true to remove the cap entirely. Use firestarter_spend_cap to read the current value without changing it.",
     {
-      spend_cap_dollars: z.number().min(1).optional().describe("New monthly spend cap in dollars (e.g. 500 = $500/month). Omit to just read the current value."),
+      spend_cap_dollars: z.number().min(1).optional().describe("New monthly spend cap in dollars (e.g. 500 = $500/month)."),
       alert_threshold_pct: z.number().int().min(1).max(100).optional().describe("Fire a warning when monthly spend reaches this % of the cap. Default 80."),
       disable: z.boolean().optional().describe("Set to true to remove the spend cap entirely (no limit)."),
     },
-    { title: "Set Spending Cap", readOnlyHint: false, destructiveHint: false },
+    // Overwrites a persistent account-level safety limit — raising it loosens a
+    // spending guard, so a host should confirm rather than fire it silently.
+    // Re-setting the same value is a no-op, hence idempotent.
+    { title: "Set Spending Cap", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     async ({ spend_cap_dollars, alert_threshold_pct, disable }) => {
       try {
         if (disable) {
           await apiRequest("PATCH", "/v1/billing/settings", { spend_cap_cents: null });
           return { content: [{ type: "text" as const, text: `**Spend cap removed.** There is no monthly spending limit. Agents can spend without a cap.` }] };
         }
-        if (spend_cap_dollars !== undefined || alert_threshold_pct !== undefined) {
-          const body: any = {};
-          if (spend_cap_dollars !== undefined) body.spend_cap_cents = Math.round(spend_cap_dollars * 100);
-          if (alert_threshold_pct !== undefined) body.alert_threshold_pct = alert_threshold_pct;
-          await apiRequest("PATCH", "/v1/billing/settings", body);
-          let text = `**Spend cap updated.**\n`;
-          if (spend_cap_dollars !== undefined) text += `Monthly limit: $${spend_cap_dollars}\n`;
-          if (alert_threshold_pct !== undefined) text += `Alert at: ${alert_threshold_pct}% of cap\n`;
-          text += `\nPurchases that would exceed this cap are automatically rejected.`;
-          return { content: [{ type: "text" as const, text }] };
+        if (spend_cap_dollars === undefined && alert_threshold_pct === undefined) {
+          return {
+            content: [{ type: "text" as const, text: "Pass spend_cap_dollars, alert_threshold_pct, or disable. To read the current cap without changing it, use firestarter_spend_cap." }],
+            isError: true,
+          };
         }
-        // Read current
-        const balance = await apiRequest("GET", "/v1/billing/balance");
-        const cap = balance.spend_cap_cents;
-        const threshold = balance.alert_threshold_pct || 80;
-        if (!cap) {
-          return { content: [{ type: "text" as const, text: `**No spend cap set.** There is currently no monthly spending limit. Use \`firestarter_spend_cap\` with \`spend_cap_dollars\` to set one.` }] };
-        }
-        return { content: [{ type: "text" as const, text: `**Monthly spend cap: $${(cap / 100).toFixed(2)}**\nAlert threshold: ${threshold}%\n\nPurchases that would exceed $${(cap / 100).toFixed(2)} in a calendar month are automatically rejected.` }] };
+        const body: any = {};
+        if (spend_cap_dollars !== undefined) body.spend_cap_cents = Math.round(spend_cap_dollars * 100);
+        if (alert_threshold_pct !== undefined) body.alert_threshold_pct = alert_threshold_pct;
+        await apiRequest("PATCH", "/v1/billing/settings", body);
+        let text = `**Spend cap updated.**\n`;
+        if (spend_cap_dollars !== undefined) text += `Monthly limit: $${spend_cap_dollars}\n`;
+        if (alert_threshold_pct !== undefined) text += `Alert at: ${alert_threshold_pct}% of cap\n`;
+        text += `\nPurchases that would exceed this cap are automatically rejected.`;
+        return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
-        return { content: [{ type: "text" as const, text: `Error managing spend cap: ${toErrorMessage(err)}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error updating spend cap: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );
@@ -2227,14 +2247,43 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_auto_approve_limit
   server.tool(
     "firestarter_auto_approve_limit",
-    "Read or set the buyer's PERSISTENT, account-level auto-approval limit for purchases. This is a real stored account setting (not a chat note or session memory): orders whose total is at or below the limit are auto-approved and paid without a manual confirmation step, and anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Call with NO arguments to report the current limit. To change it, pass set_limit_usd (e.g. 50 for '$50 per order'; 0 makes every order require manual approval) OR disable=true to turn auto-approval off entirely. The maximum limit is $10,000. Always confirm the exact dollar amount with the buyer before setting it — never invent, assume, or round a value the buyer did not state. Only report success after this tool returns a confirmation.",
+    "Read the buyer's PERSISTENT, account-level auto-approval limit for purchases. This is a real stored account setting (not a chat note or session memory): orders whose total is at or below the limit are auto-approved and paid without a manual confirmation step, and anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Read-only: use firestarter_set_auto_approve_limit to change or disable it.",
+    {},
+    { title: "Check Auto-Approve Limit", readOnlyHint: true, destructiveHint: false },
+    async () => {
+      try {
+        const bal = await apiRequest("GET", "/v1/billing/balance");
+        const cents = bal.auto_approve_threshold_cents;
+        // null = auto-approval turned OFF; 0 = a configured $0 limit (nothing
+        // auto-approves). Report them distinctly so a buyer who explicitly set
+        // $0 isn't told the feature is "OFF".
+        const text =
+          cents == null
+            ? "Auto-approval is OFF — every order requires your manual approval."
+            : cents === 0
+              ? "Your auto-approval limit is $0.00 per order — every order requires your manual approval."
+              : `Your auto-approval limit is $${(cents / 100).toFixed(2)} per order. Orders at or below this auto-approve; anything above pauses for your approval.`;
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return {
+          content: [{ type: "text" as const, text: `Error reading auto-approval limit: ${toErrorMessage(err)}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool: firestarter_set_auto_approve_limit
+  server.tool(
+    "firestarter_set_auto_approve_limit",
+    "Set or disable the buyer's PERSISTENT, account-level auto-approval limit for purchases. Orders at or below the limit are auto-approved and paid without a manual confirmation step; anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Pass set_limit_usd (e.g. 50 for '$50 per order'; 0 makes every order require manual approval) OR disable=true to turn auto-approval off entirely. The maximum limit is $10,000. Always confirm the exact dollar amount with the buyer before setting it — never invent, assume, or round a value the buyer did not state. Only report success after this tool returns a confirmation. Use firestarter_auto_approve_limit to read the current value without changing it.",
     {
       set_limit_usd: z
         .number()
         .min(0)
         .max(10_000)
         .optional()
-        .describe("New auto-approve limit in USD. Orders at or below this amount auto-approve; anything above pauses for approval. 0 = require manual approval for every order. Omit to just read the current setting."),
+        .describe("New auto-approve limit in USD. Orders at or below this amount auto-approve; anything above pauses for approval. 0 = require manual approval for every order."),
       disable: z
         .boolean()
         .optional()
@@ -2243,23 +2292,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // Mutates a PERSISTENT account-level billing setting (overwrites the prior
     // value), so it is destructive in the MCP sense; re-setting the same value
     // is a no-op, hence idempotent.
-    { title: "Auto Approve Limit", destructiveHint: true, idempotentHint: true },
+    { title: "Set Auto-Approve Limit", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     async ({ set_limit_usd, disable }) => {
       try {
-        // No mutation requested → report the currently persisted limit.
         if (set_limit_usd === undefined && !disable) {
-          const bal = await apiRequest("GET", "/v1/billing/balance");
-          const cents = bal.auto_approve_threshold_cents;
-          // null = auto-approval turned OFF; 0 = a configured $0 limit (nothing
-          // auto-approves). Report them distinctly so a buyer who explicitly set
-          // $0 isn't told the feature is "OFF".
-          const text =
-            cents == null
-              ? "Auto-approval is OFF — every order requires your manual approval."
-              : cents === 0
-                ? "Your auto-approval limit is $0.00 per order — every order requires your manual approval."
-                : `Your auto-approval limit is $${(cents / 100).toFixed(2)} per order. Orders at or below this auto-approve; anything above pauses for your approval.`;
-          return { content: [{ type: "text" as const, text }] };
+          return {
+            content: [{ type: "text" as const, text: "Pass set_limit_usd or disable. To read the current limit without changing it, use firestarter_auto_approve_limit." }],
+            isError: true,
+          };
         }
 
         if (set_limit_usd !== undefined && disable) {

@@ -1,5 +1,9 @@
 /**
- * firestarter_auto_approve_limit MCP tool.
+ * firestarter_auto_approve_limit (read) and firestarter_set_auto_approve_limit
+ * (write) MCP tools.
+ *
+ * Split into a reader and a setter because Anthropic's directory review rejects
+ * a single tool that both reads and mutates; the reader keeps the original name.
  *
  * Exposes the PERSISTENT account-level auto-approval limit
  * (organizations.auto_approve_threshold_cents) as a real tool, so an agent can
@@ -88,7 +92,7 @@ describe("firestarter_auto_approve_limit MCP tool", () => {
       });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const text = textOf(await captureTools().firestarter_auto_approve_limit({ set_limit_usd: 50 }));
+    const text = textOf(await captureTools().firestarter_set_auto_approve_limit({ set_limit_usd: 50 }));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(text).toContain("$50.00 per order");
     expect(text).toContain("all future orders");
@@ -103,14 +107,14 @@ describe("firestarter_auto_approve_limit MCP tool", () => {
       });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const text = textOf(await captureTools().firestarter_auto_approve_limit({ disable: true }));
+    const text = textOf(await captureTools().firestarter_set_auto_approve_limit({ disable: true }));
     expect(text).toContain("OFF");
   });
 
   it("rejects passing both set_limit_usd and disable without calling the API", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const res = await captureTools().firestarter_auto_approve_limit({ set_limit_usd: 50, disable: true });
+    const res = await captureTools().firestarter_set_auto_approve_limit({ set_limit_usd: 50, disable: true });
     expect(res.isError).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -118,7 +122,7 @@ describe("firestarter_auto_approve_limit MCP tool", () => {
   it("rejects a sub-cent set_limit_usd instead of silently rounding", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const res = await captureTools().firestarter_auto_approve_limit({ set_limit_usd: 49.999 });
+    const res = await captureTools().firestarter_set_auto_approve_limit({ set_limit_usd: 49.999 });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain("whole-cent");
     expect(fetchMock).not.toHaveBeenCalled();
@@ -133,7 +137,7 @@ describe("firestarter_auto_approve_limit MCP tool", () => {
       });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const text = textOf(await captureTools().firestarter_auto_approve_limit({ set_limit_usd: 49.99 }));
+    const text = textOf(await captureTools().firestarter_set_auto_approve_limit({ set_limit_usd: 49.99 }));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(text).toContain("$49.99 per order");
   });
