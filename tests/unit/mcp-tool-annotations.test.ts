@@ -101,6 +101,22 @@ describe("MCP tool safety annotations", () => {
     }
   });
 
+  it("gives every tool a human-readable title", () => {
+    // Anthropic's directory review requires a title on every tool alongside
+    // the hints; the submission flow rejects tools that are missing one.
+    const untitled = allTools().filter((t) => !/\btitle:/.test(annotationsOf(t)));
+    expect(untitled, `tools missing an annotations title: ${untitled.join(", ")}`).toEqual([]);
+  });
+
+  it("writes titles for humans, not as the raw tool name", () => {
+    for (const tool of allTools()) {
+      const title = annotationsOf(tool).match(/title: "([^"]+)"/)?.[1] ?? "";
+      expect(title.length, `${tool} has an empty title`).toBeGreaterThan(2);
+      // A title that still reads like an identifier defeats the purpose.
+      expect(title, `${tool} title looks like a raw identifier`).not.toMatch(/firestarter_|_/);
+    }
+  });
+
   it("declares payment tools non-idempotent, so a retry is never silently repeated", () => {
     // Repeating a charge is not a no-op; the hint tells hosts not to auto-retry.
     for (const tool of ["firestarter_approve", "firestarter_fund_wallet", "firestarter_withdraw_wallet"]) {

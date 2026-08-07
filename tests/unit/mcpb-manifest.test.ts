@@ -63,6 +63,22 @@ describe("mcpb/manifest.json — bundle contract", () => {
     }
   });
 
+  it("documents the privacy policy in README.md, not only in the manifest", () => {
+    // Local connectors must carry the policy in BOTH places. The directory
+    // docs are explicit that a missing README section is an immediate
+    // rejection, and the manifest array alone does not satisfy it.
+    const readme = readFileSync(resolve(API_ROOT, "..", "..", "README.md"), "utf8");
+    expect(readme).toMatch(/^##+ *Privacy Policy/mi);
+    for (const url of manifest.privacy_policies) {
+      expect(readme, "README must link the same policy URL the manifest declares").toContain(url);
+    }
+    // The five topics review checks for.
+    const section = readme.slice(readme.search(/^##+ *Privacy Policy/mi));
+    for (const topic of [/collect/i, /stored|storage/i, /shar/i, /retain|retention/i, /contact|@/i]) {
+      expect(section, `privacy section does not cover ${topic}`).toMatch(topic);
+    }
+  });
+
   it("ships every icon file it references", () => {
     const refs: string[] = [manifest.icon, ...(manifest.icons ?? []).map((i: any) => i.src)];
     for (const ref of refs) {
