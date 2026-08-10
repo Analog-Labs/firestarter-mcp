@@ -187,6 +187,28 @@ function formatCommunityShelf(community: any): string | null {
 }
 
 /**
+ * Render what the community SELLS — its own listings, disjoint from the shelf
+ * by construction (the API refuses own listings as picks precisely because
+ * they belong here). Until this existed, a seller-owned community with an
+ * empty shelf previewed as an empty market (QA 2026-08-10). Null when the
+ * community sells nothing, so callers fall back cleanly. Exported for tests.
+ */
+export function formatCommunitySells(community: any): string | null {
+  const sells: any[] = Array.isArray(community?.sells) ? community.sells : [];
+  if (sells.length === 0) return null;
+  const name =
+    typeof community?.name === "string" && community.name.trim() ? community.name.trim() : "this community";
+  const lines: string[] = [`**What ${name} sells:**`];
+  for (const s of sells.slice(0, SHELF_RENDER_LIMIT)) {
+    const nm = typeof s?.product_name === "string" && s.product_name.trim() ? s.product_name.trim() : "Untitled";
+    const price = Number.isFinite(Number(s?.price)) ? `$${Number(s.price).toFixed(2)}` : "price at checkout";
+    const id = typeof s?.listing_id === "string" && s.listing_id ? ` (listing_id: \`${s.listing_id}\`)` : "";
+    lines.push(`• ${nm} — ${price}${id}`);
+  }
+  return lines.join("\n");
+}
+
+/**
  * Render the "what this community offers" block: the tier ladder (only when
  * meaningful) and bucketed social proof. Returns null when there is nothing to
  * show. Framing: tiers are ACCESS, never money; social proof is bucketed, never
@@ -5304,7 +5326,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_market_preview",
-      "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, and its curated shelf (the owner's product picks, each with a listing_id you can buy via firestarter_execute). Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend' before committing — show the picks, then let them choose to join (firestarter_join_market) or just buy a pick. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: JOINING itself gives the buyer no automatic discount or cashback — their price is unchanged and the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. A community MAY separately fund drops (real discounts the buyer claims before checkout) and reward members with tiered early access — surface those when present, but never imply that joining alone grants a discount.",
+      "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, its curated shelf (the owner's picks of OTHER sellers' products), and what the community itself sells (its own listings) — every item with a listing_id you can buy via firestarter_execute. Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend / what's in this market' before committing — show both surfaces, then let them choose to join (firestarter_join_market) or just buy an item. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: JOINING itself gives the buyer no automatic discount or cashback — their price is unchanged and the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. A community MAY separately fund drops (real discounts the buyer claims before checkout) and reward members with tiered early access — surface those when present, but never imply that joining alone grants a discount.",
       {
         code: z.string().describe("The community's share code or vanity handle (e.g. the <code> in firestarter.network/m/<code>)."),
       },
@@ -5321,8 +5343,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (community.active === false) {
           parts.push("\n_This community link isn't accepting new members right now._");
         }
+        // Both product surfaces, labelled — what the community RECOMMENDS (the
+        // curated shelf) and what it SELLS (its own listings). Rendering only
+        // the shelf made a seller-owned community with an empty shelf preview
+        // as an empty market even though its own products were live.
         const shelf = formatCommunityShelf(community);
-        parts.push("\n" + (shelf ?? `${name} hasn't curated a shelf yet — you can still shop the full Firestarter catalog while supporting them.`));
+        const sells = formatCommunitySells(community);
+        if (shelf) parts.push("\n" + shelf);
+        if (sells) parts.push("\n" + sells);
+        if (!shelf) {
+          parts.push("\n" + (sells
+            ? `_${name} hasn't curated a Recommends shelf of other sellers' products yet._`
+            : `${name} hasn't curated a shelf yet — you can still shop the full Firestarter catalog while supporting them.`));
+        }
         const offers = formatCommunityOffers(community);
         if (offers) parts.push("\n" + offers);
         if (community.active !== false) {
@@ -5395,11 +5428,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             text += `\n\n**Welcome to ${community.name}.**`;
             if (community.tagline) text += `\n${community.tagline}`;
             const shelf = formatCommunityShelf(community);
-            if (shelf) {
-              text += `\n\n${shelf}`;
-            } else {
-              // No curated shelf yet: point at what the community deals in, or a
-              // generic next step, so the buyer still has somewhere to go.
+            const sells = formatCommunitySells(community);
+            if (shelf) text += `\n\n${shelf}`;
+            if (sells) text += `\n\n${sells}`;
+            if (!shelf && !sells) {
+              // Neither surface has products yet: point at what the community
+              // deals in, or a generic next step, so the buyer still has
+              // somewhere to go.
               const categories = Array.isArray(community.top_categories) ? community.top_categories.slice(0, 3) : [];
               text += categories.length > 0
                 ? `\n\nPopular here: ${categories.join(", ")}. Next: search this market for something you need, then review the quote before approving.`
@@ -5418,7 +5453,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_my_market",
-      "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, AND what the community recommends (its curated shelf, each pick buyable via firestarter_execute). Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
+      "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, AND its products — what the community recommends (its curated shelf) and what it sells (its own listings), each buyable via firestarter_execute. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
       {},
       { title: "My Market", readOnlyHint: true, destructiveHint: false },
       async () => {
@@ -5459,9 +5494,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // above stands on its own if the public view can't be fetched.
           const publicView = community.code ? await fetchPublicCommunity(apiRequest, community.code) : null;
           const shelf = publicView ? formatCommunityShelf(publicView) : null;
+          const sells = publicView ? formatCommunitySells(publicView) : null;
           const offers = publicView ? formatCommunityOffers(publicView, tier?.index ?? null) : null;
           const text = lines.join("\n")
             + (shelf ? `\n\n${shelf}` : "")
+            + (sells ? `\n\n${sells}` : "")
             + (offers ? `\n\n${offers}` : "");
           return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
