@@ -40,8 +40,12 @@ export function mcpApiBase(): string {
  */
 export function buildMcpServer(apiKey: string, apiBase: string): McpServer {
   const server = new McpServer({
+    // Kept in lockstep with server.ts and mcpb/manifest.json by
+    // scripts/sync-version.mjs. This is the version every REMOTE client sees in
+    // the initialize handshake — api.firestarter.network/mcp reported 1.1.0
+    // while the extension reported 2.1.0, because only server.ts was synced.
+    version: "2.1.1",
     name: "firestarter",
-    version: "1.1.0",
   });
 
   registerTools(server, apiKey, apiBase);
