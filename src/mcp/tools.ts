@@ -2641,12 +2641,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         countries: z.array(z.string()).optional(),
         exclude: z.array(z.string()).optional(),
       }).optional().describe("Where the seller is willing to ship this item. Omit to default to WORLDWIDE (ships anywhere the platform hard rules allow; cross-border buyers are shown a duties disclosure). mode 'domestic' = home country only; mode 'list' with countries:['CA','GB',...] = home country plus those ISO alpha-2 destinations; mode 'worldwide' (optionally exclude:['BR',...]) = everywhere except excluded codes. Sanctioned/embargoed destinations are always blocked regardless of this setting."),
+      fulfillment_mode: z.enum(["platform", "seller_managed"]).optional().describe("How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Omit for auto: platform label when a carrier-ratable ship-from exists, otherwise seller-managed. Pass 'seller_managed' when the seller says they ship orders themselves / with their own courier."),
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       allow_duplicate: z.boolean().optional().describe("Create this listing even though the seller already has one with the same name. Only pass true if the seller confirms they genuinely want a second, separate listing."),
       ...listingDetailFields,
     },
     { title: "Create Listing", readOnlyHint: false, destructiveHint: false },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, source_url, shipping, ship_from, shipping_policy, allow_imageless, allow_duplicate, ...details }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, source_url, shipping, ship_from, shipping_policy, fulfillment_mode, allow_imageless, allow_duplicate, ...details }) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -2660,6 +2661,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         void shipping;
         if (ship_from) body.ship_from = ship_from;
         if (shipping_policy) body.shipping_policy = shipping_policy;
+        if (fulfillment_mode) body.fulfillment_mode = fulfillment_mode;
         if (allow_imageless !== undefined) body.allow_imageless = allow_imageless;
         if (allow_duplicate !== undefined) body.allow_duplicate = allow_duplicate;
         for (const [key, value] of Object.entries(details)) {
@@ -2672,6 +2674,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
         text += `Shipping: estimated at checkout by the delivery provider, based on the buyer's destination\n`;
+        if (listing.fulfillment_mode === "seller_managed") text += `Fulfillment: seller-managed — each paid order holds in awaiting_shipment until you ship it and add tracking with firestarter_ship_order\n`;
         if (Array.isArray(listing.images) && listing.images.length) text += `Photos: ${listing.images.length} attached\n`;
         // Surface activation blocks so the seller knows WHY the listing is a
         // draft and what to do about it — without this the agent just says
@@ -3824,11 +3827,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
       image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      fulfillment_mode: z.enum(["platform", "seller_managed"]).nullable().optional().describe("How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Pass null to clear back to auto (platform label when a carrier-ratable ship-from exists, otherwise seller-managed)."),
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       ...listingDetailFields,
     },
     { title: "Update Listing", readOnlyHint: false, destructiveHint: false },
-    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, allow_imageless, ...details }) => {
+    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, fulfillment_mode, allow_imageless, ...details }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
@@ -3838,6 +3842,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (status !== undefined) body.status = status;
         if (image_urls !== undefined) body.images = image_urls;
+        if (fulfillment_mode !== undefined) body.fulfillment_mode = fulfillment_mode;
         if (allow_imageless !== undefined) body.allow_imageless = allow_imageless;
         for (const [key, value] of Object.entries(details)) {
           if (value !== undefined) body[key] = value;
