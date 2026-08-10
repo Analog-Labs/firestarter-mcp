@@ -118,6 +118,32 @@ describe("firestarter_assist_quote", () => {
     expect(res.isError).toBeUndefined();
     expect(textOf(res)).toMatch(/no courier could quote|arrange the handoff themselves/i);
   });
+
+  /**
+   * 2026-08-10 QA pass: a test-mode Bangkok route (Lalamove territory) came
+   * back with the generic "outside coverage, or the item may be too large"
+   * text — wrong, since the API's test_mode_gated flag (routes/assist.ts)
+   * means the request never even reached a provider. The tool must relay that
+   * distinction instead of defaulting to the coverage-doubt message.
+   */
+  it("test_mode_gated renders as a sandbox/test-mode note, not a coverage doubt", async () => {
+    const tools = captureTools();
+    installFetch(() => ({
+      status: 200,
+      json: {
+        enabled: true, count: 0, quotes: [],
+        test_mode_gated: true,
+        message: "No quote: this is a test-mode order and this environment has no ASSIST_SANDBOX courier credentials configured, so assist sits out test orders on every route — this is not a coverage gap. A live-mode order on this same route would be quoted normally.",
+      },
+    }));
+    const res = await tools.firestarter_assist_quote(QUOTE_ARGS);
+    const text = textOf(res);
+
+    expect(res.isError).toBeUndefined();
+    expect(text.toLowerCase()).toContain("test-mode");
+    expect(text).not.toMatch(/outside coverage|item may be too large/i);
+    expect(text).not.toMatch(/arrange the handoff themselves/i);
+  });
 });
 
 describe("firestarter_assist_book", () => {

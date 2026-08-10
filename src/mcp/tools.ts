@@ -236,6 +236,38 @@ function tidyProductUrl(url: string): string {
 }
 
 /**
+ * Store-connection error_message values often ARE the raw upstream HTTP
+ * response (catalog-sync/adapters.ts's apiFetch: `${status} ${statusText}:
+ * ${body}`), so the JSON body — with whatever internal fields the upstream
+ * API put in it (request_id, logid, numeric error codes) — was being relayed
+ * to the seller verbatim. The leading "STATUS TEXT" is genuinely useful
+ * context; the raw body belongs in server logs, not seller-facing chat.
+ */
+function summarizeConnectionError(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const statusLineMatch = raw.match(/^(\d{3}\s+[^:]+):\s*\{/s);
+  const summary = statusLineMatch ? statusLineMatch[1] : raw;
+  return summary.length > 160 ? `${summary.slice(0, 160)}…` : summary;
+}
+
+/**
+ * Whether it's accurate to tell the seller their catalog is listed/
+ * discoverable. status !== 'error' is the easy case. In error state it
+ * depends on whether a sync EVER completed: last_synced_at set means
+ * previously-synced items are still listed (just stale — the CURRENT sync
+ * attempt is failing); no last_synced_at means the connection has never
+ * produced a listing at all, so nothing is discoverable yet.
+ */
+function connectionListedLine(conn: { status?: string; last_synced_at?: string | null }, noun: string): string {
+  if (conn.status !== "error") {
+    return `Products from this ${noun} are listed on Firestarter and discoverable by buyers' agents.`;
+  }
+  return conn.last_synced_at
+    ? `This connection is currently in an error state — products from the last successful sync remain listed, but recent changes in the ${noun} are NOT reflected.`
+    : `This connection is in an error state and has never completed a sync, so nothing from it is listed/discoverable yet.`;
+}
+
+/**
  * Non-2xx API responses carry structured bodies (code + extra data, e.g. the
  * possession-verification payload on 409s). Keep them on the thrown error so
  * tool catch blocks can render specifics instead of a flattened string.
@@ -2936,7 +2968,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           return { content: [{ type: "text" as const, text: "Fulfillment assist is not enabled on this workspace yet - the item would need to be moved by the buyer and seller themselves." }] };
         }
         if (!r.quotes?.length) {
-          return { content: [{ type: "text" as const, text: "No courier could quote this route (outside coverage, or the item may be too large). Suggest the parties arrange the handoff themselves." }] };
+          // test_mode_gated (routes/assist.ts): the request never reached a
+          // provider at all — this environment sits assist out for every
+          // test-mode order (see assist-test-mode-isolation.test.ts) unless
+          // ASSIST_SANDBOX is set. That is not a market-coverage gap, so don't
+          // render the coverage-doubt / arrange-it-yourselves fallback for it.
+          const text = r.test_mode_gated
+            ? (r.message || "No quote: this is a test-mode order and this environment has no assist sandbox configured — this is not a coverage gap.")
+            : `${r.message || "No courier could quote this route (outside coverage, or the item may be too large)."} Suggest the parties arrange the handoff themselves.`;
+          return { content: [{ type: "text" as const, text }] };
         }
         let text = `**Courier options (cheapest first):**\n`;
         for (const q of r.quotes.slice(0, 4)) {
@@ -2998,13 +3038,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (46 countries) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Outside the US/EU, suggest PayPal — it is the global option and needs only the account email.",
+    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (US/GB/CA/AU only) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Outside the US/GB/CA/AU, suggest PayPal — it is the global option and needs only the account email.",
     {
       // Wise/Payoneer are implemented but not selectable — neither connect flow
       // yields a destination its adapter can spend. Narrowing the enum stops an
       // agent proposing a rail the API will refuse. See services/payouts/providers.ts.
-      provider: z.enum(["stripe", "paypal"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/EU/UK), 'paypal' = PayPal email (global, easiest outside the US/EU)."),
-      country: z.string().optional().describe("ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Needed for Stripe onboarding for non-US sellers."),
+      provider: z.enum(["stripe", "paypal"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/GB/CA/AU only — the API rejects any other country), 'paypal' = PayPal email (global, easiest outside the US/GB/CA/AU)."),
+      country: z.string().optional().describe("ISO 3166-1 alpha-2 country code, e.g. 'US', 'GB', 'CA', 'AU' — Stripe onboarding currently rejects every other country. Needed for Stripe onboarding for non-US sellers; irrelevant for PayPal."),
       paypal_email: z.string().optional().describe("PayPal email for receiving payouts. Required when provider='paypal'."),
       wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
       payoneer_email: z.string().optional().describe("Payoneer account email. Required when provider='payoneer'."),
@@ -3021,7 +3061,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           } else if (status.provider && status.provider !== "none") {
             text = `**Payouts pending** — ${status.provider.toUpperCase()} is configured but not yet active.\nRun \`firestarter_payouts\` with \`provider: "${status.provider}"\` to complete setup.`;
           } else {
-            text = `**No payout method configured.** Listings are visible but buyers cannot checkout.\n\nAvailable providers:\n- **Stripe** — 46 countries, ~5 min setup (best for US/EU)\n- **PayPal** — 200+ countries, ~2 min setup (just an email)\n- **Wise** — 80+ currencies, best rates for APAC (Thailand, Singapore, India)\n- **Payoneer** — 190+ countries, popular with TikTok Shop/Amazon sellers\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
+            text = `**No payout method configured.** Listings are visible but buyers cannot checkout.\n\nAvailable providers:\n- **Stripe** — US/GB/CA/AU only, ~5 min setup\n- **PayPal** — 200+ countries, ~2 min setup (just an email)\n- **Wise** — 80+ currencies, best rates for APAC (Thailand, Singapore, India)\n- **Payoneer** — 190+ countries, popular with TikTok Shop/Amazon sellers\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
           }
           return { content: [{ type: "text" as const, text }] };
         }
@@ -3032,8 +3072,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const body: Record<string, string> = {};
           if (country) body.country = country;
           const link = await apiRequest("POST", "/v1/sellers/stripe-connect", Object.keys(body).length > 0 ? body : undefined);
-          let text = `**Stripe Connect setup**\n\nSend the seller this onboarding link (a secure Stripe-hosted page):\n${link.onboarding_url}\n`;
-          text += `\nAfter they finish, run \`firestarter_payouts\` again to verify.`;
+          let text: string;
+          if (!link.onboarding_url) {
+            // Test-mode accounts are auto-approved server-side (routes/sellers.ts) —
+            // there is no onboarding link because none is needed. Without this branch
+            // the tool interpolated the missing link straight into the reply as the
+            // literal string "null".
+            text = `**Stripe Connect setup (test mode)**\n\n${link.message || "Test mode: Stripe Connect account auto-approved — no onboarding needed."}\n\nListings are now purchasable by buyers.`;
+          } else {
+            text = `**Stripe Connect setup**\n\nSend the seller this onboarding link (a secure Stripe-hosted page):\n${link.onboarding_url}\n`;
+            text += `\nAfter they finish, run \`firestarter_payouts\` again to verify.`;
+          }
           return { content: [{ type: "text" as const, text }] };
         }
 
@@ -3042,7 +3091,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return { content: [{ type: "text" as const, text: "To set up PayPal payouts, call `firestarter_payouts` with `provider: \"paypal\"` and `paypal_email: \"seller@email.com\"`. The seller will receive payouts to that PayPal account." }] };
           }
           const result = await apiRequest("POST", "/v1/sellers/payout-method/paypal", { email: paypal_email });
-          return { content: [{ type: "text" as const, text: `**PayPal payouts connected!**\nEmail: ${paypal_email}\nStatus: connected — verified on your first payout\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
+          // #478 made this a two-step, ownership-proven flow: a fresh submission
+          // comes back pending_confirmation/confirmed:false until the seller clicks
+          // the emailed link, and nothing pays out to it until then. Claiming
+          // "connected" here used to contradict result.message in the same reply.
+          const text = result.confirmed
+            ? `**PayPal payouts confirmed!**\nEmail: ${paypal_email}\nStatus: confirmed — this is the account earnings pay out to\n\n${result.message}\n\nListings are purchasable by buyers.`
+            : `**PayPal address submitted — confirmation required.**\nEmail: ${paypal_email}\nStatus: pending confirmation — nothing pays out here until the seller clicks the emailed link\n\n${result.message}\n\nListings are purchasable by buyers now; earnings wait safely in escrow until the address is confirmed.`;
+          return { content: [{ type: "text" as const, text }] };
         }
 
         if (provider === "wise") {
@@ -3090,11 +3146,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           let text = `**Shopify store connected:** ${shopifyConn.shop_name || shopifyConn.shop_domain}\n`;
           text += `Status: ${shopifyConn.status}\n`;
           if (shopifyConn.last_synced_at) text += `Last catalog sync: ${shopifyConn.last_synced_at}\n`;
-          if (shopifyConn.error_message) text += `Error: ${shopifyConn.error_message}\n`;
-          text += `\nProducts from this store are already listed on Firestarter and discoverable by buyers' agents. View them with firestarter_listings.`;
+          const shopifyErrSummary = summarizeConnectionError(shopifyConn.error_message);
+          if (shopifyErrSummary) text += `Error: ${shopifyErrSummary}\n`;
+          text += `\n${connectionListedLine(shopifyConn, "store")}`;
+          if (shopifyConn.status !== "error") text += ` View them with firestarter_listings.`;
           // #556: point the agent at the right next action instead of leaving it stuck.
           if (shopifyConn.status === "error") {
-            text += `\n\nThis connection is in an error state — run firestarter_sync_shopify to retry the catalog sync. If it keeps failing, the seller may need to reconnect from the Firestarter dashboard.`;
+            text += `\n\nRun firestarter_sync_shopify to retry the catalog sync. If it keeps failing, the seller may need to reconnect from the Firestarter dashboard.`;
           } else {
             text += `\nIf the seller has added or edited products in Shopify since the last sync, run firestarter_sync_shopify to pull the changes now.`;
           }
@@ -3177,8 +3235,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           let text = `**TikTok Shop connected:** ${tiktokConn.shop_name || tiktokConn.shop_domain}\n`;
           text += `Status: ${tiktokConn.status}\n`;
           if (tiktokConn.last_synced_at) text += `Last catalog sync: ${tiktokConn.last_synced_at}\n`;
-          if (tiktokConn.error_message) text += `Error: ${tiktokConn.error_message}\n`;
-          text += `\nProducts from this shop are listed on Firestarter and discoverable by buyers' agents.`;
+          const errSummary = summarizeConnectionError(tiktokConn.error_message);
+          if (errSummary) text += `Error: ${errSummary}\n`;
+          // #556 fixed this claim for Shopify but missed TikTok: a connection
+          // stuck in 'error' either never finished a catalog sync (nothing
+          // listed) or is only stale (prior sync's items are still listed) —
+          // either way "products are listed and discoverable" alone was wrong.
+          text += `\n${connectionListedLine(tiktokConn, "shop")}`;
+          if (tiktokConn.status === "error") {
+            text += ` TikTok Shop connects by access token, not OAuth — if the token expired or was revoked, ask the seller for a fresh access token and call firestarter_connect_tiktok again with it (disconnect the old one from the dashboard first).`;
+          }
           if (access_token) text += `\n\n(A new token was provided but a connection already exists. Disconnect the current TikTok Shop from the dashboard first to reconnect.)`;
           return { content: [{ type: "text" as const, text }] };
         }
@@ -3284,8 +3350,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           let text = `**${platform} store connected:** ${existing.shop_name || existing.shop_domain}\n`;
           text += `Status: ${existing.status}\n`;
           if (existing.last_synced_at) text += `Last catalog sync: ${existing.last_synced_at}\n`;
-          if (existing.error_message) text += `Error: ${existing.error_message}\n`;
-          text += `\nProducts from this store are listed on Firestarter and discoverable by buyers' agents.`;
+          const errSummary = summarizeConnectionError(existing.error_message);
+          if (errSummary) text += `Error: ${errSummary}\n`;
+          // Mirrors the #556 fix on firestarter_connect_shopify: a connection
+          // stuck in 'error' either never finished a catalog sync (nothing
+          // listed) or is only stale (prior sync's items are still listed) —
+          // either way "products are listed and discoverable" alone was wrong.
+          text += `\n${connectionListedLine(existing, "store")}`;
+          if (existing.status === "error") {
+            text += ` Run firestarter_sync_shopify with connection_id "${existing.id}" to retry. If it keeps failing, double-check the credentials (they may have expired or been revoked) and reconnect.`;
+          }
           return { content: [{ type: "text" as const, text }] };
         }
 
@@ -3388,7 +3462,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const text = [
           `**Catalog sync started for ${where}.**`,
           `Firestarter is re-pulling products, prices, and inventory from the store in the background — this can take a moment for large catalogs.`,
-          `Check the results with firestarter_listings once it finishes. If products still look wrong after a sync, the seller may need to reconnect the store from the Firestarter dashboard.`,
+          // The connections list we just fetched already told us this — don't
+          // let a retry-in-progress read as an all-clear when the connection
+          // was already known broken (e.g. an expired/revoked token); a retry
+          // with unchanged credentials will fail again the same way.
+          conn.status === "error"
+            ? `Note: this connection was in an error state before this retry${summarizeConnectionError(conn.error_message) ? ` (${summarizeConnectionError(conn.error_message)})` : ""} — if the credentials haven't changed, expect it to fail again the same way. Check firestarter_listings after; if it's still erroring, the seller likely needs to reconnect with fresh credentials.`
+            : `Check the results with firestarter_listings once it finishes. If products still look wrong after a sync, the seller may need to reconnect the store from the Firestarter dashboard.`,
         ].join("\n");
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
@@ -3466,10 +3546,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // actually weighs. Rendered on its own line, quoted, when present.
           const picked = l.picked_by_community === true;
           const note = picked && typeof l.pick_note === "string" && l.pick_note.trim() ? l.pick_note.trim() : null;
+          // #catalog-share-null (2026-08-10): share_url is null for a test-mode
+          // listing (publicShareUrl in services/listing-create.ts) — every
+          // catalog_search result rendered "· null" in sandbox instead of a
+          // link or an explanation. Mirrors firestarter_listings' own
+          // sandbox-only wording.
+          const shareText = l.share_url ? l.share_url : "sandbox-only, no public link yet";
           lines.push(
             `- ${picked ? "★ " : ""}**${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}` +
             `${note ? `\n  _"${note}"_${communityName ? ` — ${communityName}` : ""}` : ""}` +
-            `\n  id: \`${l.id}\` · ${l.share_url}${img0 ? `\n  ${img0}` : ""}`,
+            `\n  id: \`${l.id}\` · ${shareText}${img0 ? `\n  ${img0}` : ""}`,
           );
         }
         lines.push(
@@ -3804,6 +3890,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.floor_price != null) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price != null) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing !== undefined) text += `Dynamic pricing: ${listing.dynamic_pricing ? "enabled" : "disabled"}\n`;
+        // Show what a buyer actually pays, not just the input this call
+        // changed — base_price alone can silently diverge from it. Off, the
+        // route snaps current_price to base_price on this same PATCH (they'll
+        // match). On, a pricing worker owns current_price and this base_price
+        // change does NOT move it, which reads as a no-op if only base_price
+        // is shown (QA report, 2026-08-10 — "reprice reports success but the
+        // buyer-facing price never moves").
+        if (listing.current_price !== undefined) {
+          text += `Buyer-facing price right now: $${listing.current_price}\n`;
+          if (listing.dynamic_pricing && base_price !== undefined && listing.current_price !== base_price) {
+            text += `Note: dynamic pricing is ON, so the buyer-facing price is set by the pricing engine and did NOT move to match the new base price. Disable dynamic pricing to make base_price the live price.\n`;
+          }
+        }
         text += `Shipping: estimated at checkout by the delivery provider, based on the buyer's destination\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
