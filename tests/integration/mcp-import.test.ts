@@ -261,18 +261,42 @@ describe("firestarter_payouts — multi-provider status + setup", () => {
     expect(text).toContain("https://connect.stripe.com/setup/s/abc123");
   });
 
-  it("setup paypal: configures email", async () => {
+  it("setup paypal: fresh submission is reported as pending confirmation, not connected", async () => {
     installFetch(() => ({
       status: 200,
-      json: { ok: true, provider: "paypal", email: "seller@test.com", status: "connected", verified: false, message: "PayPal saved — your listings can now sell." },
+      json: {
+        ok: true, provider: "paypal", email: "seller@test.com",
+        status: "pending_confirmation", confirmed: false, verified: false,
+        message: "Check seller@test.com for a confirmation link. Your listings can sell right away — earnings wait safely in escrow until you confirm, and we never send money to an unconfirmed address.",
+      },
     }));
     const tools = captureTools();
 
     const res = await tools.firestarter_payouts({ provider: "paypal", paypal_email: "seller@test.com" });
 
     const text = textOf(res);
-    // Honest copy (#281): "connected — verified on first payout", not "configured/active".
-    expect(text).toContain("PayPal payouts connected");
+    // #478 made this a two-step, ownership-proven flow — nothing is "connected"
+    // until the seller clicks the emailed confirmation link.
+    expect(text).toContain("pending confirmation");
+    expect(text).not.toContain("PayPal payouts connected");
+    expect(text).toContain("seller@test.com");
+  });
+
+  it("setup paypal: an already-confirmed address is reported as confirmed", async () => {
+    installFetch(() => ({
+      status: 200,
+      json: {
+        ok: true, provider: "paypal", email: "seller@test.com",
+        status: "confirmed", confirmed: true,
+        message: "This PayPal address is already confirmed for payouts.",
+      },
+    }));
+    const tools = captureTools();
+
+    const res = await tools.firestarter_payouts({ provider: "paypal", paypal_email: "seller@test.com" });
+
+    const text = textOf(res);
+    expect(text).toContain("PayPal payouts confirmed");
     expect(text).toContain("seller@test.com");
   });
 

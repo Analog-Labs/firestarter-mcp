@@ -243,3 +243,53 @@ describe("firestarter_catalog_search — surfaces image URL (#611)", () => {
     expect(text).toContain("lst_x");
   });
 });
+
+/**
+ * QA report, 2026-08-10 (TEST sandbox): every catalog_search result rendered
+ * `id: lst_xxx · null` — reproduced across 11 listings in 4 searches. Root
+ * cause: publicShareUrl() (services/listing-create.ts) deliberately returns
+ * `null` for a test-mode listing, and the API's /v1/listings/catalog route
+ * passes that straight through as `share_url: null` — correct, matches
+ * firestarter_listings' own "sandbox-only, no public link" handling. But this
+ * tool's result-line template interpolated `l.share_url` unconditionally, so
+ * a null share_url rendered as the literal text "null" instead of anything
+ * meaningful. Only reproduces in test mode, since a live/active listing's
+ * share_url is never null.
+ */
+describe("firestarter_catalog_search — test-mode listing has no share_url (2026-08-10)", () => {
+  it("does not render the literal string 'null' when share_url is null", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any, init?: any) => {
+        const method = init?.method || "GET";
+        if (method === "GET" && String(url).includes("/v1/listings/catalog")) {
+          return jsonResponse(200, {
+            query: { environment: "test" },
+            has_more: false,
+            listings: [
+              {
+                id: "lst_VVn0NGeb",
+                product_name: "Ceramic Mug",
+                current_price: 12,
+                currency: "USD",
+                buyable: false,
+                category: "Home",
+                share_url: null,
+                images: [],
+              },
+            ],
+          });
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      })
+    );
+    const tools = captureTools();
+
+    const res = await tools.firestarter_catalog_search({ query: "ceramic mug" });
+    const text = res.content[0].text as string;
+
+    expect(text).toContain("lst_VVn0NGeb");
+    expect(text).not.toMatch(/·\s*null\b/);
+    expect(text).toContain("sandbox");
+  });
+});
