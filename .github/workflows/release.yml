@@ -2,6 +2,12 @@ name: Release
 
 # Tag a version to cut a release:
 #   npm version 2.1.0 && git push --follow-tags
+#
+# `npm version` fires the `version` lifecycle script, which runs
+# scripts/sync-version.mjs and stages the four other files that state the
+# version (mcpb/manifest.json, mcp.json, src/mcp/mcp.json, src/mcp/server.ts).
+# So one command moves all five in the same commit, and the gate below refuses
+# the release if any of them disagree.
 on:
   push:
     tags: ["v*"]
@@ -11,7 +17,7 @@ permissions:
 
 jobs:
   release:
-    name: Build and attach the extension bundle
+    name: Build and attach the extension bundle and npm tarball
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,26 +36,53 @@ jobs:
       - run: npx mcpb validate mcpb/manifest.json
       - run: node scripts/smoke-bundle.mjs
 
-      # The tag is the source of truth for the release; the manifest version is
-      # what users see once installed. A mismatch ships a bundle whose tag lies.
-      - name: Check the tag matches the manifest version
+      # The tag is the source of truth for the release; package.json is what npm
+      # publishes and mcpb/manifest.json is what users see once installed. A
+      # mismatch ships a bundle — or a package — whose version lies.
+      - name: Check the tag matches every declared version
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          manifest_version="$(node -p 'require("./mcpb/manifest.json").version')"
-          if [ "$TAG" != "v${manifest_version}" ]; then
-            echo "::error::tag $TAG does not match mcpb/manifest.json version $manifest_version"
+          pkg_version="$(node -p 'require("./package.json").version')"
+          if [ "$TAG" != "v${pkg_version}" ]; then
+            echo "::error::tag $TAG does not match package.json version $pkg_version"
             exit 1
           fi
-          echo "tag $TAG matches manifest version $manifest_version"
+          # sync-version rewrites every other file that states the version from
+          # package.json. If it changes anything here, the tagged commit shipped
+          # with them out of step, so fail rather than publish a lying manifest.
+          node scripts/sync-version.mjs
+          if ! git diff --quiet; then
+            echo "::error::version/tool-count drift in the tagged commit — run 'npm run sync-version' and re-tag:"
+            git --no-pager diff --stat
+            exit 1
+          fi
+          echo "tag $TAG matches package.json, both mcp.json manifests, mcpb/manifest.json, and server.ts"
+
+      # The installable artifact. firestarter-commerce depends on this tarball
+      # by URL rather than on a registry entry: the MCP server has no lifecycle
+      # of its own — it only ever runs inside the API container — so the whole
+      # problem is getting the source into one Docker image at build time. A
+      # release asset does that over plain HTTPS, with no npm org, no token, no
+      # git binary in the runtime image, and no ssh rewriting in the lockfile.
+      # `npm pack` runs `prepare`, so the tarball ships prebuilt: consumers need
+      # no TypeScript or esbuild toolchain to install it.
+      - name: Pack the npm tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          tarball="$(npm pack --silent)"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "packed $tarball"
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" mcpb/dist/*.mcpb \
+          gh release create "$TAG" mcpb/dist/*.mcpb "$TARBALL" \
             --title "$TAG" \
             --generate-notes
