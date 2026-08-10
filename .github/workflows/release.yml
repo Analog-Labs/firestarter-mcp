@@ -103,11 +103,23 @@ jobs:
       # does that over plain HTTPS, with no npm org, no token, no git binary in
       # the runtime image, and none of the ssh rewriting npm applies to git deps.
       # `npm pack` runs `prepare`, so the tarball ships prebuilt.
+      #
+      # The filename is derived from package.json rather than read back from
+      # npm's output. `npm pack --silent` is not silent here: it runs `prepare`,
+      # which runs build:mcpb, which prints ~28 lines. Capturing that whole
+      # stream into $GITHUB_OUTPUT is what broke the v2.1.0 release —
+      # "Invalid format 'Validating manifest...'", because GITHUB_OUTPUT rejects
+      # multi-line values. npm derives the name as <name-without-@-and-/>-<version>,
+      # so computing it is exact and needs no parsing at all.
       - name: Pack the npm tarball
         id: pack
         run: |
           set -euo pipefail
-          tarball="$(npm pack --silent)"
+          name="$(node -p 'require("./package.json").name.replace("@","").replace("/","-")')"
+          version="$(node -p 'require("./package.json").version')"
+          tarball="${name}-${version}.tgz"
+          npm pack >/dev/null
+          test -f "$tarball" || { echo "::error::expected $tarball, got: $(ls ./*.tgz 2>/dev/null)"; exit 1; }
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
           echo "packed $tarball"
 
