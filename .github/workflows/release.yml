@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   release:
-    name: Build, publish, and attach the extension bundle
+    name: Build and attach the extension bundle and npm tarball
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          registry-url: https://registry.npmjs.org
 
       - run: npm ci
 
@@ -61,25 +60,29 @@ jobs:
           fi
           echo "tag $TAG matches package.json, both mcp.json manifests, mcpb/manifest.json, and server.ts"
 
-      # Publishing is what unblocks consumers: firestarter-commerce installs
-      # @firestarter/mcp-server rather than vendoring a copy of src/mcp.
-      - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # The installable artifact. firestarter-commerce depends on this tarball
+      # by URL rather than on a registry entry: the MCP server has no lifecycle
+      # of its own — it only ever runs inside the API container — so the whole
+      # problem is getting the source into one Docker image at build time. A
+      # release asset does that over plain HTTPS, with no npm org, no token, no
+      # git binary in the runtime image, and no ssh rewriting in the lockfile.
+      # `npm pack` runs `prepare`, so the tarball ships prebuilt: consumers need
+      # no TypeScript or esbuild toolchain to install it.
+      - name: Pack the npm tarball
+        id: pack
         run: |
           set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is not set — add it as a repository secret (needs publish rights on the @firestarter scope)"
-            exit 1
-          fi
-          npm publish
+          tarball="$(npm pack --silent)"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "packed $tarball"
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" mcpb/dist/*.mcpb \
+          gh release create "$TAG" mcpb/dist/*.mcpb "$TARBALL" \
             --title "$TAG" \
             --generate-notes
