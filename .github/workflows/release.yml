@@ -1,23 +1,67 @@
 name: Release
 
-# Tag a version to cut a release:
-#   npm version 2.1.0 && git push --follow-tags
+# Releasing is a merge, not a manual push.
 #
-# `npm version` fires the `version` lifecycle script, which runs
-# scripts/sync-version.mjs and stages the four other files that state the
-# version (mcpb/manifest.json, mcp.json, src/mcp/mcp.json, src/mcp/server.ts).
-# So one command moves all five in the same commit, and the gate below refuses
-# the release if any of them disagree.
+# Bump the version in a PR — `npm version <x.y.z> --no-git-tag-version`, which
+# fires the `version` lifecycle and syncs all five files that state it. When
+# that PR merges, this workflow sees a version with no matching tag, runs the
+# same gates CI runs, then creates the tag and the release.
+#
+# Ordinary merges that do not touch the version are a no-op: the tag already
+# exists, so the release job is skipped entirely.
+#
+# This is why nobody needs push rights on main. Branch protection restricts
+# branches, not tags, so the Actions token can create v<version> even though it
+# cannot push a commit to a protected main. The version bump arrives through
+# code review like any other change.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+# Never let two releases race. Not cancel-in-progress: a half-finished release
+# that gets cancelled leaves a tag with no assets attached to it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  # ── Is this commit a release? ───────────────────────────────────────────────
+  # Split out so the expensive gates below are skipped outright on the ordinary
+  # merges that make up most pushes to main.
+  decide:
+    name: Check whether package.json's version is already tagged
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags are needed to tell a new version from an old one
+
+      - name: Check
+        id: check
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          tag="v${version}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "${tag} is already tagged — nothing to release."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "${tag} is new — releasing."
+          fi
+
   release:
-    name: Build and attach the extension bundle and npm tarball
+    name: Build, tag, and attach the extension bundle and npm tarball
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,45 +73,36 @@ jobs:
 
       - run: npm ci
 
-      # Same gates as CI — a tag must never ship something main wouldn't.
+      # Same gates as CI — a release must never ship something main wouldn't.
       - run: npm run typecheck
       - run: npm test
       - run: npm run build:mcpb
       - run: npx mcpb validate mcpb/manifest.json
       - run: node scripts/smoke-bundle.mjs
 
-      # The tag is the source of truth for the release; package.json is what npm
-      # publishes and mcpb/manifest.json is what users see once installed. A
-      # mismatch ships a bundle — or a package — whose version lies.
-      - name: Check the tag matches every declared version
-        env:
-          TAG: ${{ github.ref_name }}
+      # The tag is derived from package.json, so those two agree by construction.
+      # The other four files that state the version do not, unless the bump went
+      # through `npm version`. sync-version rewrites them from package.json; if
+      # it changes anything, the merged commit was inconsistent — fail rather
+      # than ship a bundle whose version lies.
+      - name: Check every declared version agrees
         run: |
           set -euo pipefail
-          pkg_version="$(node -p 'require("./package.json").version')"
-          if [ "$TAG" != "v${pkg_version}" ]; then
-            echo "::error::tag $TAG does not match package.json version $pkg_version"
-            exit 1
-          fi
-          # sync-version rewrites every other file that states the version from
-          # package.json. If it changes anything here, the tagged commit shipped
-          # with them out of step, so fail rather than publish a lying manifest.
           node scripts/sync-version.mjs
           if ! git diff --quiet; then
-            echo "::error::version/tool-count drift in the tagged commit — run 'npm run sync-version' and re-tag:"
+            echo "::error::version drift in the merged commit — run 'npm run sync-version' and re-merge:"
             git --no-pager diff --stat
             exit 1
           fi
-          echo "tag $TAG matches package.json, both mcp.json manifests, mcpb/manifest.json, and server.ts"
+          echo "package.json, both mcp.json manifests, mcpb/manifest.json and server.ts all agree"
 
-      # The installable artifact. firestarter-commerce depends on this tarball
-      # by URL rather than on a registry entry: the MCP server has no lifecycle
-      # of its own — it only ever runs inside the API container — so the whole
-      # problem is getting the source into one Docker image at build time. A
-      # release asset does that over plain HTTPS, with no npm org, no token, no
-      # git binary in the runtime image, and no ssh rewriting in the lockfile.
-      # `npm pack` runs `prepare`, so the tarball ships prebuilt: consumers need
-      # no TypeScript or esbuild toolchain to install it.
+      # The installable artifact. firestarter-commerce depends on this tarball by
+      # URL rather than on a registry entry: the MCP server has no lifecycle of
+      # its own — it only runs inside the API container — so the whole problem is
+      # getting the source into one Docker image at build time. A release asset
+      # does that over plain HTTPS, with no npm org, no token, no git binary in
+      # the runtime image, and none of the ssh rewriting npm applies to git deps.
+      # `npm pack` runs `prepare`, so the tarball ships prebuilt.
       - name: Pack the npm tarball
         id: pack
         run: |
@@ -76,13 +111,16 @@ jobs:
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
           echo "packed $tarball"
 
-      - name: Publish release
+      # gh release create makes the tag itself, pointed at this commit, so the
+      # workflow never pushes to the protected branch.
+      - name: Create the tag and publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.decide.outputs.tag }}
           TARBALL: ${{ steps.pack.outputs.tarball }}
         run: |
           set -euo pipefail
           gh release create "$TAG" mcpb/dist/*.mcpb "$TARBALL" \
+            --target "$GITHUB_SHA" \
             --title "$TAG" \
             --generate-notes
