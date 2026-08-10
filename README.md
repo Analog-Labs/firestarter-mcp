@@ -62,3 +62,7 @@ dashboard, or by writing to the address above.
 **Your control.** Uninstalling the extension removes the stored API key from your keychain
 and ends its access. Revoking the key in the Firestarter dashboard has the same effect
 immediately, from any device.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
