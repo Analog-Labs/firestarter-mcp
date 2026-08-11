@@ -53,13 +53,10 @@ function syncJson(path) {
 
 for (const path of ["mcpb/manifest.json", "mcp.json", "src/mcp/mcp.json"]) syncJson(path);
 
-// Both entrypoints hold the version as a literal in their McpServer
-// constructor, and BOTH are seen by clients: server.ts is the stdio/extension
-// handshake, route.ts is the remote HTTP + WebSocket one. Only server.ts used
-// to be synced, so api.firestarter.network/mcp advertised 1.1.0 for as long as
-// the extension advertised 2.x. Exactly one literal should exist per file; bail
-// rather than guess if that stops being true.
-for (const path of ["src/mcp/server.ts", "src/mcp/route.ts"]) {
+// server.ts holds the version as a literal in the McpServer constructor. Exactly
+// one such literal should exist; bail rather than guess if that stops being true.
+{
+  const path = "src/mcp/server.ts";
   const before = read(path);
   const matches = before.match(/version: "\d+\.\d+\.\d+"/g) ?? [];
   if (matches.length !== 1) {

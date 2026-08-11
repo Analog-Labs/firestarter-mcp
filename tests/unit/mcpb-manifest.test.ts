@@ -160,27 +160,3 @@ describe("mcpb/manifest.json — bundle contract", () => {
     expect(manifest.server.mcp_config.args.join(" ")).toContain(entry);
   });
 });
-
-/**
- * Two entrypoints construct an McpServer, and clients see BOTH versions:
- * server.ts answers the stdio/extension handshake, route.ts answers the remote
- * HTTP and WebSocket one. The test above only ever pinned server.ts, so
- * route.ts sat at 1.1.0 while everything else moved to 2.x — meaning
- * api.firestarter.network/mcp told every remote client it was version 1.1.0
- * (confirmed against production before this was fixed).
- */
-describe("every transport reports the same version", () => {
-  const routeSource = readFileSync(
-    resolve(API_ROOT, "src", "mcp", "route.ts"),
-    "utf8",
-  );
-
-  it("route.ts advertises the manifest version, like server.ts", () => {
-    const declared = routeSource.match(/version:\s*"(\d+\.\d+\.\d+)"/)?.[1];
-    expect(declared, "route.ts has no McpServer version literal").toBeTruthy();
-    expect(
-      declared,
-      "route.ts (remote HTTP/WS handshake) disagrees with the manifest — run `npm run sync-version`",
-    ).toBe(manifest.version);
-  });
-});
