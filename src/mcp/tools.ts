@@ -3509,12 +3509,48 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // --- firestarter_catalog_search query hygiene -----------------------------
+  // Agents relay buyer phrasing like "wireless earbuds under 50" verbatim.
+  // The catalog's q matches TEXT only, so a price phrase left in the query can
+  // only hurt recall while the buyer's actual price cap goes unenforced. Pull
+  // "under/over/between $N" phrases OUT of the free text and into the
+  // min_price/max_price filters (never overriding explicitly-passed args).
+  const PRICE_NUM = "\\$?\\s*(\\d+(?:\\.\\d{1,2})?)";
+  function extractPriceFilters(raw: string): { query: string; min?: number; max?: number } {
+    let query = raw;
+    let min: number | undefined;
+    let max: number | undefined;
+    const strip = (re: RegExp, assign: (a: number, b?: number) => void): void => {
+      const m = query.match(re);
+      if (!m || m.index == null) return;
+      assign(parseFloat(m[1]), m[2] != null ? parseFloat(m[2]) : undefined);
+      query = (query.slice(0, m.index) + " " + query.slice(m.index + m[0].length)).replace(/\s{2,}/g, " ").trim();
+    };
+    // Ranges first ("between $10 and $50", "$10-$50", "$10 to 50") so their
+    // numbers aren't half-consumed by the single-bound patterns below.
+    strip(new RegExp(`between\\s+${PRICE_NUM}\\s+and\\s+${PRICE_NUM}`, "i"), (a, b) => { min = a; max = b; });
+    strip(/\$(\d+(?:\.\d{1,2})?)\s*(?:-|to)\s*\$?(\d+(?:\.\d{1,2})?)/, (a, b) => { min = a; max = b; });
+    strip(new RegExp(`(?:under|below|less\\s+than|at\\s+most|up\\s+to|no\\s+more\\s+than|cheaper\\s+than|max(?:imum)?(?:\\s+of)?)\\s+${PRICE_NUM}`, "i"), (a) => { max = a; });
+    strip(new RegExp(`(?:over|above|more\\s+than|at\\s+least|starting\\s+at|min(?:imum)?(?:\\s+of)?)\\s+${PRICE_NUM}`, "i"), (a) => { min = a; });
+    if (min != null && max != null && min > max) [min, max] = [max, min];
+    return { query, min, max };
+  }
+
+  // Head noun of a multi-word query, for the zero-result broadened retry.
+  // English noun phrases are head-final ("red leather WALLET"), so the last
+  // substantive word is the best single-term approximation of what the buyer
+  // wants. Returns null for single-word queries (nothing to broaden to).
+  function broadenTerm(q: string): string | null {
+    const words = q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !/^\d+$/.test(w));
+    return words.length >= 2 ? words[words.length - 1] : null;
+  }
+
   // Tool: firestarter_catalog_search
   server.tool(
     "firestarter_catalog_search",
     "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
     {
-      query: z.string().optional().describe("Free-text product search, e.g. 'leather conditioner', 'wireless earbuds under 50'. Matches product name, description, and category. Use real product nouns; omit filler words like 'cheap' or 'best'."),
+      query: z.string().optional().describe("Free-text product search of product name, description, and category — use real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Do NOT put prices in the query ('under $50' belongs in max_price, not here) and omit filler words like 'cheap' or 'best'; price phrases that do slip in are auto-extracted into the price filters."),
       category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
       country: z.string().optional().describe("ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Filters for listings that ship to this country. Pass the buyer's country to see locally-deliverable options."),
       min_price: z.number().optional().describe("Minimum price in the listing currency (inclusive)."),
@@ -3525,22 +3561,56 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     { title: "Search Catalog", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async ({ query, category, country, min_price, max_price, buyable_only, limit }) => {
       try {
-        const params = new URLSearchParams();
-        if (query) params.set("q", query);
-        if (category) params.set("category", category);
-        if (country) params.set("country", country);
-        if (typeof min_price === "number") params.set("min_price", String(min_price));
-        if (typeof max_price === "number") params.set("max_price", String(max_price));
-        if (buyable_only) params.set("buyable_only", "true");
-        if (typeof limit === "number") params.set("limit", String(limit));
+        // Pull price phrases out of the free text into the price filters
+        // (explicit min_price/max_price args always win).
+        let q = query;
+        let minP = min_price;
+        let maxP = max_price;
+        if (q) {
+          const extracted = extractPriceFilters(q);
+          q = extracted.query;
+          if (typeof minP !== "number" && extracted.min != null) minP = extracted.min;
+          if (typeof maxP !== "number" && extracted.max != null) maxP = extracted.max;
+        }
 
-        const data = await apiRequest("GET", `/v1/listings/catalog?${params.toString()}`);
-        const listings: any[] = data.listings || [];
+        const buildParams = (searchText: string | undefined): URLSearchParams => {
+          const params = new URLSearchParams();
+          if (searchText) params.set("q", searchText);
+          if (category) params.set("category", category);
+          if (country) params.set("country", country);
+          if (typeof minP === "number") params.set("min_price", String(minP));
+          if (typeof maxP === "number") params.set("max_price", String(maxP));
+          if (buyable_only) params.set("buyable_only", "true");
+          if (typeof limit === "number") params.set("limit", String(limit));
+          return params;
+        };
+
+        let data = await apiRequest("GET", `/v1/listings/catalog?${buildParams(q).toString()}`);
+        let listings: any[] = data.listings || [];
+
+        // Zero-result broadened retry (one extra call, at most): the catalog
+        // matches text lexically, so a specific multi-word query can miss
+        // items a single head noun finds ("red leather wallet" -> "wallet").
+        // Retrying here saves the agent a whole round-trip through the buyer.
+        let broadenedTo: string | null = null;
+        if (listings.length === 0 && q) {
+          const term = broadenTerm(q);
+          if (term) {
+            const retry = await apiRequest("GET", `/v1/listings/catalog?${buildParams(term).toString()}`);
+            const retryListings: any[] = retry.listings || [];
+            if (retryListings.length > 0) {
+              data = retry;
+              listings = retryListings;
+              broadenedTo = term;
+            }
+          }
+        }
+
         if (listings.length === 0) {
           return {
             content: [{
               type: "text" as const,
-              text: "No catalog listings matched. Try a broader search term (a single product noun), remove price/category filters, or drop `buyable_only`.",
+              text: `No catalog listings matched${q && q !== query ? ` for "${q}"` : ""}. Try a broader search term (a single product noun), remove price/category filters, or drop \`buyable_only\`.`,
             }],
           };
         }
@@ -3555,6 +3625,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const lines = [
           `**Firestarter catalog** — ${listings.length} result${listings.length === 1 ? "" : "s"} (${data.query?.environment || "live"} mode, ${buyableCount} buyable now)${data.has_more ? " · more available, narrow the search or raise `limit`" : ""}`,
         ];
+        if (broadenedTo) {
+          lines.push(`No exact matches for "${q}" — showing matches for **${broadenedTo}** instead.`);
+        }
+        if (q !== query) {
+          const applied = [
+            typeof min_price !== "number" && typeof minP === "number" ? `min $${minP}` : null,
+            typeof max_price !== "number" && typeof maxP === "number" ? `max $${maxP}` : null,
+          ].filter(Boolean).join(", ");
+          if (applied) lines.push(`Price phrase moved out of the search text and applied as a filter (${applied}).`);
+        }
         if (communityName && pickCount > 0) {
           lines.push(`★ = picked by **${communityName}**, the community you're in (${pickCount} here).`);
         }
