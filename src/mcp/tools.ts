@@ -5257,7 +5257,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_wallet_balance",
-      "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
+      "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, funds already spent (paid out to sellers for claims that converted into a completed purchase), and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
       {},
       { title: "Check Wallet Balance", readOnlyHint: true, destructiveHint: false },
       async () => {
@@ -5265,12 +5265,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const res = await apiRequest("GET", "/v1/drops/wallet");
           const balance = ((Number(res?.balance_cents) || 0) / 100).toFixed(2);
           const reserved = ((Number(res?.reserved_cents) || 0) / 100).toFixed(2);
+          const spent = ((Number(res?.spent_cents) || 0) / 100).toFixed(2);
           const deposited = ((Number(res?.deposited_cents) || 0) / 100).toFixed(2);
           const withdrawn = ((Number(res?.withdrawn_cents) || 0) / 100).toFixed(2);
           return {
             content: [{
               type: "text" as const,
-              text: `**Drop wallet: $${balance} spendable**\nReserved for live drops (claimed, not yet released to the seller): $${reserved}\nLifetime deposited: $${deposited} · Lifetime withdrawn: $${withdrawn}\n\nTop up with firestarter_fund_wallet; cash out the spendable balance with firestarter_withdraw_wallet.`,
+              text: `**Drop wallet: $${balance} spendable**\nReserved for live drops (claimed, not yet released to the seller): $${reserved}\nSpent (paid out to sellers for completed drop purchases): $${spent}\nLifetime deposited: $${deposited} · Lifetime withdrawn: $${withdrawn}\n\nTop up with firestarter_fund_wallet; cash out the spendable balance with firestarter_withdraw_wallet.`,
             }],
           };
         } catch (err: any) {
