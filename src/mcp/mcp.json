@@ -2,7 +2,7 @@
   "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 83 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
@@ -1946,7 +1946,7 @@
     },
     {
       "name": "firestarter_wallet_balance",
-      "description": "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
+      "description": "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, funds already spent (paid out to sellers for claims that converted into a completed purchase), and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
       "inputSchema": {
         "type": "object",
         "properties": {},

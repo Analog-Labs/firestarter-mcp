@@ -639,16 +639,16 @@ describe("MCP firestarter_fund_wallet (owner)", () => {
 });
 
 describe("MCP firestarter_wallet_balance (owner)", () => {
-  it("renders balance, reserved, deposited and withdrawn", async () => {
+  it("renders balance, reserved, spent, deposited and withdrawn", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: any, init?: any) => {
         const method = init?.method || "GET";
         fetchCalls.push({ method, url: String(url), body: undefined });
         if (method === "GET" && String(url).endsWith("/v1/drops/wallet")) {
-          // Four DISTINCT values so a dropped/mislabeled figure can't hide behind
+          // Five DISTINCT values so a dropped/mislabeled figure can't hide behind
           // a duplicate — each assertion below pins its value to its own label.
-          return jsonResponse(200, { balance_cents: 4500, reserved_cents: 1000, deposited_cents: 6000, withdrawn_cents: 500 });
+          return jsonResponse(200, { balance_cents: 4500, reserved_cents: 1000, spent_cents: 250, deposited_cents: 6250, withdrawn_cents: 500 });
         }
         throw new Error(`unexpected fetch: ${method} ${url}`);
       })
@@ -659,7 +659,8 @@ describe("MCP firestarter_wallet_balance (owner)", () => {
     const text = textOf(res);
     expect(text).toMatch(/\$45\.00 spendable/);
     expect(text).toMatch(/Reserved for live drops[^\n]*\$10\.00/);
-    expect(text).toMatch(/Lifetime deposited: \$60\.00/);
+    expect(text).toMatch(/Spent[^\n]*\$2\.50/);
+    expect(text).toMatch(/Lifetime deposited: \$62\.50/);
     expect(text).toMatch(/Lifetime withdrawn: \$5\.00/);
   });
 

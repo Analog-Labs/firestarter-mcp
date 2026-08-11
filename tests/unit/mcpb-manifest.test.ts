@@ -63,6 +63,26 @@ describe("mcpb/manifest.json — bundle contract", () => {
     }
   });
 
+  it("points the author at a GitHub profile, not the marketing site", () => {
+    // The directory checks `author` against a real GitHub identity it can
+    // attribute the submission to. A homepage URL there reads as unattributed
+    // and is rejected, so the check has to be on the host, not just on https.
+    expect(manifest.author.url).toMatch(/^https:\/\/github\.com\/[^/]+\/?$/);
+  });
+
+  it("declares MIT consistently across the manifest, package.json, and LICENSE", () => {
+    // Listing requires MIT, and requires it to be verifiable: GitHub's license
+    // detector reads the LICENSE file, reviewers read the manifest, and npm
+    // reads package.json. All three drifted to ISC before this test existed —
+    // any one of them disagreeing sinks the submission.
+    expect(manifest.license).toBe("MIT");
+    const pkg = JSON.parse(readFileSync(resolve(API_ROOT, "package.json"), "utf8"));
+    expect(pkg.license).toBe("MIT");
+    const licensePath = resolve(API_ROOT, "LICENSE");
+    expect(existsSync(licensePath), "no LICENSE file for GitHub to detect").toBe(true);
+    expect(readFileSync(licensePath, "utf8")).toMatch(/^MIT License/);
+  });
+
   it("documents the privacy policy in README.md, not only in the manifest", () => {
     // Local connectors must carry the policy in BOTH places. The directory
     // docs are explicit that a missing README section is an immediate
@@ -138,5 +158,29 @@ describe("mcpb/manifest.json — bundle contract", () => {
     expect(manifest.server.type).toBe("node");
     const entry = manifest.server.entry_point;
     expect(manifest.server.mcp_config.args.join(" ")).toContain(entry);
+  });
+});
+
+/**
+ * Two entrypoints construct an McpServer, and clients see BOTH versions:
+ * server.ts answers the stdio/extension handshake, route.ts answers the remote
+ * HTTP and WebSocket one. The test above only ever pinned server.ts, so
+ * route.ts sat at 1.1.0 while everything else moved to 2.x — meaning
+ * api.firestarter.network/mcp told every remote client it was version 1.1.0
+ * (confirmed against production before this was fixed).
+ */
+describe("every transport reports the same version", () => {
+  const routeSource = readFileSync(
+    resolve(API_ROOT, "src", "mcp", "route.ts"),
+    "utf8",
+  );
+
+  it("route.ts advertises the manifest version, like server.ts", () => {
+    const declared = routeSource.match(/version:\s*"(\d+\.\d+\.\d+)"/)?.[1];
+    expect(declared, "route.ts has no McpServer version literal").toBeTruthy();
+    expect(
+      declared,
+      "route.ts (remote HTTP/WS handshake) disagrees with the manifest — run `npm run sync-version`",
+    ).toBe(manifest.version);
   });
 });
