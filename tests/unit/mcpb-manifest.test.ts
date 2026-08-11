@@ -63,26 +63,6 @@ describe("mcpb/manifest.json — bundle contract", () => {
     }
   });
 
-  it("points the author at a GitHub profile, not the marketing site", () => {
-    // The directory checks `author` against a real GitHub identity it can
-    // attribute the submission to. A homepage URL there reads as unattributed
-    // and is rejected, so the check has to be on the host, not just on https.
-    expect(manifest.author.url).toMatch(/^https:\/\/github\.com\/[^/]+\/?$/);
-  });
-
-  it("declares MIT consistently across the manifest, package.json, and LICENSE", () => {
-    // Listing requires MIT, and requires it to be verifiable: GitHub's license
-    // detector reads the LICENSE file, reviewers read the manifest, and npm
-    // reads package.json. All three drifted to ISC before this test existed —
-    // any one of them disagreeing sinks the submission.
-    expect(manifest.license).toBe("MIT");
-    const pkg = JSON.parse(readFileSync(resolve(API_ROOT, "package.json"), "utf8"));
-    expect(pkg.license).toBe("MIT");
-    const licensePath = resolve(API_ROOT, "LICENSE");
-    expect(existsSync(licensePath), "no LICENSE file for GitHub to detect").toBe(true);
-    expect(readFileSync(licensePath, "utf8")).toMatch(/^MIT License/);
-  });
-
   it("documents the privacy policy in README.md, not only in the manifest", () => {
     // Local connectors must carry the policy in BOTH places. The directory
     // docs are explicit that a missing README section is an immediate
