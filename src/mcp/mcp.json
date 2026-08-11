@@ -571,6 +571,10 @@
               "reseller"
             ],
             "description": "Optional. Seller type. Defaults to retailer."
+          },
+          "country": {
+            "type": "string",
+            "description": "Optional. ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'US'. Pass it if the seller has already mentioned where they are — it is required later for Stripe payouts and recording it now saves an extra round-trip. Never invent one: omit it rather than guessing from language or timezone, because Stripe locks it permanently at account creation."
           }
         },
         "required": [
@@ -856,7 +860,7 @@
     },
     {
       "name": "firestarter_payouts",
-      "description": "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (US/GB/CA/AU only) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Outside the US/GB/CA/AU, suggest PayPal — it is the global option and needs only the account email.",
+      "description": "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Do NOT assume a seller's country is ineligible for Stripe — pass their real country and let Stripe answer; suggest PayPal when Stripe declines it, or when the seller prefers it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -868,11 +872,11 @@
               "wise",
               "payoneer"
             ],
-            "description": "Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/EU), 'paypal' = PayPal email (global), 'wise' = Wise bank transfer (APAC/global), 'payoneer' = Payoneer (190+ countries, TikTok/Amazon sellers)."
+            "description": "Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (eligibility is Stripe's call, not a fixed list), 'paypal' = PayPal email (global, needs only the account email)."
           },
           "country": {
             "type": "string",
-            "description": "ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Needed for Stripe onboarding for non-US sellers."
+            "description": "ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'SG', 'US'. REQUIRED for provider='stripe' unless the seller recorded one at registration: the API refuses to guess, because Stripe locks the country permanently at account creation and a wrong one can only be fixed by discarding the account. If Stripe does not support it you get a clear 422 naming the country — do not pre-filter on the seller's behalf. Irrelevant for PayPal."
           },
           "paypal_email": {
             "type": "string",

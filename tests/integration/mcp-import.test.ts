@@ -244,7 +244,16 @@ describe("firestarter_payouts — multi-provider status + setup", () => {
     expect(text).toContain("No payout method configured");
     expect(text).toContain("Stripe");
     expect(text).toContain("PayPal");
-    expect(text).toContain("Wise");
+    // Only the rails `provider` actually accepts may be offered. Wise and
+    // Payoneer are implemented but NOT selectable — neither connect flow yields
+    // a destination its adapter can spend — so listing them steered sellers into
+    // a rail that could never pay them. Note the API still reports 'wise' in
+    // available_providers above; this message deliberately does not mirror it.
+    expect(text).not.toContain("Wise");
+    expect(text).not.toContain("Payoneer");
+    // And no hardcoded country allowlist: the API-side US/GB/CA/AU gate is gone,
+    // so quoting one here only talks a seller out of the rail that would work.
+    expect(text).not.toMatch(/US\/GB\/CA\/AU/);
   });
 
   it("setup stripe: returns onboarding link", async () => {
