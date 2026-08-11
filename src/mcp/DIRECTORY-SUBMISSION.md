@@ -1,195 +1,215 @@
-# How to submit the Firestarter MCP server to a directory
+# Submitting Firestarter to the Connectors Directory
 
-This guide walks a human through listing the Firestarter MCP server in a public MCP
-directory. It does **not** submit anything for you — every step is something you
-run or paste yourself.
+A human runs every step here. This guide does not submit anything for you.
 
-The server it describes is the stdio MCP server in [`server.ts`](./server.ts),
-declared by the manifest in [`mcp.json`](./mcp.json). Server name: `firestarter`.
-Version: `1.0.0`. Five tools: `firestarter_execute`, `firestarter_status`,
-`firestarter_approve`, `firestarter_cancel`, `firestarter_message`.
+Requirements come from Anthropic's
+[submission page](https://claude.com/docs/connectors/building/submission) and
+[pre-submission checklist](https://claude.com/docs/connectors/building/review-criteria).
 
-Target directories (default at launch):
-1. **Claude Code MCP directory** (Anthropic) — the registry Claude Code and
-   Claude Desktop pull from.
-2. **Cursor MCP directory** — Cursor's "Add to Cursor" / MCP registry.
-
----
-
-## Prerequisites
-
-Before you submit anywhere, confirm all of these. A directory reviewer will check
-the same things, so clearing them first avoids a rejection round-trip.
-
-1. **The package is installable.** The run command is `npx tsx firestarter-mcp`.
-   That resolves through the root `package.json` `bin` entry
-   `"firestarter-mcp": "./src/mcp/server.ts"`. For `npx` to find it by name, the
-   package must be published to npm (as `firestarter-api`, the `name` in
-   `package.json`) or installed locally. If it is not yet on npm, publish it first
-   or list it with a local/`git+https` install command instead.
-   - `tsx` is the runner because the bin target is a TypeScript file
-     (`server.ts`). It is already a dependency, so `npx tsx firestarter-mcp`
-     pulls it in. Do not drop `tsx` from the command.
-
-2. **You have an API key to test with.** The server exits immediately if
-   `FIRESTARTER_API_KEY` is unset (`server.ts` lines 9–12). Reviewers may smoke-test;
-   you want a working key path. Get one from the Firestarter API
-   (https://api.firestarter.network).
-
-3. **The server starts and lists tools.** Verify locally (see the Verification
-   section below) before pasting anything into a directory form.
-
-4. **You can edit / open a PR against the directory's source repo.** Most MCP
-   directories are GitHub-backed and accept listings via pull request. Have a
-   GitHub account ready.
-
----
-
-## What to paste (the canonical config block)
-
-Most directories want a JSON snippet in the `mcpServers` shape that Claude Code,
-Claude Desktop, and Cursor all consume. Paste this:
-
-```json
-{
-  "mcpServers": {
-    "firestarter": {
-      "command": "npx",
-      "args": ["tsx", "firestarter-mcp"],
-      "env": {
-        "FIRESTARTER_API_KEY": "your-api-key-here"
-      }
-    }
-  }
-}
-```
-
-To pin a non-default API base, add `"FIRESTARTER_API_URL"` to `env`. Omit it to use
-`https://api.firestarter.network`.
-
-The full machine-readable manifest (name, version, description, transport, env,
-and all five tool schemas) is [`mcp.json`](./mcp.json) in this directory. If a
-submission form asks for a manifest file or a tools list, upload or paste that.
-
-Listing metadata most forms ask for:
-
-| Field | Value |
+| | |
 |---|---|
 | Server name | `firestarter` |
 | Display name | Firestarter Commerce |
-| Version | `1.0.0` |
-| Description | Execute commerce transactions from natural language. Find products matching a request, verify suppliers, get pricing, and optionally handle payment and delivery, with an approval step before money moves. |
-| Transport | stdio |
-| Homepage | https://api.firestarter.network |
-| Run command | `npx tsx firestarter-mcp` |
-| Required env | `FIRESTARTER_API_KEY` |
-| Optional env | `FIRESTARTER_API_URL` (default `https://api.firestarter.network`) |
-| Tools | `firestarter_execute`, `firestarter_status`, `firestarter_approve`, `firestarter_cancel`, `firestarter_message` |
+| Version | `2.1.1` |
+| Surface | 83 tools, 7 resources, 10 prompts |
+| Repository | https://github.com/Analog-Labs/firestarter-mcp (public) |
+| License | MIT |
 
 ---
 
-## Steps — Claude Code MCP directory
+## Two submissions, two paths
 
-1. Open the Anthropic MCP directory / registry submission page. The MCP registry
-   project lives at https://github.com/modelcontextprotocol/registry and the
-   directory surfaced inside Claude Code / Claude Desktop is fed from it. Start
-   from https://modelcontextprotocol.io and follow its "submit a server" /
-   "registry" link to the current intake (the exact URL moves as the program
-   evolves; the docs site is the stable entry point).
+They are separate. Neither substitutes for the other.
 
-2. Choose the submission path the page offers:
-   - **PR-based:** fork the registry repo, add an entry for `firestarter` using
-     the metadata table above plus the config block, and open a pull request.
-   - **Form-based:** fill in the fields from the metadata table. Where it asks for
-     the install/run command, use `npx tsx firestarter-mcp`. Where it asks for
-     env vars, declare `FIRESTARTER_API_KEY` (required) and `FIRESTARTER_API_URL`
-     (optional).
+**Remote MCP server** — `https://api.firestarter.network/mcp`, Streamable HTTP,
+served by the Firestarter API. Submitted through the
+[portal](https://claude.ai/admin-settings/directory/submissions/new) in Claude.ai
+admin settings.
 
-3. If the form accepts a manifest file, attach [`mcp.json`](./mcp.json).
+> **Access requirement:** the portal lives in organization admin settings, so it
+> needs a **Team or Enterprise** org, and by default only Owners/Primary owners
+> can submit. On individual plans the portal is not available at all. Confirm
+> this before planning around a submission date.
 
-4. Submit the PR or form. **You do this — this guide stops here.**
+**Desktop extension (`.mcpb`)** — the stdio server packed as an MCP Bundle. Uses
+a different form entirely:
+https://clau.de/desktop-extention-submission
 
-5. Respond to reviewer feedback. The usual asks: confirm the package is
-   `npx`-installable, confirm tool descriptions match runtime, confirm the server
-   handles a missing API key gracefully (it exits with a clear message — that is
-   expected).
+Both artifacts are published by `release.yml` on every version tag. For `2.1.1`:
 
----
+- `firestarter.mcpb`
+- `firestarter-mcp-server-2.1.1.tgz`
 
-## Steps — Cursor MCP directory
-
-1. Open Cursor's MCP directory submission page (Cursor → Settings → MCP, or the
-   Cursor MCP directory web page with its "Submit" / "Add your server" entry).
-   Cursor consumes the same `mcpServers` config shape as the block above.
-
-2. Provide the listing metadata from the table above.
-
-3. For the install config, paste the canonical config block. Cursor's "Add to
-   Cursor" deep links encode exactly this `command` + `args` + `env`, so keeping
-   `command: "npx"` and `args: ["tsx", "firestarter-mcp"]` verbatim matters.
-
-4. If Cursor requests a one-click install link, generate it from that same config
-   (Cursor's docs describe the `cursor://` deep-link format). The payload is the
-   server block — `firestarter` with `npx tsx firestarter-mcp` and the
-   `FIRESTARTER_API_KEY` env var.
-
-5. Submit. **You do this — this guide stops here.**
+at https://github.com/Analog-Labs/firestarter-mcp/releases/tag/v2.1.1
 
 ---
 
-## Verification (run before submitting)
+## Listing metadata
 
-Confirm the server actually starts and advertises its five tools, so you are not
-submitting a broken listing.
+| Field | Value |
+|---|---|
+| Server URL | `https://api.firestarter.network/mcp` |
+| Transport | Streamable HTTP (WebSocket also served on the same path) |
+| Authentication | API key, `Authorization: Bearer fs_live_…` |
+| Homepage | https://firestarter.network |
+| Documentation | https://firestarter.network/mcp |
+| Support | https://firestarter.network/docs |
+| Privacy policy | https://firestarter.network/privacy |
+| Icon | `mcpb/assets/icon-512.png` |
+| Required env (local) | `FIRESTARTER_API_KEY` |
+| Optional env (local) | `FIRESTARTER_API_URL` (default `https://api.firestarter.network`) |
 
-1. Start the server with a key set:
+**Description** (49 words):
 
+> Firestarter turns natural language into real commerce. Describe what you want
+> and the agent finds verified sellers, compares pricing and shipping, then buys
+> only after your explicit approval — plus order tracking, returns, receipts, and
+> disputes. Sellers can list and reprice products, sync Shopify catalogs, fulfill
+> orders, and monitor payouts.
+
+**Tagline** (55 char max): `Buy and sell real products, with approval before pay`
+
+---
+
+## Checklist status
+
+Audited against the pre-submission checklist. Two items need a decision before
+submitting; everything else passes.
+
+| Criterion | Status |
+|---|---|
+| Separate read and write tools | Pass — 83 purpose-built tools, no catch-all `api_request`. The reader/setter split (`firestarter_spend_cap` / `firestarter_set_spend_cap`, and the auto-approve pair) exists for exactly this rule. |
+| Reference API docs in custom query tools | N/A — no tool takes a freeform endpoint, path, or body. |
+| Tool annotations | Pass — every tool has a `title` and a `readOnlyHint`/`destructiveHint`, enforced by `mcp-tool-annotations.test.ts` and `scripts/smoke-bundle.mjs`. |
+| Tool names ≤ 64 chars | Pass — longest is `firestarter_untrust_community_drops`, 35. |
+| Narrow, accurate descriptions | Pass — descriptions are generated into both manifests from the registered text and pinned by `mcp-manifest-parity.test.ts`. |
+| Avoid prompt-injection patterns | **Needs work — see below.** |
+| Functional quality | Pass — tools return actionable errors, not bare 500s. Re-verify via Inspector before submitting. |
+| API ownership | Pass — first-party; the server domain matches the service. |
+| Unsupported use cases | **Needs a decision — see below.** |
+| Privacy policy (local connector) | Pass — "Privacy Policy" section in `README.md`, `privacy_policies` in `mcpb/manifest.json`, HTTPS URL live. Covers collection, use/storage, third-party sharing, retention, and contact. |
+| Public documentation | Pass — https://firestarter.network/mcp returns 200. |
+| Public repo (MCPB) | Pass. |
+| Test credentials | **To prepare** — a fully populated account is required. |
+
+### 1. Prompt-injection patterns
+
+The checklist is explicit: *"Describe what the tool does. Do not tell Claude how
+to behave."* Descriptions are rejected if they "tell Claude to behave in ways
+unrelated to the tool's function."
+
+**19 of 83 descriptions currently carry behavioural directives.** Examples:
+
+- `firestarter_execute` — "ALWAYS pass the buyer's `location` …", "you do NOT
+  need to ask for their street, zip, or phone"
+- `firestarter_set_auto_approve_limit` — "Always confirm the exact dollar amount
+  with the buyer before setting it — never invent, assume, or round a value"
+- `firestarter_set_spend_cap` — "never tell the buyer you cannot change the cap"
+- `firestarter_request_escrow` — "never automate messages to Craigslist or
+  marketplace posters"
+
+These are good agent guidance and they measurably improve behaviour, which is
+why they are there. They are also the thing this rule names. Before submitting,
+decide per description whether to keep it, and expect questions on the ones that
+read as instructions rather than description. The safest rewrite states the
+constraint as fact about the tool ("orders above the cap are rejected") rather
+than as an order to Claude ("never tell the buyer …").
+
+Since descriptions live in `tools.ts` and are synced outward, edit them there and
+run `npm run sync-manifests`.
+
+### 2. Money movement
+
+The checklist lists as **not accepted**: *"Transfer money, cryptocurrency, or
+other financial assets."*
+
+Five tools move or expose funds: `firestarter_fund_wallet`,
+`firestarter_withdraw_wallet`, `firestarter_wallet_balance`,
+`firestarter_payouts`, `firestarter_connect_payouts`.
+
+The rule most plausibly targets money-transmission apps rather than commerce
+checkout, and buying a product is not a value transfer in that sense — but
+`withdraw_wallet` moves money out to a seller's own account, which is closer to
+the line. This is worth raising with `mcp-review@anthropic.com` **before**
+submitting rather than discovering it in review. If it is a problem, the seller
+payout tools could ship only in the local extension, or be dropped from the
+listed surface.
+
+### 3. Authentication
+
+Firestarter uses a static API key, not OAuth 2.0. The submission page lists
+"Use OAuth 2.0 for authenticated services" as a requirement, but the portal's
+Authentication step also accepts "a custom connection where users supply their
+own URL or credentials at connection time," which is what Firestarter is. Not a
+blocker on the face of it; expect it to be asked about.
+
+---
+
+## Verify before submitting
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build:mcpb && npx mcpb validate mcpb/manifest.json
+node scripts/smoke-bundle.mjs      # every tool has a title + safety hint
+```
+
+Then exercise the surface the way a reviewer will:
+
+1. **MCP Inspector** against the live server — the checklist expects every tool
+   to have been run:
    ```bash
-   FIRESTARTER_API_KEY=your-api-key-here npx tsx firestarter-mcp
+   npx @modelcontextprotocol/inspector
+   # URL: https://api.firestarter.network/mcp
+   # Header: Authorization: Bearer fs_test_…
    ```
+2. **As a custom connector in Claude**, per
+   https://claude.com/docs/connectors/building/testing
+3. **Install the `.mcpb`** from the release and confirm the tools appear and the
+   API key prompt stores to the OS keychain.
 
-   It runs on stdio and waits silently for a client. No crash and no
-   `FIRESTARTER_API_KEY ... is required` message means startup is healthy.
-   (Ctrl-C to stop.)
+A quick liveness check:
 
-2. Confirm the missing-key guard works (reviewers may test this):
+```bash
+curl -s -X POST https://api.firestarter.network/mcp \
+  -H "Authorization: Bearer fs_test_your_key" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}'
+```
 
-   ```bash
-   npx tsx firestarter-mcp
-   ```
+Expect `200`, an `mcp-session-id` header, and `serverInfo.version` matching the
+release. Unauthenticated `POST /mcp` must return `401`.
 
-   Expected: it prints `FIRESTARTER_API_KEY environment variable is required` and
-   exits non-zero. That is correct behavior, not a bug.
+---
 
-3. Confirm the tool list end to end by wiring the canonical config block into a
-   local Claude Code / Claude Desktop / Cursor MCP config and reloading. You should
-   see the five `firestarter_*` tools appear.
+## Releasing a new version
+
+Never hand-edit the version. Bump it in a PR:
+
+```bash
+npm version 2.1.2 --no-git-tag-version   # syncs all six files that state it
+```
+
+Merging to `main` runs the gates and publishes the tag, the `.mcpb`, and the
+tarball. `main` is admin-restricted, so the bump goes through review like any
+other change.
+
+The six version sources are `package.json`, `mcp.json`, `src/mcp/mcp.json`,
+`mcpb/manifest.json`, `src/mcp/server.ts` (stdio handshake) and `src/mcp/route.ts`
+(remote HTTP/WS handshake). `route.ts` was missed for several releases and
+reported `1.1.0` to every remote client; `mcpb-manifest.test.ts` now pins both.
 
 ---
 
 ## Troubleshooting
 
-- **`npx` can't find `firestarter-mcp`.** The package isn't published or installed
-  under the name `firestarter-api`. Publish to npm, or change the documented run
-  command to a local path (e.g. `npx tsx /absolute/path/to/src/mcp/server.ts`) or a
-  `git+https` install for the submission.
-- **Server exits instantly on launch.** `FIRESTARTER_API_KEY` is unset. Set it in
-  the `env` block of the config (see lines 9–12 of `server.ts`).
-- **Tools call the wrong host.** `FIRESTARTER_API_URL` is pointed somewhere else.
-  Remove it to fall back to `https://api.firestarter.network`.
-- **Reviewer says the manifest and runtime disagree.** Re-check [`mcp.json`](./mcp.json)
-  against [`server.ts`](./server.ts); the manifest mirrors the `server.tool(...)`
-  registrations exactly. If `server.ts` changes, regenerate the manifest before
-  resubmitting.
-
----
-
-## Notes for the submitter
-
-- Directory URLs and exact form fields change over time. The two stable entry
-  points are https://modelcontextprotocol.io (Claude Code / Anthropic) and Cursor's
-  in-app MCP settings. Everything you need to fill either is in the metadata table
-  and the canonical config block above.
-- This guide and `mcp.json` are the only two files added for the submission. They
-  describe the server exactly as it exists in `server.ts` at version `1.0.0`; bump
-  both if you change the server before submitting.
+- **Reviewer says the manifest and runtime disagree.** Run
+  `npm run sync-manifests` and `npm run sync-version`; both are enforced by tests.
+- **Extension installs without an icon.** `mcpb/assets` must be packed alongside
+  the manifest — `scripts/build-mcpb.mjs` handles this; don't hand-pack.
+- **Server exits immediately.** `FIRESTARTER_API_KEY` is unset. Expected
+  behaviour, with a clear message.
+- **Tools hit the wrong host.** `FIRESTARTER_API_URL` is pointed elsewhere;
+  remove it to fall back to production.
