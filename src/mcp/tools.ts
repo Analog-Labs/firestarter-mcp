@@ -2626,12 +2626,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       business_name: z.string().describe("REQUIRED. The seller's business or brand name, e.g. \"Tania's Art Studio\" or \"QuickShip Electronics\"."),
       type: z.enum(["retailer", "wholesaler", "manufacturer", "reseller"]).optional().describe("Optional. Seller type. Defaults to 'retailer'. Only ask if the seller mentions they're a wholesaler/manufacturer."),
+      // Captured here so firestarter_payouts never has to interrupt to ask. It
+      // stays OPTIONAL because registration must not become a gate — listing is
+      // the point of this tool, and payouts can be set up later.
+      country: z.string().optional().describe("Optional. ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'US'. Pass it if the seller has already mentioned where they are — it is required later for Stripe payouts and recording it now saves an extra round-trip. Never invent one: omit it rather than guessing from language or timezone, because Stripe locks it permanently at account creation."),
     },
     { title: "Register as Seller", readOnlyHint: false, destructiveHint: false },
-    async ({ business_name, type }) => {
+    async ({ business_name, type, country }) => {
       try {
         const body: any = { business_name };
         if (type) body.type = type;
+        if (country) body.country = country;
         const seller = await apiRequest("POST", "/v1/sellers", body);
         let text = `**Seller profile created!**\n`;
         text += `ID: \`${seller.id}\`\n`;
@@ -3063,13 +3068,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (US/GB/CA/AU only) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Outside the US/GB/CA/AU, suggest PayPal — it is the global option and needs only the account email.",
+    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Do NOT assume a seller's country is ineligible for Stripe — pass their real country and let Stripe answer; suggest PayPal when Stripe declines it, or when the seller prefers it.",
     {
       // Wise/Payoneer are implemented but not selectable — neither connect flow
       // yields a destination its adapter can spend. Narrowing the enum stops an
       // agent proposing a rail the API will refuse. See services/payouts/providers.ts.
-      provider: z.enum(["stripe", "paypal"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (US/GB/CA/AU only — the API rejects any other country), 'paypal' = PayPal email (global, easiest outside the US/GB/CA/AU)."),
-      country: z.string().optional().describe("ISO 3166-1 alpha-2 country code, e.g. 'US', 'GB', 'CA', 'AU' — Stripe onboarding currently rejects every other country. Needed for Stripe onboarding for non-US sellers; irrelevant for PayPal."),
+      provider: z.enum(["stripe", "paypal"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (eligibility is Stripe's call, not a fixed list), 'paypal' = PayPal email (global, needs only the account email)."),
+      country: z.string().optional().describe("ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'SG', 'US'. REQUIRED for provider='stripe' unless the seller recorded one at registration: the API refuses to guess, because Stripe locks the country permanently at account creation and a wrong one can only be fixed by discarding the account. If Stripe does not support it you get a clear 422 naming the country — do not pre-filter on the seller's behalf. Irrelevant for PayPal."),
       paypal_email: z.string().optional().describe("PayPal email for receiving payouts. Required when provider='paypal'."),
       wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
       payoneer_email: z.string().optional().describe("Payoneer account email. Required when provider='payoneer'."),
@@ -3086,7 +3091,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           } else if (status.provider && status.provider !== "none") {
             text = `**Payouts pending** — ${status.provider.toUpperCase()} is configured but not yet active.\nRun \`firestarter_payouts\` with \`provider: "${status.provider}"\` to complete setup.`;
           } else {
-            text = `**No payout method configured.** Listings are visible but buyers cannot checkout.\n\nAvailable providers:\n- **Stripe** — US/GB/CA/AU only, ~5 min setup\n- **PayPal** — 200+ countries, ~2 min setup (just an email)\n- **Wise** — 80+ currencies, best rates for APAC (Thailand, Singapore, India)\n- **Payoneer** — 190+ countries, popular with TikTok Shop/Amazon sellers\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
+            // Only the two rails the `provider` enum above accepts. Wise and
+            // Payoneer were listed here for a long time: neither connect flow
+            // yields a destination its adapter can spend, so a seller who picked
+            // one was steered into a rail that can never pay them. Stripe's
+            // reach was also given as "US/GB/CA/AU only", which was a hardcoded
+            // API allowlist that no longer exists — eligibility is Stripe's
+            // call now, so quoting a country list here only talks sellers out of
+            // the rail that would have worked.
+            text = `**No payout method configured.** Listings are visible but buyers cannot checkout.\n\nAvailable providers:\n- **Stripe** — bank payouts wherever Stripe Connect operates, incl. much of Asia-Pacific; ~5 min setup. Needs the country the business banks in (locked permanently once connected).\n- **PayPal** — 200+ countries, ~2 min setup (just an email)\n\nIf unsure whether Stripe covers a country, try it — you get a clear answer naming the country, and PayPal remains available either way.\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
           }
           return { content: [{ type: "text" as const, text }] };
         }
