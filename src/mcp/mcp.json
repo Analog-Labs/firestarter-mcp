@@ -30,16 +30,19 @@
         "type": "object",
         "properties": {
           "request": {
-            "type": "string"
+            "type": "string",
+            "description": "Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."
           },
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."
           },
           "budget_max": {
-            "type": "number"
+            "type": "number",
+            "description": "Maximum budget in USD. Optional — omit to see all options regardless of price."
           },
           "delivery_address": {
-            "description": "A single-line string ('123 Main St, Austin, TX 78701, US') OR an object { name?, street1, street2?, city, state?, zip?, country? }. Accepted even if partial or odd-shaped (never rejected for shape); a complete address (ZIP + state for US/CA/AU) lets execute quote a real carrier rate before approval, and the response's needs_more names any missing field.",
+            "description": "Optional shipping address — pass EITHER a single-line string (e.g. \"123 Main St, Austin, TX 78701, US\") OR an object { name?, street1, street2?, city, state?, zip?, country? } (country is an ISO code, e.g. US/TH; defaults to US). The buyer's saved default address is used automatically at approval, so only pass one here if they have none saved or want it shipped elsewhere; prefer a saved address_id. A COMPLETE address (ZIP + state for US/CA/AU) lets execute quote a REAL carrier rate up front instead of the flat placeholder; a partial or odd-shaped address is accepted anyway (never rejected for shape) and the response's `needs_more` names exactly what to collect.",
             "anyOf": [
               {
                 "type": "string"
@@ -76,16 +79,20 @@
             ]
           },
           "address_id": {
-            "type": "string"
+            "type": "string",
+            "description": "A saved address id (addr_...) to ship to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Localizes search + shipping to that destination."
           },
           "priority": {
-            "type": "string"
+            "type": "string",
+            "description": "Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated). Default cost — shipping is quoted and shipped at the cheapest carrier rate unless the buyer asks for speed/quality."
           },
           "auto_pay": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "If true, automatically pay for the best option within budget WITHOUT a confirmation step — only when the buyer explicitly pre-authorized it. If false (default), options are returned for approval."
           },
           "voucher_code": {
-            "type": "string"
+            "type": "string",
+            "description": "A discount code the buyer already has (voucher / coupon / promo code). Pass it ONLY when the buyer gave you one — you do NOT need to hunt for codes, since the best publicly available voucher is applied automatically. Use this for a private or targeted code, which auto-apply cannot find. If the code can't be used the order still proceeds at the best price available, and the response explains why it didn't apply so you can tell the buyer."
           },
           "name": {
             "type": "string"
@@ -109,25 +116,32 @@
         "type": "object",
         "properties": {
           "query": {
-            "type": "string"
+            "type": "string",
+            "description": "What to look for, e.g. 'polo t-shirt' or 'wireless earbuds under $50'"
           },
           "country": {
-            "type": "string"
+            "type": "string",
+            "description": "Destination country (ISO alpha-2 or common name) — enables shipping/serviceability checks"
           },
           "city": {
-            "type": "string"
+            "type": "string",
+            "description": "Destination city"
           },
           "deadline": {
-            "type": "string"
+            "type": "string",
+            "description": "Delivery deadline, e.g. 'Friday', 'in 3 days', '2026-07-03'"
           },
           "min_price": {
-            "type": "number"
+            "type": "number",
+            "description": "Price floor in USD"
           },
           "max_price": {
-            "type": "number"
+            "type": "number",
+            "description": "Budget ceiling in USD"
           },
           "quantity": {
-            "type": "number"
+            "type": "number",
+            "description": "How many units (1-100)"
           },
           "context": {
             "type": "object",
@@ -147,13 +161,16 @@
               "intent": {
                 "type": "string"
               }
-            }
+            },
+            "description": "Structured buyer context: destination, locale, currency, and intent."
           },
           "limit": {
-            "type": "number"
+            "type": "number",
+            "description": "Max options per page (1-50, default 10)."
           },
           "cursor": {
-            "type": "string"
+            "type": "string",
+            "description": "Opaque pagination cursor from a prior preview's page.next_cursor to fetch the next page."
           }
         },
         "required": [
@@ -168,10 +185,12 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."
           },
           "status_filter": {
-            "type": "string"
+            "type": "string",
+            "description": "Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"
           }
         },
         "required": []
@@ -184,21 +203,25 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."
           },
           "selected_option": {
-            "type": "number"
+            "type": "number",
+            "description": "0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."
           },
           "option_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Exact option id (e.g. 'opt_abc123') to approve, as returned in API errors or the execution resource. Takes precedence over selected_option."
           },
           "address_id": {
-            "type": "string"
+            "type": "string",
+            "description": "A saved address id (addr_...) to ship this order to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Pass only to ship somewhere other than their default."
           },
           "confirm_total": {
             "type": "number",
             "minimum": 0,
-            "description": "Exact updated USD total from a prior PRICE_CHANGED response, supplied only after renewed buyer confirmation."
+            "description": "Exact updated total in USD from a prior PRICE_CHANGED response. Pass only after showing that total to the buyer and receiving a new explicit confirmation; never guess or pre-fill it on the first approval."
           }
         },
         "required": []
@@ -220,34 +243,44 @@
         "type": "object",
         "properties": {
           "street1": {
-            "type": "string"
+            "type": "string",
+            "description": "Street address line 1"
           },
           "street2": {
-            "type": "string"
+            "type": "string",
+            "description": "Street address line 2 (apt, suite, etc.)"
           },
           "city": {
-            "type": "string"
+            "type": "string",
+            "description": "City"
           },
           "state": {
-            "type": "string"
+            "type": "string",
+            "description": "State / province / region"
           },
           "zip": {
-            "type": "string"
+            "type": "string",
+            "description": "Postal / ZIP code"
           },
           "country": {
-            "type": "string"
+            "type": "string",
+            "description": "ISO country code (e.g. US, PK, KE, NG). ALWAYS pass it when the buyer's country is known or named anywhere in the address — omitting it makes the API infer the country from the address text, falling back to US only as a last resort."
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Recipient name"
           },
           "phone": {
-            "type": "string"
+            "type": "string",
+            "description": "Phone number for delivery"
           },
           "label": {
-            "type": "string"
+            "type": "string",
+            "description": "Label for this address (e.g. 'Home', 'Office', 'Warehouse'). If omitted, a default label is assigned."
           },
           "is_default": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Set to true to make this the default shipping address."
           }
         },
         "required": [
@@ -271,10 +304,12 @@
         "type": "object",
         "properties": {
           "set_limit_usd": {
-            "type": "number"
+            "type": "number",
+            "description": "New auto-approve limit in USD. Orders at or below this amount auto-approve; anything above pauses for approval. 0 = require manual approval for every order."
           },
           "disable": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Set true to turn OFF auto-approval entirely (every order requires manual approval). Mutually exclusive with set_limit_usd."
           }
         },
         "required": []
@@ -291,13 +326,16 @@
             "enum": [
               "list",
               "claim"
-            ]
+            ],
+            "description": "'list' the live drops on a listing, or 'claim' a specific drop_id."
           },
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Listing to list drops for (required for action 'list')."
           },
           "drop_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Drop to claim (required for action 'claim')."
           }
         },
         "required": [
@@ -321,10 +359,12 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The execution ID to cancel"
           },
           "reason": {
-            "type": "string"
+            "type": "string",
+            "description": "Reason for cancellation"
           }
         },
         "required": [
@@ -339,17 +379,21 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The execution ID (exec_...) to show delivery options for — an order that is awaiting approval."
           },
           "option_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Which option's delivery methods to show (opt_...). Omit to use the pre-selected option (the one the buyer is about to approve)."
           },
           "select_index": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Preview a specific delivery speed: the [number] from the menu. Shows that speed's new all-in total and the exact shipping_option_index to approve with. Does NOT select or pay — it's a preview."
           },
           "refresh": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Re-fetch live carrier rates and persist them before showing the menu. Use when the stored rates may be stale (e.g. >30 min old). Off by default."
           }
         },
         "required": [
@@ -364,19 +408,24 @@
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The listing to estimate shipping for (lst_..., from firestarter_preview, firestarter_catalog_search, firestarter_listings, or a firestarter.network/l/<id> share link)."
           },
           "address_id": {
-            "type": "string"
+            "type": "string",
+            "description": "A saved buyer address id (addr_..., from firestarter_addresses) to estimate delivery to. Prefer this when the buyer has one on file — no need to ask where they live."
           },
           "country": {
-            "type": "string"
+            "type": "string",
+            "description": "Destination country — ISO code or common name (e.g. 'US', 'Thailand'). Pair it with zip or city; used only when address_id is not passed."
           },
           "zip": {
-            "type": "string"
+            "type": "string",
+            "description": "Destination ZIP/postal code. Country + ZIP is enough for a real estimate — no street needed."
           },
           "city": {
-            "type": "string"
+            "type": "string",
+            "description": "Destination city — an alternative locality when the buyer has no ZIP handy."
           }
         },
         "required": [
@@ -391,7 +440,8 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The execution/order ID to track (exec_...)"
           }
         },
         "required": [
@@ -406,10 +456,12 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The execution/order ID to return (exec_...)"
           },
           "reason": {
-            "type": "string"
+            "type": "string",
+            "description": "Reason for the return (e.g. 'wrong size', 'damaged', 'not as described')"
           }
         },
         "required": [
@@ -424,7 +476,8 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The execution/order ID to get a receipt for (exec_...)"
           }
         },
         "required": [
@@ -439,10 +492,12 @@
         "type": "object",
         "properties": {
           "execution_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The execution ID to message"
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "Follow-up message (e.g. 'I prefer organic options' or 'Can you find something cheaper?')"
           }
         },
         "required": [
@@ -458,22 +513,28 @@
         "type": "object",
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Name for this monitor (e.g. 'AirPods price watch')"
           },
           "query": {
-            "type": "string"
+            "type": "string",
+            "description": "What to watch — natural language (e.g. 'AirPods Pro 2 under $200')"
           },
           "schedule": {
-            "type": "string"
+            "type": "string",
+            "description": "How often to check: 'hourly', 'daily', 'daily at 9am', 'every 6 hours', or a cron expression. Default: 'daily'"
           },
           "price_drop_pct": {
-            "type": "number"
+            "type": "number",
+            "description": "Minimum price drop percentage to notify (e.g. 10 = notify on 10%+ drops)"
           },
           "goal": {
-            "type": "string"
+            "type": "string",
+            "description": "Natural language goal for AI-powered meaningful change detection (e.g. 'price drops below $180')"
           },
           "webhook_url": {
-            "type": "string"
+            "type": "string",
+            "description": "Webhook URL to receive change notifications"
           }
         },
         "required": [
@@ -489,10 +550,12 @@
         "type": "object",
         "properties": {
           "monitor_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Get details for a specific monitor ID. Omit to list all monitors."
           },
           "include_checks": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Include recent check history (default: true for single monitor, false for list)"
           }
         },
         "required": []
@@ -505,10 +568,12 @@
         "type": "object",
         "properties": {
           "monitor_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The monitor ID to pause or delete"
           },
           "action": {
-            "type": "string"
+            "type": "string",
+            "description": "Action to take: pause (stop checks, keep history), resume (restart checks), delete (permanent)"
           }
         },
         "required": [
@@ -524,7 +589,8 @@
         "type": "object",
         "properties": {
           "monitor_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The monitor ID to check now"
           }
         },
         "required": [
@@ -540,11 +606,11 @@
         "properties": {
           "image_base64": {
             "type": "string",
-            "description": "The image as a base64 data-URI (e.g. 'data:image/jpeg;base64,/9j/...'). Max 6 MB."
+            "description": "The image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here."
           },
           "filename": {
             "type": "string",
-            "description": "Optional original filename for format detection."
+            "description": "Optional original filename (used to detect format: png, webp, gif). Defaults to jpeg if omitted."
           }
         },
         "required": [
@@ -560,7 +626,7 @@
         "properties": {
           "business_name": {
             "type": "string",
-            "description": "REQUIRED. The seller's business or brand name."
+            "description": "REQUIRED. The seller's business or brand name, e.g. \"Tania's Art Studio\" or \"QuickShip Electronics\"."
           },
           "type": {
             "type": "string",
@@ -570,7 +636,7 @@
               "manufacturer",
               "reseller"
             ],
-            "description": "Optional. Seller type. Defaults to retailer."
+            "description": "Optional. Seller type. Defaults to 'retailer'. Only ask if the seller mentions they're a wholesaler/manufacturer."
           },
           "country": {
             "type": "string",
@@ -589,31 +655,40 @@
         "type": "object",
         "properties": {
           "product_name": {
-            "type": "string"
+            "type": "string",
+            "description": "REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."
           },
           "base_price": {
-            "type": "number"
+            "type": "number",
+            "description": "REQUIRED. Sale price in USD, e.g. 49.99."
           },
           "category": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional. Product category (e.g. 'electronics/audio/earbuds'). Infer a reasonable one from the product name if obvious; otherwise omit — don't ask."
           },
           "floor_price": {
-            "type": "number"
+            "type": "number",
+            "description": "Never sell below this price"
           },
           "ceiling_price": {
-            "type": "number"
+            "type": "number",
+            "description": "Never surge above this price"
           },
           "dynamic_pricing": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Enable demand-based pricing"
           },
           "inventory_qty": {
-            "type": "number"
+            "type": "number",
+            "description": "Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."
           },
           "image_urls": {
-            "type": "array"
+            "type": "array",
+            "description": "Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."
           },
           "shipping": {
-            "type": "number"
+            "type": "number",
+            "description": "Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."
           },
           "street1": {
             "type": "string"
@@ -709,7 +784,8 @@
               "required": []
             },
             "minItems": 1,
-            "maxItems": 100
+            "maxItems": 100,
+            "description": "The products to create, up to 100 per call."
           }
         },
         "required": [
@@ -724,13 +800,16 @@
         "type": "object",
         "properties": {
           "source_url": {
-            "type": "string"
+            "type": "string",
+            "description": "URL of the seller's existing listing (e.g. a Craigslist post). For known bot-blocking platforms (Amazon, eBay, Etsy, Facebook, OfferUp, Mercari, Walmart, Shopee), still include this for provenance, but pair it with raw_text up front."
           },
           "raw_text": {
-            "type": "string"
+            "type": "string",
+            "description": "Pasted listing text (title, price, description - at least 10 characters). Send this alongside source_url up front for known bot-blocking platforms (Amazon, eBay, etc.) - a fetch will still be tried but is unlikely to succeed. Required whenever source_url is omitted or a fetch fails; also fills gaps URL extraction missed."
           },
           "photo_urls": {
-            "type": "array"
+            "type": "array",
+            "description": "Photo URLs for the listing, e.g. image links the seller pasted in chat. Seller photos lead the images array."
           }
         },
         "required": []
@@ -743,19 +822,24 @@
         "type": "object",
         "properties": {
           "source_url": {
-            "type": "string"
+            "type": "string",
+            "description": "URL of the external listing the buyer wants to purchase"
           },
           "buyer_email": {
-            "type": "string"
+            "type": "string",
+            "description": "Buyer's email address - notified when the seller claims and the listing goes live"
           },
           "buyer_name": {
-            "type": "string"
+            "type": "string",
+            "description": "Buyer's first name (shown to the seller on the claim page)"
           },
           "title": {
-            "type": "string"
+            "type": "string",
+            "description": "Item title, buyer-supplied. Ask for this up front for platforms that usually block fetches (Facebook Marketplace etc.) - the fetch is tried but is unlikely to succeed."
           },
           "price": {
-            "type": "number"
+            "type": "number",
+            "description": "Asking price in the listing's currency, buyer-supplied (for platforms that usually block fetches)"
           }
         },
         "required": [
@@ -771,10 +855,12 @@
         "type": "object",
         "properties": {
           "pickup_address": {
-            "type": "string"
+            "type": "string",
+            "description": "Pickup street address"
           },
           "dropoff_address": {
-            "type": "string"
+            "type": "string",
+            "description": "Dropoff street address"
           },
           "pickup_lat": {
             "type": "number"
@@ -789,19 +875,23 @@
             "type": "number"
           },
           "weight_kg": {
-            "type": "number"
+            "type": "number",
+            "description": "Approximate item weight in kg"
           },
           "bulky": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Large/awkward item (furniture, gym equipment)"
           },
           "two_person": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Needs two people to carry - adds a crew helper"
           },
           "needs_disassembly": {
             "type": "boolean"
           },
           "declared_value_cents": {
-            "type": "number"
+            "type": "number",
+            "description": "Item value in cents, for courier insurance on high-value items"
           }
         },
         "required": [
@@ -817,10 +907,12 @@
         "type": "object",
         "properties": {
           "provider": {
-            "type": "string"
+            "type": "string",
+            "description": "Provider name from the chosen quote (e.g. lalamove, nash)"
           },
           "quote_ref": {
-            "type": "string"
+            "type": "string",
+            "description": "quote_ref from firestarter_assist_quote"
           },
           "pickup_address": {
             "type": "string"
@@ -841,13 +933,15 @@
             "type": "string"
           },
           "execution_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The purchase execution this delivery fulfills (exec_...)"
           },
           "listing_id": {
             "type": "string"
           },
           "fee_cents": {
-            "type": "number"
+            "type": "number",
+            "description": "The confirmed quote fee, for the booking record"
           }
         },
         "required": [
@@ -900,7 +994,8 @@
         "type": "object",
         "properties": {
           "shop_handle": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional. The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit on the first call to check existing connection status — only needed when no store is connected yet. Accepts the bare handle or the full myshopify.com domain (it's normalized). If the seller doesn't know it, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."
           }
         },
         "required": []
@@ -913,10 +1008,12 @@
         "type": "object",
         "properties": {
           "access_token": {
-            "type": "string"
+            "type": "string",
+            "description": "The seller's TikTok Shop access token (from TikTok Shop Partner Center authorization). Omit to check status or get instructions. This is a secret — never echo it back."
           },
           "shop_domain": {
-            "type": "string"
+            "type": "string",
+            "description": "The seller's TikTok Shop identifier (shop id, shop cipher, or region/store name). Required together with access_token to create the connection."
           }
         },
         "required": []
@@ -939,16 +1036,20 @@
             ]
           },
           "access_token": {
-            "type": "string"
+            "type": "string",
+            "description": "Required for bigcommerce/shopee/lazada/wix. Not used for woocommerce — use consumer_key/consumer_secret instead."
           },
           "shop_domain": {
-            "type": "string"
+            "type": "string",
+            "description": "Store identifier: BigCommerce store hash, Shopee/Lazada shop id, Wix account id, or — for WooCommerce — your store's domain WITHOUT `https://` (e.g. `mystore.com`)."
           },
           "consumer_key": {
-            "type": "string"
+            "type": "string",
+            "description": "WooCommerce only — from WooCommerce > Settings > Advanced > REST API."
           },
           "consumer_secret": {
-            "type": "string"
+            "type": "string",
+            "description": "WooCommerce only — paired with consumer_key."
           }
         },
         "required": [
@@ -963,7 +1064,8 @@
         "type": "object",
         "properties": {
           "connection_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional. The platform connection id (conn_...) to re-sync. Omit to sync the seller's Shopify store automatically — only needed to disambiguate when the seller has connected more than one platform."
           }
         },
         "required": []
@@ -976,26 +1078,32 @@
         "type": "object",
         "properties": {
           "query": {
-            "type": "string"
+            "type": "string",
+            "description": "Free-text product search of product name, description, and category — use real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Do NOT put prices in the query ('under $50' belongs in max_price, not here) and omit filler words like 'cheap' or 'best'; price phrases that do slip in are auto-extracted into the price filters."
           },
           "category": {
-            "type": "string"
+            "type": "string",
+            "description": "Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."
           },
           "min_price": {
-            "type": "number"
+            "type": "number",
+            "description": "Minimum price in the listing currency (inclusive)."
           },
           "max_price": {
-            "type": "number"
+            "type": "number",
+            "description": "Maximum price in the listing currency (inclusive)."
           },
           "buyable_only": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "If true, return only listings that can be purchased now (seller checkout enabled). Default false (includes browse-only listings, which are clearly tagged)."
           },
           "limit": {
-            "type": "number"
+            "type": "number",
+            "description": "Max results to return, 1-50. Default 20."
           },
           "country": {
             "type": "string",
-            "description": "ISO 3166-1 alpha-2 country code. Filters for listings that ship to this country."
+            "description": "ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Filters for listings that ship to this country. Pass the buyer's country to see locally-deliverable options."
           }
         },
         "required": []
@@ -1008,7 +1116,8 @@
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Specific listing ID (lst_...) for full detail. Omit to list every listing you have, drafts included."
           }
         },
         "required": []
@@ -1021,10 +1130,12 @@
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Specific listing ID to check demand for"
           },
           "category": {
-            "type": "string"
+            "type": "string",
+            "description": "Check demand for a category (e.g. 'electronics/audio')"
           }
         },
         "required": []
@@ -1037,40 +1148,52 @@
         "type": "object",
         "properties": {
           "code": {
-            "type": "string"
+            "type": "string",
+            "description": "The code buyers type, e.g. 'SUMMER20'. 2-64 characters: letters, numbers, dashes or underscores. Case-insensitive; stored uppercase."
           },
           "discount_percent": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Percent off, 1-100. Use this OR discount_amount_cents, not both."
           },
           "discount_amount_cents": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Fixed amount off in cents (e.g. 500 = $5 off). Use instead of discount_percent."
           },
           "free_shipping": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Set true for a free-shipping voucher instead of a discount off the item price."
           },
           "max_uses": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Total redemptions allowed across all buyers. Omit for unlimited."
           },
           "per_buyer_limit": {
-            "type": "integer"
+            "type": "integer",
+            "description": "How many times one buyer may use it. Omit for unlimited."
           },
           "min_order_cents": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Minimum order subtotal in cents before the voucher applies."
           },
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Restrict the voucher to one of your listings (lst_...). Omit to apply across all of them."
           },
           "starts_at": {
-            "type": "string"
+            "type": "string",
+            "description": "When it becomes usable. Natural language ('tomorrow') or ISO. Omit to start immediately."
           },
           "expires_at": {
-            "type": "string"
+            "type": "string",
+            "description": "When it stops working. Natural language ('next Friday') or ISO. Omit for no expiry."
           },
           "discoverable": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Default true: buyer agents can find and auto-apply it. Set false for a targeted code usable only by someone you give it to."
           },
           "confirm_deep_discount": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Required to create a discount above 50%. Only pass it after the seller has confirmed that exact number."
           }
         },
         "required": [
@@ -1094,25 +1217,32 @@
         "type": "object",
         "properties": {
           "voucher_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The voucher id (promo_...) from firestarter_vouchers."
           },
           "active": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "false pauses it, true resumes it."
           },
           "discoverable": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether buyer agents may surface and auto-apply it."
           },
           "expires_at": {
-            "type": "string"
+            "type": "string",
+            "description": "New expiry. Natural language ('next Friday') or ISO."
           },
           "max_uses": {
-            "type": "integer"
+            "type": "integer",
+            "description": "New total redemption cap."
           },
           "per_buyer_limit": {
-            "type": "integer"
+            "type": "integer",
+            "description": "New per-buyer cap."
           },
           "min_order_cents": {
-            "type": "integer"
+            "type": "integer",
+            "description": "New minimum order subtotal in cents."
           }
         },
         "required": [
@@ -1127,22 +1257,28 @@
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The listing ID to reprice"
           },
           "base_price": {
-            "type": "number"
+            "type": "number",
+            "description": "New base price in USD"
           },
           "floor_price": {
-            "type": "number"
+            "type": "number",
+            "description": "New floor price"
           },
           "ceiling_price": {
-            "type": "number"
+            "type": "number",
+            "description": "New ceiling price"
           },
           "dynamic_pricing": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Enable/disable dynamic pricing"
           },
           "shipping": {
-            "type": "number"
+            "type": "number",
+            "description": "Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination. Accepted for backward compatibility only."
           }
         },
         "required": [
@@ -1157,25 +1293,32 @@
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The listing ID to update"
           },
           "product_name": {
-            "type": "string"
+            "type": "string",
+            "description": "New product name/title"
           },
           "description": {
-            "type": "string"
+            "type": "string",
+            "description": "New product description"
           },
           "category": {
-            "type": "string"
+            "type": "string",
+            "description": "New category (e.g. 'sports/tennis')"
           },
           "inventory_qty": {
-            "type": "number"
+            "type": "number",
+            "description": "Updated inventory quantity"
           },
           "status": {
-            "type": "string"
+            "type": "string",
+            "description": "New listing status"
           },
           "image_urls": {
-            "type": "array"
+            "type": "array",
+            "description": "Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."
           }
         },
         "required": [
@@ -1190,16 +1333,20 @@
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The listing ID whose shipping policy to set"
           },
           "mode": {
-            "type": "string"
+            "type": "string",
+            "description": "'domestic' = ship-from country only; 'list' = home country plus the named countries; 'worldwide' = everywhere except excluded"
           },
           "countries": {
-            "type": "array"
+            "type": "array",
+            "description": "mode 'list' only: ISO alpha-2 destination codes to serve, e.g. ['CA','GB']. The ship-from country is always included automatically."
           },
           "exclude": {
-            "type": "array"
+            "type": "array",
+            "description": "mode 'worldwide' only: ISO alpha-2 codes to carve out, e.g. ['BR']."
           }
         },
         "required": [
@@ -1223,34 +1370,44 @@
         "type": "object",
         "properties": {
           "location_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Existing location id (floc_...) to update or promote. Omit to create a new location."
           },
           "street1": {
-            "type": "string"
+            "type": "string",
+            "description": "Street address line 1 (required when creating)"
           },
           "street2": {
-            "type": "string"
+            "type": "string",
+            "description": "Street address line 2"
           },
           "city": {
-            "type": "string"
+            "type": "string",
+            "description": "City (required when creating)"
           },
           "state": {
-            "type": "string"
+            "type": "string",
+            "description": "State/province — required for US/CA/AU origins"
           },
           "zip": {
-            "type": "string"
+            "type": "string",
+            "description": "Postal/ZIP — required for US/CA/AU origins"
           },
           "country": {
-            "type": "string"
+            "type": "string",
+            "description": "ISO country code (e.g. US, TH). Defaults to US."
           },
           "phone": {
-            "type": "string"
+            "type": "string",
+            "description": "Pickup contact phone"
           },
           "label": {
-            "type": "string"
+            "type": "string",
+            "description": "Label, e.g. 'Bangkok warehouse'"
           },
           "is_primary": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Make this the primary (rate-quote origin)."
           }
         }
       }
@@ -1262,7 +1419,8 @@
         "type": "object",
         "properties": {
           "location_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The location id (floc_...) to delete"
           }
         },
         "required": [
@@ -1277,10 +1435,12 @@
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The listing ID (lst_...) that needs possession verification"
           },
           "photo_url": {
-            "type": "string"
+            "type": "string",
+            "description": "Public https URL of the seller's photo showing the item next to the handwritten verification code"
           }
         },
         "required": [
@@ -1296,7 +1456,8 @@
         "type": "object",
         "properties": {
           "listing_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The listing ID (lst_...) to delist"
           }
         },
         "required": [
@@ -1320,7 +1481,8 @@
         "type": "object",
         "properties": {
           "order_id": {
-            "type": "string"
+            "type": "string",
+            "description": "REQUIRED. The order_id from firestarter_seller_orders (the seller_earnings id, not the exec_... execution id)."
           }
         },
         "required": [
@@ -1335,13 +1497,16 @@
         "type": "object",
         "properties": {
           "order_id": {
-            "type": "string"
+            "type": "string",
+            "description": "REQUIRED. The order_id from firestarter_seller_orders (the seller_earnings id, not the exec_... execution id)."
           },
           "tracking_number": {
-            "type": "string"
+            "type": "string",
+            "description": "REQUIRED. The carrier's tracking number for the shipment."
           },
           "carrier": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional. Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL'). Defaults to USPS when omitted — don't ask the seller unless they used a non-USPS carrier."
           }
         },
         "required": [
@@ -1411,19 +1576,19 @@
               "withdraw",
               "escalate"
             ],
-            "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo (needs dispute_id or execution_id, plus message and/or image_base64). 'accept'/'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
+            "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
           },
           "execution_id": {
             "type": "string",
-            "description": "Order/execution id (exec_...). Required for 'open'. With no action, pass this to check whether a specific order has a dispute. May also stand in for dispute_id on actions."
+            "description": "Order / execution id (exec_…). Required for 'open'. With no action, pass this to check whether a specific order has a dispute. May also stand in for dispute_id on actions — the dispute on that order is looked up."
           },
           "dispute_id": {
             "type": "string",
-            "description": "Dispute id (disp_...). Identifies which dispute to view or act on."
+            "description": "Dispute id (disp_…). Identifies which dispute to view or act on for message / accept / reject / counter / withdraw / escalate."
           },
           "reason": {
             "type": "string",
-            "description": "For 'open': what went wrong, in the buyer's words. Also used as the optional note on a 'counter' or 'escalate'."
+            "description": "For 'open': what went wrong, in the buyer's words (e.g. 'Package never arrived, tracking stuck for two weeks'). Also used as the optional note on a 'counter' or 'escalate'."
           },
           "type": {
             "type": "string",
@@ -1443,11 +1608,11 @@
           },
           "image_base64": {
             "type": "string",
-            "description": "For 'message': an optional evidence photo as a base64 data-URI ('data:image/jpeg;base64,...'). Uploaded and attached to the message."
+            "description": "For 'message': an optional evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). It is uploaded and attached to the message."
           },
           "offer_id": {
             "type": "string",
-            "description": "For 'accept'/'reject': the specific offer id. Omit to act on the latest pending seller offer."
+            "description": "For 'accept' / 'reject': the specific offer id to respond to. Omit to act on the latest pending seller offer."
           },
           "buyer_pct": {
             "type": "number",
@@ -1469,7 +1634,7 @@
         "properties": {
           "execution_id": {
             "type": "string",
-            "description": "The execution/order ID (exec_...)"
+            "description": "The execution/order ID to confirm delivery for (exec_...)"
           }
         },
         "required": [
@@ -1485,13 +1650,13 @@
         "properties": {
           "execution_id": {
             "type": "string",
-            "description": "The execution/order ID (exec_...)"
+            "description": "The execution/order ID to review (exec_...)"
           },
           "rating": {
             "type": "integer",
             "minimum": 1,
             "maximum": 5,
-            "description": "Rating 1-5"
+            "description": "Rating from 1 (poor) to 5 (excellent)"
           },
           "comment": {
             "type": "string",
@@ -1520,15 +1685,15 @@
         "properties": {
           "spend_cap_dollars": {
             "type": "number",
-            "description": "Monthly cap in dollars (e.g. 500). Omit to read."
+            "description": "New monthly spend cap in dollars (e.g. 500 = $500/month)."
           },
           "alert_threshold_pct": {
             "type": "integer",
-            "description": "Alert at this % of cap (default 80)."
+            "description": "Fire a warning when monthly spend reaches this % of the cap. Default 80."
           },
           "disable": {
             "type": "boolean",
-            "description": "Set true to remove the cap entirely."
+            "description": "Set to true to remove the spend cap entirely (no limit)."
           }
         }
       }
@@ -1541,7 +1706,7 @@
         "properties": {
           "share_bps": {
             "type": "integer",
-            "description": "Cut of the platform fee in basis points (1000 = 10%)."
+            "description": "Cut of Firestarter's platform fee in basis points (1000 = 10%). Capped at the platform self-serve max; the response returns the effective value."
           },
           "type": {
             "type": "string",
@@ -1549,7 +1714,7 @@
               "community",
               "developer"
             ],
-            "description": "Program type. Default community."
+            "description": "Program type. Default 'community'."
           },
           "display_name": {
             "type": "string",
@@ -1564,7 +1729,7 @@
           "handle": {
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{1,30}$",
-            "description": "Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase). Must be unique; reserved words and share-code-shaped strings are rejected, and a taken handle fails the whole create."
+            "description": "Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase), so 'Analog' and 'analog' are the same handle. Must be unique; the API rejects handles that are reserved or shaped like a share code. If it's taken the whole create fails, so retry with a different handle (or omit it and claim one later with firestarter_set_market_handle)."
           }
         },
         "required": [
@@ -1580,15 +1745,15 @@
         "properties": {
           "program_id": {
             "type": "string",
-            "description": "The market/program id."
+            "description": "The market/program id from firestarter_create_market."
           },
           "channel": {
             "type": "string",
-            "description": "Optional channel tag."
+            "description": "Optional channel tag, e.g. 'discord', 'x', 'telegram'."
           },
           "campaign": {
             "type": "string",
-            "description": "Optional campaign tag."
+            "description": "Optional campaign tag for tracking."
           }
         },
         "required": [
@@ -1631,7 +1796,7 @@
           "display_name": {
             "type": "string",
             "maxLength": 60,
-            "description": "Buyer-facing community name. Empty string clears it."
+            "description": "Buyer-facing community name. Empty string clears it (buyers then see the owner org name)."
           },
           "tagline": {
             "type": "string",
@@ -1640,7 +1805,7 @@
           },
           "discoverable": {
             "type": "boolean",
-            "description": "Whether this market appears in the public 'Discover communities' list."
+            "description": "Whether this market appears in the public 'Discover communities' list (firestarter_discover_markets)."
           }
         },
         "required": [
@@ -1909,7 +2074,7 @@
               "add",
               "remove"
             ],
-            "description": "replace (default): the picks become the exact shelf. add: append. remove: drop the given listing ids."
+            "description": "replace (default): the picks become the exact shelf, in order. add: append to the current shelf. remove: drop the given listing ids."
           }
         },
         "required": [
@@ -1982,7 +2147,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The community's share code or vanity handle."
+            "description": "The community's share code or vanity handle (e.g. the <code> in firestarter.network/m/<code>)."
           }
         },
         "required": [
@@ -2011,7 +2176,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The market share code."
+            "description": "The market share code the community gave you."
           }
         },
         "required": [
