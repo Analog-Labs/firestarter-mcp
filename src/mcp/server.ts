@@ -22,7 +22,7 @@ const server = new McpServer({
   // Kept in lockstep with mcpb/manifest.json — this string is what every
   // connecting client sees in the initialize handshake, so a drift makes an
   // installed extension misreport which build it is.
-  version: "2.1.2",
+  version: "2.1.3",
 });
 
 registerTools(server, API_KEY, API_BASE);
