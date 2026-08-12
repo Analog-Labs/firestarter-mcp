@@ -6,7 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { marginCentsFor } from "../lib/margin.js";
 import { isRelevantMatch } from "../lib/relevance.js";
-import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS } from "./schemas.js";
+import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalogOutputShape, toCatalogStructured } from "./schemas.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
 import { getPlatformAdapters } from "../platform.js";
@@ -3650,20 +3650,30 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   }
 
   // Tool: firestarter_catalog_search
-  server.tool(
+  registerToolCompat(
+    server,
     "firestarter_catalog_search",
-    "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
     {
-      query: z.string().optional().describe("Free-text product search of product name, description, and category — use real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Do NOT put prices in the query ('under $50' belongs in max_price, not here) and omit filler words like 'cheap' or 'best'; price phrases that do slip in are auto-extracted into the price filters."),
-      category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
-      country: z.string().optional().describe("ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Filters for listings that ship to this country. Pass the buyer's country to see locally-deliverable options."),
-      min_price: z.number().optional().describe("Minimum price in the listing currency (inclusive)."),
-      max_price: z.number().optional().describe("Maximum price in the listing currency (inclusive)."),
-      buyable_only: z.boolean().optional().describe("If true, return only listings that can be purchased now (seller checkout enabled). Default false (includes browse-only listings, which are clearly tagged)."),
-      limit: z.number().optional().describe("Max results to return, 1-50. Default 20."),
+      description: "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
+      inputSchema: {
+        query: z.string().optional().describe("Free-text product search of product name, description, and category — use real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Do NOT put prices in the query ('under $50' belongs in max_price, not here) and omit filler words like 'cheap' or 'best'; price phrases that do slip in are auto-extracted into the price filters."),
+        category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
+        country: z.string().optional().describe("ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Filters for listings that ship to this country. Pass the buyer's country to see locally-deliverable options."),
+        min_price: z.number().optional().describe("Minimum price in the listing currency (inclusive)."),
+        max_price: z.number().optional().describe("Maximum price in the listing currency (inclusive)."),
+        buyable_only: z.boolean().optional().describe("If true, return only listings that can be purchased now (seller checkout enabled). Default false (includes browse-only listings, which are clearly tagged)."),
+        limit: z.number().optional().describe("Max results to return, 1-50. Default 20."),
+      },
+      outputSchema: catalogOutputShape,
+      annotations: { title: "Search Catalog", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+      // MCP Apps: render catalog hits as the same inline product grid
+      // firestarter_preview uses (photos, price, buyability). Additive — hosts
+      // without app support fall back to the text + image-block result below.
+      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
     },
-    { title: "Search Catalog", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
-    async ({ query, category, country, min_price, max_price, buyable_only, limit }) => {
+    async ({ query, category, country, min_price, max_price, buyable_only, limit }: {
+      query?: string; category?: string; country?: string; min_price?: number; max_price?: number; buyable_only?: boolean; limit?: number;
+    }) => {
       try {
         // Pull price phrases out of the free text into the price filters
         // (explicit min_price/max_price args always win).
@@ -3716,6 +3726,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               type: "text" as const,
               text: `No catalog listings matched${q && q !== query ? ` for "${q}"` : ""}. Try a broader search term (a single product noun), remove price/category filters, or drop \`buyable_only\`.`,
             }],
+            // An outputSchema makes structuredContent mandatory on every result
+            // that is not isError — an empty grid, not a validation failure.
+            structuredContent: toCatalogStructured(data, [], null),
           };
         }
 
@@ -3773,7 +3786,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // Inline each listing's first photo so MCP clients render them; the URLs
         // also remain in the text above for chat clients that unfurl links.
         const catalogImages = await inlineImageBlocks(listings.map((l) => (Array.isArray(l.images) ? l.images[0] : null)));
-        return { content: [{ type: "text" as const, text: lines.join("\n") }, ...catalogImages] };
+        return {
+          content: [{ type: "text" as const, text: lines.join("\n") }, ...catalogImages],
+          // Drives the shopping-results MCP App grid (its client reads
+          // structuredContent.listings); also a typed contract for agents.
+          structuredContent: toCatalogStructured(data, listings, broadenedTo),
+        };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error searching catalog: ${toErrorMessage(err)}` }], isError: true };
       }
@@ -3884,7 +3902,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           text += shareUrl ? `  Share link: ${shareUrl}\n` : "  Sandbox-only: no public share link\n";
         }
         text += `\nPass a listing ID for full detail. Active live listings include a public share link; sandbox listings remain accessible only through test-mode tools.`;
-        return { content: [{ type: "text" as const, text }] };
+        // #611 follow-up: thumbnail the first photos so "show my products" has
+        // visuals in the list view too (the detail path already embeds them).
+        // inlineImageBlocks caps at MAX_EMBED_IMAGES and enforces the response
+        // image budget, so a long list can never blow the 1MB tool-result cap.
+        const listImages = await inlineImageBlocks(listings.map((l: any) => (Array.isArray(l.images) ? l.images[0] : null)));
+        return { content: [{ type: "text" as const, text }, ...listImages] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
         const hint = /not found/i.test(msg)

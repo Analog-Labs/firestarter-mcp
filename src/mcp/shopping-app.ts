@@ -26,6 +26,13 @@ export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results";
 const IMAGE_DOMAINS = [
   "https://cdn.shopify.com",
   "https://api.firestarter.network",
+  // Pocodot-pipeline listings (e.g. lst_etSM0EwR) carry photos on this origin
+  // today — without it the grid shows "No photo" for every such product. The
+  // durable fix is rehost-on-write to /v1/img/<id> (see cli/rehost-listing-images
+  // in firestarter-commerce, which already reads a REHOST_HOST_ALLOWLIST env var)
+  // so ONE first-party origin covers the whole catalog; keep this list as the
+  // stopgap for origins already in the wild.
+  "https://cole.pocodot.ai",
 ];
 
 /**

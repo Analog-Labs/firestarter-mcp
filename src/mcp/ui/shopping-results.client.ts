@@ -98,8 +98,12 @@ function render(items: ShoppingItem[]): void {
           <div class="meta"><span class="price">${esc(priceLabel(it))}</span> ${seller}</div>
           <span class="badge ${badge.cls}">${badge.text}</span>
         </div>`;
+      // Navigation must go through app.openLink (host-mediated): a bare
+      // <a target="_blank"> inside the sandboxed iframe is blocked on hosts
+      // that omit allow-popups, which turns every card into a dead link. The
+      // data-url attribute feeds the delegated click/keydown handler below.
       return link
-        ? `<a class="card" href="${esc(link)}" target="_blank" rel="noreferrer noopener">${card}</a>`
+        ? `<div class="card link" data-url="${esc(link)}" role="link" tabindex="0" style="cursor:pointer">${card}</div>`
         : `<div class="card">${card}</div>`;
     })
     .join("");
@@ -115,6 +119,21 @@ const app = new App(
   undefined,
   { autoResize: true },
 );
+
+// One delegated listener (render() rewrites innerHTML, dropping per-node
+// listeners): a click or Enter on a data-url card asks the HOST to open the
+// share link — the sanctioned way out of the sandbox. A host that declines
+// resolves with isError rather than rejecting; either way the fallback is to
+// do nothing and leave the grid usable.
+function openCard(target: EventTarget | null): void {
+  const el = target instanceof Element ? target.closest<HTMLElement>("[data-url]") : null;
+  const url = el?.dataset.url;
+  if (url) void app.openLink({ url }).catch(() => { /* transport failure — grid stays usable */ });
+}
+root.addEventListener("click", (ev) => openCard(ev.target));
+root.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") openCard(ev.target);
+});
 
 app.ontoolresult = (params) => {
   try {
