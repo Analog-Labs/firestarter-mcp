@@ -167,6 +167,11 @@ existing fake-server plus mocked-`fetch` harness from
 - a listing with a missing or non-numeric `current_price` maps to `null` rather
   than `NaN`, and still validates.
 
+A second test at `tests/integration/mcp-listings-list-thumbnails.test.ts` covers
+§4: that the list view embeds each listing's first photo, that a catalog longer
+than `MAX_EMBED_IMAGES` is capped rather than unbounded, and that a photoless
+listing still returns text alone.
+
 Existing suites that must keep passing without modification:
 `mcp-catalog-search-query-hygiene.test.ts` (its fake server implements only
 `.tool`, which exercises the `registerToolCompat` fallback),
