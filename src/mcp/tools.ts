@@ -3902,7 +3902,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           text += shareUrl ? `  Share link: ${shareUrl}\n` : "  Sandbox-only: no public share link\n";
         }
         text += `\nPass a listing ID for full detail. Active live listings include a public share link; sandbox listings remain accessible only through test-mode tools.`;
-        return { content: [{ type: "text" as const, text }] };
+        // #611 follow-up: thumbnail the first photos so "show my products" has
+        // visuals in the list view too (the detail path already embeds them).
+        // inlineImageBlocks caps at MAX_EMBED_IMAGES and enforces the response
+        // image budget, so a long list can never blow the 1MB tool-result cap.
+        const listImages = await inlineImageBlocks(listings.map((l: any) => (Array.isArray(l.images) ? l.images[0] : null)));
+        return { content: [{ type: "text" as const, text }, ...listImages] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
         const hint = /not found/i.test(msg)
