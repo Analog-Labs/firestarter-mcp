@@ -364,21 +364,43 @@ function verificationAskText(err: unknown): string | null {
   );
 }
 
+/**
+ * Statuses at which an execution has stopped moving on its own. Anything else
+ * (finding, quoting, …) means work is still in flight — which is NOT the same
+ * as "nothing was found", and callers must not conflate the two. Exported so
+ * the tools that poll can tell a still-running execution from a finished one.
+ */
+export const TERMINAL_STATUSES = [
+  "awaiting_approval", "awaiting_payment_method", "quoted",
+  "completed", "failed", "cancelled", "paid", "shipping", "delivered",
+];
+
+/** Consecutive /poll failures tolerated before giving up on the wait loop. */
+const POLL_MAX_CONSECUTIVE_ERRORS = 3;
+
 async function pollExecution(apiRequest: ReturnType<typeof makeApiRequest>, executionId: string, timeoutMs: number = 60_000): Promise<any> {
   const start = Date.now();
-  const TERMINAL_STATUSES = ["awaiting_approval", "awaiting_payment_method", "quoted", "completed", "failed", "cancelled", "paid", "shipping", "delivered"];
+  let consecutiveErrors = 0;
 
   while (Date.now() - start < timeoutMs) {
     // Use the lightweight poll endpoint (1 query) instead of the full
     // execution resource (3 queries + JOIN) during the wait loop.
     try {
       const poll = await apiRequest("GET", `/v1/executions/${executionId}/poll`);
+      consecutiveErrors = 0;
       if (poll.has_options || TERMINAL_STATUSES.includes(poll.status)) {
         break;
       }
-    } catch {
-      // Fallback: if /poll 404s (old API version), break and fetch full.
-      break;
+    } catch (err) {
+      // A 404 means this API has no /poll route (older version) — retrying it
+      // will never succeed, so stop and fetch the full resource.
+      if (err instanceof ApiError && err.status === 404) break;
+      // Anything else is transient: a 5xx, a DNS blip, or this request hitting
+      // the 12s per-call timeout. This used to `break` on ANY error, so ONE
+      // hiccup on the FIRST tick abandoned the whole wait and returned an
+      // execution still in `finding` — which the caller then reported to the
+      // buyer as "no matches". Cost a tick, not the search.
+      if (++consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) break;
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
@@ -1089,6 +1111,19 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
               : "View listing";
         optLines.push(`  ${linkLabel}: ${tidyProductUrl(opt.product_url)}`);
       }
+      // The approve handle. `selected_option` is POSITIONAL, and approve
+      // resolves it against a RE-FETCH of the execution whose sort key includes
+      // MUTABLE fields (selected first, then purchasable, then match_score — see
+      // buildExecutionResponse in the API). So the numbering an agent rendered
+      // can drift before the buyer says "the second one", notably after a
+      // firestarter_message refinement re-quotes. option_id cannot drift.
+      // It was documented on firestarter_approve but never printed anywhere, so
+      // a text-only agent had no way to obtain one and was forced onto the
+      // fragile index path. Rendered only for purchasable options: a browse-only
+      // id is not approvable, and showing one only invites an attempt.
+      if (!browseOnly && typeof opt.id === "string" && opt.id) {
+        optLines.push(`  option_id: \`${opt.id}\` — pass this to firestarter_approve to buy exactly this one`);
+      }
       if (isOwnListing) {
         optLines.push(`  This is your own listing - shown so you can see how it appears to buyers. It is not offered for purchase.`);
       } else if (unconnectedStore) {
@@ -1290,6 +1325,21 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
                   : "\n\n**Note:** none of these can be purchased through Firestarter - they're external results and/or stores that haven't enabled checkout yet. You can share the URLs so the buyer can view them, refine the search with `firestarter_message`, or `firestarter_cancel`.")
                 : `\n\n**Action needed:** show the buyer the delivery options above and confirm which speed they want — don't silently take the cheapest. Then they can reply "confirm" to place the order at that speed, or use \`firestarter_approve\` (execution \`${exec.id}\`) with shipping_option_index for a specific speed; \`firestarter_cancel\` to cancel. No card is needed until the order is placed.${purchasableCount < opts.length ? " Browse-only options can't be purchased here - share their links instead." : ""}`,
           });
+        } else if (!TERMINAL_STATUSES.includes(exec.status)) {
+          // STILL RUNNING — not a result. An execution in `finding`/`quoting`
+          // has no options yet, so it used to fall into the empty-options branch
+          // below and be reported to the buyer as a bolded "No matches", while
+          // `Status: finding` sat on the line above it. Models follow the bold,
+          // action-shaped line, so the agent told the buyer nothing was found
+          // while the search was live and about to produce options.
+          //
+          // Reachable two ways: the 45s poll cap (prod server-side preview
+          // latency already peaks around 27s before the agent -> MCP -> gateway
+          // -> API hops), and a transient /poll error exhausting the retries.
+          blocks.push({
+            type: "text",
+            text: `\n\n**Still searching — this hasn't finished yet, and nothing has failed.** The search is taking longer than usual (a cold catalog lookup can). Tell the buyer it is still running; do NOT report this as an empty result. Check back in a few seconds with \`firestarter_status\` (execution \`${exec.id}\`); no card is involved at this stage.`,
+          });
         } else if (exec.status === "failed" || !Array.isArray(exec.options) || exec.options.length === 0) {
           // Location-aware empty state: the #1 cause of an empty catalog for a
           // non-US buyer used to be an un-localized (US-only) search. If we
@@ -1447,6 +1497,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               const blockers = (o.reasons || []).map((r: string) => PREVIEW_REASON_LABELS[r] || r);
               text += `\n   ⚠ not eligible: ${blockers.join("; ") || "see details"}`;
             }
+            // The id the closing line tells the agent to pass. It only ever
+            // existed in structuredContent, which many hosts never surface to
+            // the model — so on a text-only host a BUYABLE option carried no
+            // identifier AND no link (the url is rendered for browse-only rows
+            // only). The agent was told "pass a listing_id" having been given
+            // none, and fell back to re-running the whole natural-language
+            // search, which can rank a different seller's listing first: the
+            // buyer picks option 1 and gets option 4. firestarter_catalog_search
+            // has always printed its ids; this matches it.
+            if (typeof o.id === "string" && o.id) {
+              text += `\n   listing_id: \`${o.id}\``;
+            }
           }
         });
         text += buyableEligible > 0
@@ -1513,11 +1575,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; pass selected_option or option_id to pick a different one. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED — each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
-      selected_option: z.number().int().min(0).optional().describe("0-based index into the options list as displayed (the option shown as '1.' is index 0). Omit to approve the pre-selected best option."),
-      option_id: z.string().optional().describe("Exact option id (e.g. 'opt_abc123') to approve, as returned in API errors or the execution resource. Takes precedence over selected_option."),
+      selected_option: z.number().int().min(0).optional().describe("0-based POSITIONAL index into the options list as displayed (the option shown as '1.' is index 0). Prefer option_id: this index is resolved against a fresh read of the execution, and the option order can change if the order was re-quoted or refined with firestarter_message since you displayed it. Omit both to approve the pre-selected best option."),
+      option_id: z.string().optional().describe("Exact option id (e.g. 'opt_abc123') to approve — PREFERRED over selected_option, because it identifies the product itself rather than a position that can shift. Each purchasable option in firestarter_execute / firestarter_status output prints its own `option_id:`; copy that value verbatim. Takes precedence over selected_option."),
       address_id: z.string().optional().describe("A saved address id (addr_...) to ship this order to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Pass only to ship somewhere other than their default."),
       // Permissive, forever-stable boundary (see firestarter_execute): string OR
       // any object, never rejected for shape; the server normalizes + gates.
@@ -1621,6 +1683,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           dm: exec.developer_margin,
         });
 
+        // Name WHAT was bought. Approval resolves to one option through three
+        // different paths (explicit option_id, a positional selected_option, or
+        // the server's pre-selection), and until now none of them told the agent
+        // which product actually won — so a positional index that resolved to
+        // the wrong row charged the buyer silently. Echoing the title makes a
+        // mis-resolution visible in the same message as the total.
+        const boughtTitle =
+          typeof exec.selected_option?.product_title === "string" ? exec.selected_option.product_title : null;
+        const itemLine = boughtTitle ? [`Item: ${boughtTitle}`] : [];
+
         // #272: when approval transitions to awaiting_payment_method, return a
         // concise one-shot message instead of the full execution dump (which
         // caused repetitive/duplicated output in Slack) — now WITH the shipping
@@ -1628,6 +1700,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (exec.status === "awaiting_payment_method" && exec.setup_url) {
           const text = [
             "Order approved.",
+            ...itemLine,
             ...payReady,
             "",
             "**Last step — add a payment method to place the order** (no login needed):",
@@ -1639,7 +1712,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
 
         const blocks = await formatExecution(exec);
-        const head = payReady.length ? `Order approved.\n${payReady.join("\n")}\n` : "Execution approved.\n";
+        const headLines = [...itemLine, ...payReady];
+        const head = headLines.length ? `Order approved.\n${headLines.join("\n")}\n` : "Execution approved.\n";
         blocks.unshift({ type: "text", text: head });
         return { content: blocks };
       } catch (err: any) {
@@ -1813,7 +1887,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       zip: z.string().optional().describe("Destination ZIP/postal code. Country + ZIP is enough for a real estimate — no street needed."),
       city: z.string().optional().describe("Destination city — an alternative locality when the buyer has no ZIP handy."),
     },
-    { title: "Estimate Shipping", readOnlyHint: false, destructiveHint: false },
+    // Read-only despite being a POST: it creates no execution and changes no
+    // state. What matters to a host is whether state moves, not the verb. Marked
+    // as a write, it drew a confirmation prompt in the middle of browsing — on
+    // the very tool built so a buyer could ask "how much is shipping?" without
+    // committing to anything.
+    { title: "Estimate Shipping", readOnlyHint: true, destructiveHint: false },
     async ({ listing_id, address_id, country, zip, city }) => {
       try {
         const body: any = { listing_id: cleanListingId(listing_id) };
@@ -2128,7 +2207,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       execution_id: z.string().describe("The execution/order ID to return (exec_...)"),
       reason: z.string().optional().describe("Reason for the return (e.g. 'wrong size', 'damaged', 'not as described')"),
     },
-    { title: "Start a Return", destructiveHint: true, idempotentHint: false },
+    { title: "Start a Return", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     async ({ execution_id, reason }) => {
       try {
         const data = await apiRequest("POST", `/v1/executions/${execution_id}/return`, { reason });
@@ -3038,7 +3117,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().optional(),
       fee_cents: z.number().optional().describe("The confirmed quote fee, for the booking record"),
     },
-    { title: "Assist Book", readOnlyHint: false, destructiveHint: false },
+    // Dispatches a real courier crew and charges the fee to the buyer's order.
+    // The description tells the model to confirm the price with a human first;
+    // annotating it non-destructive told the host it need not prompt, leaving
+    // that guarantee resting entirely on the model obeying prose.
+    { title: "Assist Book", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     async (a) => {
       try {
         const r = await apiRequest("POST", "/v1/assist/book", {
@@ -3079,7 +3162,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
       payoneer_email: z.string().optional().describe("Payoneer account email. Required when provider='payoneer'."),
     },
-    { title: "View Payouts", readOnlyHint: false, destructiveHint: false },
+    // Sets where every future payout for this seller is sent. That makes it the
+    // most attractive target on the surface for a prompt-injected agent, and it
+    // was running unprompted.
+    // destructiveHint: this tool multiplexes read and write — calling it bare
+    // lists, calling it with arguments MOVES MONEY. MCP annotations are
+    // per-tool, not per-invocation, so the classification has to cover the
+    // worst it can do. The cost is a host confirmation on the read path too;
+    // that is the right trade against an unprompted refund/payout change.
+    { title: "View Payouts", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     async ({ provider, country, paypal_email, wise_recipient_id, payoneer_email }) => {
       try {
         // If no provider specified, check current status
@@ -3879,7 +3970,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       discoverable: z.boolean().optional().describe("Default true: buyer agents can find and auto-apply it. Set false for a targeted code usable only by someone you give it to."),
       confirm_deep_discount: z.boolean().optional().describe("Required to create a discount above 50%. Only pass it after the seller has confirmed that exact number."),
     },
-    { title: "Create Voucher", readOnlyHint: false, destructiveHint: false },
+    // The seller funds this discount out of their own proceeds, at up to 100%.
+    { title: "Create Voucher", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     async ({ code, discount_percent, discount_amount_cents, free_shipping, ...rest }) => {
       try {
         const body: any = { code, ...rest };
@@ -4452,7 +4544,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       seller_pct: z.number().min(0).max(100).optional().describe("For action 'split': percent the seller keeps. buyer_pct + seller_pct must equal 100."),
       reasoning: z.string().optional().describe("Optional note explaining the decision, recorded on the dispute and shown to the buyer."),
     },
-    { title: "Seller Disputes", readOnlyHint: false, destructiveHint: false },
+    // action "refund" issues a full refund and releases the escrow freeze.
+    // destructiveHint: this tool multiplexes read and write — calling it bare
+    // lists, calling it with arguments MOVES MONEY. MCP annotations are
+    // per-tool, not per-invocation, so the classification has to cover the
+    // worst it can do. The cost is a host confirmation on the read path too;
+    // that is the right trade against an unprompted refund/payout change.
+    { title: "Seller Disputes", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     async ({ dispute_id, action, buyer_pct, seller_pct, reasoning }) => {
       try {
         if (dispute_id) {
@@ -4542,7 +4640,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         buyer_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent YOU (the buyer) would be refunded. buyer_pct + seller_pct must equal 100."),
         seller_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent the seller keeps. buyer_pct + seller_pct must equal 100."),
       },
-      { title: "Buyer Disputes", readOnlyHint: false, destructiveHint: false },
+      // "accept" settles the escrow at the seller's split; "withdraw" abandons
+      // the claim and unfreezes the funds. Both are irreversible money moves.
+      // destructiveHint: this tool multiplexes read and write — calling it bare
+      // lists, calling it with arguments MOVES MONEY. MCP annotations are
+      // per-tool, not per-invocation, so the classification has to cover the
+      // worst it can do. The cost is a host confirmation on the read path too;
+      // that is the right trade against an unprompted refund/payout change.
+      { title: "Buyer Disputes", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
       async ({ action, execution_id, dispute_id, reason, type, message, image_base64, offer_id, buyer_pct, seller_pct }) => {
         try {
           // ── OPEN a new dispute ─────────────────────────────────────────────
@@ -4942,7 +5047,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         priority_hours: z.number().min(0).optional().describe("Hours the drop stays tier-gated (to min_tier and up) before opening to everyone. Omit or 0 = open to all immediately."),
         expires_in_hours: z.number().positive().optional().describe("Hours until the drop expires. Default 168 (7 days)."),
       },
-      { title: "Create Drop", readOnlyHint: false, destructiveHint: false },
+      // Commits the owner's wallet (or the seller's margin) to a discount pot.
+      { title: "Create Drop", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
       async ({ program_id, listing_id, discount_cents, max_claims, min_tier, priority_hours, expires_in_hours }) => {
         try {
           const body: Record<string, unknown> = { listing_id, discount_cents, max_claims };
@@ -5286,7 +5392,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         country: z.string().length(2).optional().describe("Owner's 2-letter country code (ISO-3166-1 alpha-2), e.g. 'US', 'GB'. Only needed if onboarding asks."),
       },
-      { title: "Connect Payout Account", readOnlyHint: false, destructiveHint: false },
+      // Same reasoning as firestarter_payouts: sets the destination that market
+      // earnings are cashed out to.
+      { title: "Connect Payout Account", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
       async ({ country }) => {
         try {
           const status = await apiRequest("GET", "/v1/attribution/connect/status");
@@ -5502,7 +5610,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         code: z.string().describe("The market share code the community gave you."),
       },
-      { title: "Join Market", readOnlyHint: false, destructiveHint: false },
+      // Redirects fee attribution for every future order, and silently REPLACES
+      // any community the buyer already supports. The description already says
+      // to confirm with the buyer first — the annotation now agrees.
+      { title: "Join Market", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
       async ({ code }) => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/redeem", { code });
@@ -5605,7 +5716,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_leave_market",
       "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch to another one. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
       {},
-      { title: "Leave Market", readOnlyHint: false, destructiveHint: false },
+      // Account-level change; the description says to confirm before calling.
+      { title: "Leave Market", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
       async () => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/disconnect", {});
