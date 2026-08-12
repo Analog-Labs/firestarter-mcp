@@ -1,0 +1,354 @@
+{
+  "firestarter_addresses": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_approve": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  },
+  "firestarter_approve_drop": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_assist_book": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  },
+  "firestarter_assist_quote": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_auto_approve_limit": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_bulk_list": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_cancel": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  },
+  "firestarter_cancel_drop": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_catalog_search": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_check": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_confirm_delivery": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_confirm_order": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_connect_payouts": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_connect_shopify": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_connect_store": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_connect_tiktok": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_create_drop": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  },
+  "firestarter_create_market": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_create_voucher": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  },
+  "firestarter_delete_ship_from": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_delist": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_demand": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_discover_markets": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_disputes": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  },
+  "firestarter_drop_requests": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_drops": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_execute": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_fund_wallet": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  },
+  "firestarter_import": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_join_market": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_leave_market": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_list": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_listings": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_market_drops": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_market_earnings": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_market_link": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_market_preview": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_message": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_my_market": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_my_markets": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_payment_method": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_payouts": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_preview": {
+    "readOnlyHint": true
+  },
+  "firestarter_receipt": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_register_seller": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_reject_drop": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_reprice": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_request_escrow": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_return": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  },
+  "firestarter_review": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_save_address": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_save_ship_from": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_seller_analytics": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_seller_disputes": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  },
+  "firestarter_seller_orders": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_set_auto_approve_limit": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_set_market_handle": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_set_market_picks": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_set_market_tiers": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_set_shipping_policy": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_set_spend_cap": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_ship_from_locations": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_ship_order": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_shipping_estimate": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_shipping_options": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_spend_cap": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_status": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_sync_shopify": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_track_order": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_trust_community_drops": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_untrust_community_drops": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_unwatch": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true
+  },
+  "firestarter_update_listing": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_update_market": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_update_voucher": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_upload_image": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_verify": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_vouchers": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_wallet_balance": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_watch": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+  },
+  "firestarter_watches": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
+  "firestarter_withdraw_wallet": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false
+  }
+}

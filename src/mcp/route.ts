@@ -13,6 +13,7 @@ import { registerPrompts } from "./prompts.js";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
 const app = new Hono();
 
@@ -25,8 +26,71 @@ const MCPB_PATHS = [
   join(__dirname, "..", "..", "mcpb", "dist", "firestarter.mcpb"), // local dev
 ];
 
-// Map of session ID → transport (for stateful sessions)
-const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
+// How long an idle session is kept before it is swept. A live client re-touches
+// its session on every request, so this only reaps abandoned ones.
+const SESSION_TTL_MS = Number(process.env.MCP_SESSION_TTL_MS || 30 * 60_000);
+// Hard ceiling on resident sessions. `initialize` is reachable before the API
+// key has been validated (validation happens upstream on the first tool call),
+// so without a cap an unauthenticated caller can pin sessions in a loop.
+const MAX_SESSIONS = Number(process.env.MCP_MAX_SESSIONS || 1_000);
+
+interface SessionEntry {
+  transport: WebStandardStreamableHTTPServerTransport;
+  /** SHA-256 of the API key this session was created with. */
+  keyHash: Buffer;
+  lastSeen: number;
+}
+
+// Map of session ID → session. The transport is bound to the API key it was
+// built with, so a request that presents a DIFFERENT key must not be allowed to
+// ride it: the key was previously read once at creation and then never checked
+// again, meaning anyone holding a leaked mcp-session-id operated as that
+// session's owner — buying, changing payout destinations, withdrawing balances.
+const sessions = new Map<string, SessionEntry>();
+
+const hashKey = (apiKey: string): Buffer => createHash("sha256").update(apiKey).digest();
+
+/** Constant-time compare of two SHA-256 digests. */
+function sameKey(a: Buffer, b: Buffer): boolean {
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function dropSession(id: string, entry: SessionEntry): void {
+  sessions.delete(id);
+  void entry.transport.close?.();
+}
+
+/**
+ * Drop sessions idle past the TTL, then evict oldest-first until the map fits
+ * MAX_SESSIONS. Run lazily — on each request and again right after a session is
+ * created — rather than on a timer, so it needs no unref'd interval and stays
+ * trivially testable.
+ *
+ * Eviction is least-recently-used: a live client re-touches `lastSeen` on every
+ * request, so under a flood of abandoned sessions the active ones are the last
+ * to go. A determined flooder can still push out a legitimate session, but that
+ * costs one reconnect, where unbounded growth costs the process.
+ */
+function sweepSessions(now: number): void {
+  for (const [id, entry] of sessions) {
+    if (now - entry.lastSeen > SESSION_TTL_MS) dropSession(id, entry);
+  }
+  if (sessions.size <= MAX_SESSIONS) return;
+  const oldestFirst = [...sessions.entries()].sort((a, b) => a[1].lastSeen - b[1].lastSeen);
+  for (const [id, entry] of oldestFirst.slice(0, sessions.size - MAX_SESSIONS)) {
+    dropSession(id, entry);
+  }
+}
+
+/** Test seam: current resident session count. */
+export function mcpSessionCount(): number {
+  return sessions.size;
+}
+
+/** Test seam: drop all sessions. */
+export function resetMcpSessions(): void {
+  sessions.clear();
+}
 
 /** Default upstream API base the MCP tools proxy to. */
 export function mcpApiBase(): string {
@@ -59,17 +123,23 @@ export function buildMcpServer(apiKey: string, apiBase: string): McpServer {
 
 function createTransport(apiKey: string, apiBase: string): WebStandardStreamableHTTPServerTransport {
   const server = buildMcpServer(apiKey, apiBase);
+  const keyHash = hashKey(apiKey);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: () => crypto.randomUUID(),
+    sessionIdGenerator: () => randomUUID(),
     onsessioninitialized: (sessionId: string) => {
-      transports.set(sessionId, transport);
+      const now = Date.now();
+      sessions.set(sessionId, { transport, keyHash, lastSeen: now });
+      // Re-sweep AFTER inserting, so the cap holds including this session. The
+      // request-path sweep runs before creation and would otherwise leave the
+      // map sitting one over.
+      sweepSessions(now);
     },
   });
 
   transport.onclose = () => {
     const sessionId = transport.sessionId;
-    if (sessionId) transports.delete(sessionId);
+    if (sessionId) sessions.delete(sessionId);
   };
 
   server.connect(transport);
@@ -95,18 +165,23 @@ app.all("/", async (c) => {
 
   const apiBase = process.env.FIRESTARTER_API_URL || "https://api.firestarter.network";
 
+  const now = Date.now();
+  sweepSessions(now);
+
   // Check for existing session
   const sessionId = c.req.header("mcp-session-id");
 
-  if (sessionId && transports.has(sessionId)) {
-    // Route to existing transport
-    const transport = transports.get(sessionId)!;
-    return transport.handleRequest(c.req.raw);
-  }
-
-  if (sessionId && !transports.has(sessionId)) {
-    // Invalid session
-    return c.json({ error: "Session not found" }, 404);
+  if (sessionId) {
+    const entry = sessions.get(sessionId);
+    // A session is only reusable by the key that created it. Mismatch returns
+    // the SAME 404 as an unknown session id on purpose: distinguishing the two
+    // would confirm that a given session id exists, which is exactly what an
+    // attacker probing leaked ids wants to learn.
+    if (!entry || !sameKey(entry.keyHash, hashKey(apiKey))) {
+      return c.json({ error: "Session not found" }, 404);
+    }
+    entry.lastSeen = now;
+    return entry.transport.handleRequest(c.req.raw);
   }
 
   // New session — create transport (only for POST with initialize)
