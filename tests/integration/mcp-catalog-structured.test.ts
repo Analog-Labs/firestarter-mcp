@@ -8,12 +8,13 @@
  * returns — including degraded rows — and that the tool attaches it on every
  * path a host can reach without an error.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   catalogOutputSchema,
   toCatalogStructured,
   MCP_OUTPUT_SCHEMA_VERSION,
 } from "../../src/mcp/schemas.js";
+import { registerTools } from "../../src/mcp/tools.js";
 
 const API_DATA = { query: { environment: "test" }, has_more: false };
 
@@ -97,5 +98,82 @@ describe("toCatalogStructured", () => {
     expect(out.has_more).toBe(true);
     expect(out.listings[0].picked_by_community).toBe(true);
     expect(out.listings[0].pick_note).toBe("great leather");
+  });
+});
+
+type ToolHandler = (args: any) => Promise<any>;
+
+function captureTools(): Record<string, ToolHandler> {
+  const tools: Record<string, ToolHandler> = {};
+  const fakeServer = {
+    tool: (name: string, ...rest: any[]) => {
+      tools[name] = rest[rest.length - 1] as ToolHandler;
+    },
+  };
+  registerTools(fakeServer as any, "fsk_test_key", "http://api.test");
+  return tools;
+}
+
+/** Per-URL responder: return listings for a given q, [] otherwise. */
+let respond: (q: string | null) => any[];
+
+function installFetch() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: any) => {
+      const u = new URL(String(url));
+      const listings = respond(u.searchParams.get("q"));
+      return new Response(
+        JSON.stringify({ query: { environment: "test" }, count: listings.length, listings, has_more: false }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }),
+  );
+}
+
+describe("firestarter_catalog_search — structured content on every non-error path", () => {
+  beforeEach(() => {
+    respond = () => [ROW];
+    installFetch();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("attaches schema-valid structuredContent to a normal hit", async () => {
+    const tools = captureTools();
+    const res = await tools.firestarter_catalog_search({ query: "wallet" });
+    expect(res.structuredContent).toBeDefined();
+    expect(() => catalogOutputSchema.parse(res.structuredContent)).not.toThrow();
+    expect(res.structuredContent.listings).toHaveLength(1);
+    expect(res.structuredContent.listings[0].id).toBe("lst_w1");
+    // The text result is unchanged — this addition is additive for hosts
+    // without MCP Apps support.
+    expect(res.content[0].type).toBe("text");
+    expect(res.content[0].text).toContain("Leather Wallet");
+  });
+
+  it("attaches schema-valid structuredContent to a zero-result search", async () => {
+    respond = () => [];
+    const tools = captureTools();
+    const res = await tools.firestarter_catalog_search({ query: "wallet" });
+    expect(res.content[0].text).toContain("No catalog listings matched");
+    // Without this the SDK throws: an outputSchema makes structuredContent
+    // mandatory on any result that is not isError.
+    expect(res.structuredContent).toBeDefined();
+    expect(() => catalogOutputSchema.parse(res.structuredContent)).not.toThrow();
+    expect(res.structuredContent.listings).toEqual([]);
+  });
+
+  it("records the head noun in broadened_to when a query is broadened", async () => {
+    respond = (q) => (q === "wallet" ? [ROW] : []);
+    const tools = captureTools();
+    const res = await tools.firestarter_catalog_search({ query: "red leather wallet" });
+    expect(res.structuredContent.broadened_to).toBe("wallet");
+    expect(res.structuredContent.listings).toHaveLength(1);
+  });
+
+  it("leaves broadened_to null when the first query hits", async () => {
+    const tools = captureTools();
+    const res = await tools.firestarter_catalog_search({ query: "wallet" });
+    expect(res.structuredContent.broadened_to).toBeNull();
   });
 });
