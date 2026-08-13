@@ -11,6 +11,14 @@
  * Asserts the directory-review invariants too — every tool needs a title and
  * the applicable read-only/destructive hint — so a regression fails CI rather
  * than a submission.
+ *
+ * It also pins the MCP Apps wiring, which is invisible to every other test we
+ * have. The inline product grid renders only if THREE things line up on the
+ * wire: the ui:// resource is listed, it is readable with the MCP Apps mime
+ * type, and the shopping tools point `_meta.ui.resourceUri` at that exact URI.
+ * A tool aimed at a URI the server does not serve renders nothing at all, and
+ * fails silently — the tool call still succeeds and returns its text, so the
+ * only symptom is a missing grid nobody notices until a user reports it.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, existsSync, rmSync } from "node:fs";
@@ -20,6 +28,15 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const bundle = join(root, "mcpb", "dist", "firestarter.mcpb");
+
+/** Kept in lockstep with src/mcp/shopping-app.ts. */
+const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results";
+/** ext-apps RESOURCE_MIME_TYPE. Hosts ignore a ui:// resource served as
+ *  anything else, so the exact string is load-bearing. */
+const APP_MIME_TYPE = "text/html;profile=mcp-app";
+/** Tools whose results the grid is supposed to render. Losing the wiring on
+ *  one of these is the regression this file exists to catch. */
+const GRID_TOOLS = ["firestarter_preview", "firestarter_catalog_search"];
 
 if (!existsSync(bundle)) {
   console.error(`No bundle at ${bundle} — run \`npm run build:mcpb\` first.`);
@@ -42,6 +59,8 @@ try {
     JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
     request(2, "tools/list"),
     request(3, "prompts/list"),
+    request(4, "resources/list"),
+    request(5, "resources/read", { uri: SHOPPING_RESULTS_URI }),
   ].join("\n") + "\n";
 
   const stdout = execFileSync("node", [join(work, "server", "index.mjs")], {
@@ -94,6 +113,56 @@ try {
   const prompts = byId.get(3)?.result?.prompts;
   if (!Array.isArray(prompts) || prompts.length === 0) fail("prompts/list returned nothing");
   else console.log(`✓ ${prompts.length} prompts`);
+
+  // ── MCP Apps wiring ────────────────────────────────────────────────────────
+  const resources = byId.get(4)?.result?.resources;
+  if (!Array.isArray(resources)) {
+    fail("resources/list returned nothing");
+  } else {
+    const app = resources.find((r) => r.uri === SHOPPING_RESULTS_URI);
+    if (!app) {
+      fail(`the shopping-results app resource is not served: ${SHOPPING_RESULTS_URI}`);
+    } else if (app.mimeType !== APP_MIME_TYPE) {
+      fail(`app resource has mime type "${app.mimeType}", expected "${APP_MIME_TYPE}" — hosts ignore anything else`);
+    } else {
+      console.log(`✓ app resource served as ${APP_MIME_TYPE}`);
+    }
+
+    // Every tool that points at a UI resource must point at one that exists.
+    // A dangling resourceUri renders nothing while the tool call still
+    // succeeds, so nothing else in CI would notice.
+    const served = new Set(resources.map((r) => r.uri));
+    const dangling = (Array.isArray(tools) ? tools : [])
+      .map((t) => [t.name, t._meta?.ui?.resourceUri])
+      .filter(([, uri]) => uri && !served.has(uri))
+      .map(([name, uri]) => `${name} -> ${uri}`);
+    if (dangling.length) fail(`tools pointing at unserved UI resources: ${dangling.join(", ")}`);
+  }
+
+  const missingWiring = GRID_TOOLS.filter(
+    (name) => (Array.isArray(tools) ? tools : []).find((t) => t.name === name)?._meta?.ui?.resourceUri !== SHOPPING_RESULTS_URI,
+  );
+  if (missingWiring.length) {
+    fail(`tools that should render the product grid no longer declare it: ${missingWiring.join(", ")}`);
+  } else {
+    console.log(`✓ ${GRID_TOOLS.length} tools wired to the product grid`);
+  }
+
+  const appHtml = byId.get(5)?.result?.contents?.[0];
+  if (!appHtml) {
+    fail("resources/read on the app resource returned no contents");
+  } else if (typeof appHtml.text !== "string" || !appHtml.text.includes("<")) {
+    fail("app resource body is not HTML");
+  } else {
+    // An App iframe has NO network access beyond this allowlist, so an empty
+    // one means every product photo silently degrades to "No photo".
+    const domains = appHtml._meta?.ui?.csp?.resourceDomains;
+    if (!Array.isArray(domains) || domains.length === 0) {
+      fail("app resource declares no csp.resourceDomains — every product photo would be blocked");
+    } else {
+      console.log(`✓ app resource readable (${Math.round(appHtml.text.length / 1024)}KB, ${domains.length} image origins allowlisted)`);
+    }
+  }
 
   if (process.exitCode) console.error("\nBundle smoke test FAILED");
   else console.log("\nBundle smoke test passed");
