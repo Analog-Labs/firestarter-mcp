@@ -209,6 +209,54 @@ export function formatCommunitySells(community: any): string | null {
 }
 
 /**
+ * Render seller analytics. Revenue counts only LIVE, paid orders — but
+ * firestarter_seller_orders lists every order a seller has, test-mode and
+ * unpaid ones included, so the two surfaces can legitimately show different
+ * counts. Printing a bare "$0.00" next to a 17-line order list is what turned
+ * that into a bug report (firestarter-commerce#726), so whenever orders exist
+ * that revenue does NOT count, say which ones and why. Silence otherwise —
+ * a seller whose figures already add up gets no extra noise.
+ *
+ * Tolerates an API response without the newer fields (older api deployments):
+ * the reconciliation lines simply don't render. Exported for tests.
+ */
+export function formatSellerAnalytics(data: any): string {
+  const money = (cents: unknown) => `$${((Number(cents) || 0) / 100).toFixed(2)}`;
+  const count = (v: unknown) => Math.max(0, Number(v) || 0);
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+  const orders = count(data?.orders);
+  const testOrders = count(data?.test_orders);
+  // orders_recorded counts rows in `orders`; live + test count ledger rows.
+  // The remainder is orders that never produced one — unpaid, or created
+  // outside the pay path.
+  const unpaid = Math.max(0, count(data?.orders_recorded) - orders - testOrders);
+
+  let text = "**Seller Analytics**\n";
+  text += `Total revenue: ${money(data?.revenue_cents)}\n`;
+  text += `Total orders: ${orders}\n`;
+  text += `Average order: ${money(data?.avg_order_cents)}\n`;
+
+  if (testOrders > 0) {
+    text += `\n${plural(testOrders, "order")} ${testOrders === 1 ? "is" : "are"} in test mode `
+      + `(${money(data?.test_revenue_cents)}) and excluded above — test mode moves no real money.\n`;
+  }
+  if (unpaid > 0) {
+    text += `\n${plural(unpaid, "order")} ${unpaid === 1 ? "is" : "are"} not yet paid, `
+      + `so ${unpaid === 1 ? "it doesn't" : "they don't"} count toward revenue.\n`;
+  }
+
+  if (data?.daily?.length > 0) {
+    text += `\n**Last 30 days:**\n`;
+    for (const d of data.daily.slice(-7)) {
+      text += `  ${d.date}: ${money(d.revenue_cents)} (${plural(count(d.orders), "order")})\n`;
+    }
+    if (data.daily.length > 7) text += `  ... and ${data.daily.length - 7} more days\n`;
+  }
+  return text;
+}
+
+/**
  * Render the "what this community offers" block: the tier ladder (only when
  * meaningful) and bucketed social proof. Returns null when there is nothing to
  * show. Framing: tiers are ACCESS, never money; social proof is bucketed, never
@@ -4447,7 +4495,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (orders.length === 0) {
           return { content: [{ type: "text" as const, text: "No orders yet. Once a buyer purchases one of your listings, orders will appear here." }] };
         }
-        const lines = [`**Your Orders** (${orders.length})\n`];
+        // This list has no test-mode filter, but seller analytics excludes
+        // test orders from revenue — so an unlabelled test sale reads exactly
+        // like a real one and the two surfaces appear to contradict each other
+        // (firestarter-commerce#726). Mark them here and in the header count.
+        const testCount = orders.filter((o: any) => o.test_mode === true).length;
+        const header = testCount > 0
+          ? `**Your Orders** (${orders.length}, ${testCount} in test mode)\n`
+          : `**Your Orders** (${orders.length})\n`;
+        const lines = [header];
         let anyPending = false;
         for (const o of orders) {
           const amount = o.amount_cents ? `$${(o.amount_cents / 100).toFixed(2)}` : "pending";
@@ -4458,7 +4514,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const tracking = o.tracking_number
             ? ` - Tracking: ${o.carrier || "Carrier"} ${o.tracking_number}${o.tracking_url ? ` (${o.tracking_url})` : ""}`
             : "";
-          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}${tracking} - order_id \`${o.id}\``);
+          const testTag = o.test_mode === true ? " - TEST MODE (no real money)" : "";
+          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}${tracking}${testTag} - order_id \`${o.id}\``);
         }
         if (anyPending) {
           lines.push(`\nAccept a pending order with firestarter_confirm_order (its order_id), then add tracking with firestarter_ship_order once it's on its way.`);
@@ -4533,18 +4590,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     async () => {
       try {
         const data = await apiRequest("GET", "/v1/sellers/analytics");
-        let text = "**Seller Analytics**\n";
-        text += `Total revenue: $${(data.revenue_cents / 100).toFixed(2)}\n`;
-        text += `Total orders: ${data.orders}\n`;
-        text += `Average order: $${(data.avg_order_cents / 100).toFixed(2)}\n`;
-        if (data.daily?.length > 0) {
-          text += `\n**Last 30 days:**\n`;
-          for (const d of data.daily.slice(-7)) {
-            text += `  ${d.date}: $${(d.revenue_cents / 100).toFixed(2)} (${d.orders} order${d.orders !== 1 ? "s" : ""})\n`;
-          }
-          if (data.daily.length > 7) text += `  ... and ${data.daily.length - 7} more days\n`;
-        }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text: formatSellerAnalytics(data) }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error fetching analytics: ${toErrorMessage(err)}` }], isError: true };
       }
