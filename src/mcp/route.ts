@@ -108,7 +108,7 @@ export function buildMcpServer(apiKey: string, apiBase: string): McpServer {
     // scripts/sync-version.mjs. This is the version every REMOTE client sees in
     // the initialize handshake — api.firestarter.network/mcp reported 1.1.0
     // while the extension reported 2.1.0, because only server.ts was synced.
-    version: "2.2.0",
+    version: "2.2.1",
     name: "firestarter",
   });
 
