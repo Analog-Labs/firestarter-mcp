@@ -6,7 +6,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { marginCentsFor } from "../lib/margin.js";
 import { isRelevantMatch } from "../lib/relevance.js";
-import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalogOutputShape, toCatalogStructured } from "./schemas.js";
+import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalogOutputShape, toCatalogStructured, sellerListingsOutputShape, toSellerListingsStructured, shelfOutputShape, toShelfStructured } from "./schemas.js";
+import { SHARE_LINK_BASE, listingShareUrl } from "../lib/share-link.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
 import { getPlatformAdapters } from "../platform.js";
@@ -29,10 +30,6 @@ const VERIFY_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_VERIFY_TIMEOUT_MS |
 // 30s cap and surfaced intermittent aborts in the agent, so the budget is 45s.
 const PREVIEW_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_PREVIEW_TIMEOUT_MS || 45_000);
 const POLL_INTERVAL_MS = Number(process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS || 2_500);
-// Public share pages (GET /l/:id) — humans get a product card, agents get
-// machine-readable purchase instructions, chat apps unfurl a preview card.
-const SHARE_LINK_BASE = process.env.SHARE_LINK_BASE || "https://firestarter.network/l";
-
 // Community-market join pages (GET /m/:handle) — resolves either a random share
 // code or a claimed vanity handle to the same market.
 const MARKET_LINK_BASE = process.env.MARKET_LINK_BASE || "https://firestarter.network/m";
@@ -42,21 +39,6 @@ const MARKET_LINK_BASE = process.env.MARKET_LINK_BASE || "https://firestarter.ne
 // can use the firestarter_upload_image tool directly. The dashboard URL is kept
 // as a fallback for clients that cannot encode the image into a tool argument.
 const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firestarter.network/seller";
-
-function listingShareUrl(listing: any): string | null {
-  if (listing?.test_mode === true || listing?.environment === "test" || listing?.status !== "active") {
-    return null;
-  }
-  if (typeof listing?.share_url === "string" && listing.share_url.trim()) {
-    return listing.share_url.trim();
-  }
-  // Backward compatibility during rolling deploys where the API may not yet
-  // return share_url. New API responses always include it (string or null).
-  if (listing?.share_url === undefined && listing?.id) {
-    return `${SHARE_LINK_BASE}/${listing.id}`;
-  }
-  return null;
-}
 
 export function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -1187,6 +1169,11 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
  * the classic `tool()` signature for minimal server doubles (e.g. the unit-test
  * fakes that only implement `tool`); the fallback omits the outputSchema, which
  * is fine for those content-only tests.
+ *
+ * The fallback passes annotations through in their classic positional slot, so
+ * the handler stays the 5th argument exactly as a direct `server.tool(...)` call
+ * leaves it. Dropping them shifted the handler left by one and silently broke
+ * every double that captures it positionally rather than as the last argument.
  */
 function registerToolCompat(server: McpServer, name: string, config: any, handler: any): void {
   const s = server as any;
@@ -1200,7 +1187,7 @@ function registerToolCompat(server: McpServer, name: string, config: any, handle
       s.registerTool(name, config, handler);
     }
   } else {
-    s.tool(name, config.description, config.inputSchema, handler);
+    s.tool(name, config.description, config.inputSchema, config.annotations, handler);
   }
 }
 
@@ -3799,14 +3786,22 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   );
 
   // Tool: firestarter_listings
-  server.tool(
+  registerToolCompat(
+    server,
     "firestarter_listings",
-    "View your own product listings (seller side): name, current price, inventory, status, demand, and live share link when available. Pass listing_id for full detail on one listing; omit it to list every listing you have, including drafts that still need to be activated. Use this when a seller wants to see, verify, or share what they have listed. Active live listings have a public share link; sandbox and draft listings do not.",
     {
-      listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list every listing you have, drafts included."),
+      description: "View your own product listings (seller side): name, current price, inventory, status, demand, and live share link when available. Pass listing_id for full detail on one listing; omit it to list every listing you have, including drafts that still need to be activated. Use this when a seller wants to see, verify, or share what they have listed. Active live listings have a public share link; sandbox and draft listings do not.",
+      inputSchema: {
+        listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list every listing you have, drafts included."),
+      },
+      outputSchema: sellerListingsOutputShape,
+      annotations: { title: "List My Listings", readOnlyHint: true, destructiveHint: false },
+      // MCP Apps: render the seller's own products as the same inline grid the
+      // buyer-facing tools use. Additive — hosts without app support fall back
+      // to the text + image-block result below.
+      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
     },
-    { title: "List My Listings", readOnlyHint: true, destructiveHint: false },
-    async ({ listing_id: rawListingId }) => {
+    async ({ listing_id: rawListingId }: { listing_id?: string }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         if (listing_id) {
@@ -3876,12 +3871,20 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               if (img) detailBlocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
             }
           }
-          return { content: detailBlocks };
+          return {
+            content: detailBlocks,
+            // A one-card grid for the detail view. An outputSchema makes
+            // structuredContent mandatory on every result that is not isError.
+            structuredContent: toSellerListingsStructured([l]),
+          };
         }
         const data = await apiRequest("GET", "/v1/listings");
         const listings = data.listings || [];
         if (listings.length === 0) {
-          return { content: [{ type: "text" as const, text: "You have no active listings. Use `firestarter_list` to create one." }] };
+          return {
+            content: [{ type: "text" as const, text: "You have no active listings. Use `firestarter_list` to create one." }],
+            structuredContent: toSellerListingsStructured([]),
+          };
         }
         const utcToday = new Date().toISOString().slice(0, 10);
         const listedTodayUtc = listings.filter((l: any) => {
@@ -3907,7 +3910,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // inlineImageBlocks caps at MAX_EMBED_IMAGES and enforces the response
         // image budget, so a long list can never blow the 1MB tool-result cap.
         const listImages = await inlineImageBlocks(listings.map((l: any) => (Array.isArray(l.images) ? l.images[0] : null)));
-        return { content: [{ type: "text" as const, text }, ...listImages] };
+        return {
+          content: [{ type: "text" as const, text }, ...listImages],
+          // Drives the shopping-results grid; also a typed contract for agents.
+          structuredContent: toSellerListingsStructured(listings),
+        };
       } catch (err: any) {
         const msg = toErrorMessage(err);
         const hint = /not found/i.test(msg)
@@ -5320,10 +5327,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     );
 
-    server.tool(
+    registerToolCompat(
+      server,
       "firestarter_set_market_picks",
-      "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) — find them with firestarter_catalog_search. `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
       {
+        description: "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) — find them with firestarter_catalog_search. `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
+        inputSchema: {
         program_id: z.string().describe("The market/program id (from firestarter_create_market or firestarter_my_markets)."),
         picks: z.array(z.object({
           listing_id: z.string().describe("A listing id (lst_...) to feature. Must be another seller's listing — not your own."),
@@ -5331,9 +5340,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           min_tier: z.number().int().min(0).max(3).optional().describe("Tier RUNG INDEX needed to see this pick. 0 (default) = everyone, including signed-out visitors. 1+ stages it as an early look for that rung and above — this is how 'members get first look at new picks' works. Set tiers up first with firestarter_set_market_tiers."),
         })).min(1).describe("The picks to set/add/remove. For 'remove', only each listing_id is used."),
         action: z.enum(["replace", "add", "remove"]).optional().describe("replace (default): the picks become the exact shelf, in order. add: append to the current shelf. remove: drop the given listing ids."),
+        },
+        outputSchema: shelfOutputShape,
+        annotations: { title: "Set Market Picks", readOnlyHint: false, destructiveHint: false },
+        // The owner's confirmation is a shelf, so show the shelf they just built.
+        _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
       },
-      { title: "Set Market Picks", readOnlyHint: false, destructiveHint: false },
-      async ({ program_id, picks, action }) => {
+      async ({ program_id, picks, action }: {
+        program_id: string;
+        picks: Array<{ listing_id: string; note?: string; min_tier?: number }>;
+        action?: "replace" | "add" | "remove";
+      }) => {
         const mode = action ?? "replace";
         const incoming = picks.map((p) => ({
           listing_id: cleanListingId(p.listing_id),
@@ -5379,7 +5396,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           });
           const shelf: any[] = Array.isArray(res?.picks) ? res.picks : [];
           if (shelf.length === 0) {
-            return { content: [{ type: "text" as const, text: "**Shelf cleared.** Your market now recommends no products — buyers see the plain catalog framing. Add some with action:'add'." }] };
+            return {
+              content: [{ type: "text" as const, text: "**Shelf cleared.** Your market now recommends no products — buyers see the plain catalog framing. Add some with action:'add'." }],
+              structuredContent: toShelfStructured({ picks: [] }),
+            };
           }
           const lines = shelf.map((p) => {
             const nm = typeof p.product_name === "string" && p.product_name.trim() ? p.product_name.trim() : "Untitled";
@@ -5390,7 +5410,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             const gate = Number(p.min_tier) > 0 ? ` [tier ${p.min_tier}+ only]` : "";
             return `• ${nm} — ${price}${note}${gate}`;
           });
-          return { content: [{ type: "text" as const, text: `**Shelf updated — ${shelf.length} pick${shelf.length === 1 ? "" : "s"}** (buyers see these on your join page and in the agent):\n${lines.join("\n")}` }] };
+          return {
+            content: [{ type: "text" as const, text: `**Shelf updated — ${shelf.length} pick${shelf.length === 1 ? "" : "s"}** (buyers see these on your join page and in the agent):\n${lines.join("\n")}` }],
+            // The owner sees the shelf they just built, photos and all.
+            structuredContent: toShelfStructured({ picks: shelf }),
+          };
         } catch (err: any) {
           if (err instanceof ApiError && err.code === "OWN_LISTING_PICK") {
             return { content: [{ type: "text" as const, text: `Those include your OWN listings — they already appear under what you sell, so they can't go on the recommends shelf. ${toErrorMessage(err)}` }], isError: true };
@@ -5549,14 +5573,21 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     );
 
-    server.tool(
+    registerToolCompat(
+      server,
       "firestarter_market_preview",
-      "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, its curated shelf (the owner's picks of OTHER sellers' products), and what the community itself sells (its own listings) — every item with a listing_id you can buy via firestarter_execute. Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend / what's in this market' before committing — show both surfaces, then let them choose to join (firestarter_join_market) or just buy an item. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: JOINING itself gives the buyer no automatic discount or cashback — their price is unchanged and the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. A community MAY separately fund drops (real discounts the buyer claims before checkout) and reward members with tiered early access — surface those when present, but never imply that joining alone grants a discount.",
       {
-        code: z.string().describe("The community's share code or vanity handle (e.g. the <code> in firestarter.network/m/<code>)."),
+        description: "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, its curated shelf (the owner's picks of OTHER sellers' products), and what the community itself sells (its own listings) — every item with a listing_id you can buy via firestarter_execute. Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend / what's in this market' before committing — show both surfaces, then let them choose to join (firestarter_join_market) or just buy an item. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: JOINING itself gives the buyer no automatic discount or cashback — their price is unchanged and the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. A community MAY separately fund drops (real discounts the buyer claims before checkout) and reward members with tiered early access — surface those when present, but never imply that joining alone grants a discount.",
+        inputSchema: {
+          code: z.string().describe("The community's share code or vanity handle (e.g. the <code> in firestarter.network/m/<code>)."),
+        },
+        outputSchema: shelfOutputShape,
+        annotations: { title: "Market Preview", readOnlyHint: true, destructiveHint: false },
+        // MCP Apps: the shelf is a product list, so render it as the same grid
+        // the catalog uses — with the photos the prose render never showed.
+        _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
       },
-      { title: "Market Preview", readOnlyHint: true, destructiveHint: false },
-      async ({ code }) => {
+      async ({ code }: { code: string }) => {
         const cleaned = code.trim();
         const community = await fetchPublicCommunity(apiRequest, cleaned);
         if (!community) {
@@ -5588,7 +5619,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             `\nTo join: firestarter_join_market with code \`${cleaned}\`. Your future buys then credit ${name} at no extra cost to you (your price is unchanged; the value is the curation and supporting them). You can switch communities anytime.`,
           );
         }
-        return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+        return {
+          content: [{ type: "text" as const, text: parts.join("\n") }],
+          structuredContent: toShelfStructured(community),
+        };
       }
     );
 
@@ -5627,17 +5661,22 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     );
 
-    server.tool(
+    registerToolCompat(
+      server,
       "firestarter_join_market",
-      "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. If the buyer is already supporting a different community, confirm with them first — joining moves their attribution to the new community. Use when a user pastes a Firestarter join/market code or asks to join a community's market. Tip: to show the community's picks BEFORE joining, call firestarter_market_preview first.",
       {
-        code: z.string().describe("The market share code the community gave you."),
+        description: "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. If the buyer is already supporting a different community, confirm with them first — joining moves their attribution to the new community. Use when a user pastes a Firestarter join/market code or asks to join a community's market. Tip: to show the community's picks BEFORE joining, call firestarter_market_preview first.",
+        inputSchema: {
+          code: z.string().describe("The market share code the community gave you."),
+        },
+        outputSchema: shelfOutputShape,
+        // Redirects fee attribution for every future order, and silently REPLACES
+        // any community the buyer already supports. The description already says
+        // to confirm with the buyer first — the annotation now agrees.
+        annotations: { title: "Join Market", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+        _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
       },
-      // Redirects fee attribution for every future order, and silently REPLACES
-      // any community the buyer already supports. The description already says
-      // to confirm with the buyer first — the annotation now agrees.
-      { title: "Join Market", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
-      async ({ code }) => {
+      async ({ code }: { code: string }) => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/redeem", { code });
           let text =
@@ -5671,7 +5710,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             const offers = formatCommunityOffers(community);
             if (offers) text += `\n\n${offers}`;
           }
-          return { content: [{ type: "text" as const, text }] };
+          return {
+            content: [{ type: "text" as const, text }],
+            // `community` is null when the best-effort public-page fetch failed;
+            // the mapper degrades that to an empty grid rather than letting a
+            // completed join fail schema validation.
+            structuredContent: toShelfStructured(community),
+          };
         } catch (err: any) {
           const msg = toErrorMessage(err);
           return { content: [{ type: "text" as const, text: `Couldn't join: ${msg}` }], isError: true };
@@ -5679,17 +5724,25 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     );
 
-    server.tool(
+    registerToolCompat(
+      server,
       "firestarter_my_market",
-      "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, AND its products — what the community recommends (its curated shelf) and what it sells (its own listings), each buyable via firestarter_execute. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
-      {},
-      { title: "My Market", readOnlyHint: true, destructiveHint: false },
+      {
+        description: "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, AND its products — what the community recommends (its curated shelf) and what it sells (its own listings), each buyable via firestarter_execute. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
+        inputSchema: {},
+        outputSchema: shelfOutputShape,
+        annotations: { title: "My Market", readOnlyHint: true, destructiveHint: false },
+        _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
+      },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/attribution/me");
           const community = res?.community ?? null;
           if (!community || community.connected !== true) {
-            return { content: [{ type: "text" as const, text: "You're not connected to any community market. Paste a share code and I can join one for you (firestarter_join_market)." }] };
+            return {
+              content: [{ type: "text" as const, text: "You're not connected to any community market. Paste a share code and I can join one for you (firestarter_join_market)." }],
+              structuredContent: toShelfStructured(null),
+            };
           }
           // Standing in this community. Best-effort and rendered only when the
           // owner has tiers on — a community that hasn't turned them on should
@@ -5728,7 +5781,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             + (shelf ? `\n\n${shelf}` : "")
             + (sells ? `\n\n${sells}` : "")
             + (offers ? `\n\n${offers}` : "");
-          return { content: [{ type: "text" as const, text }] };
+          return {
+            content: [{ type: "text" as const, text }],
+            structuredContent: toShelfStructured(publicView),
+          };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Couldn't check your market: ${toErrorMessage(err)}` }], isError: true };
         }
