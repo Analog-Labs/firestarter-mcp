@@ -30,6 +30,13 @@
 /** Conversational and structural markers that let text change who is speaking. */
 const SPEAKER_TAGS = /<\/?(?:system|user|assistant|human|instructions?|listing|intent|tool_result|tool_use|function_results?|thinking)\s*\/?>/gi;
 
+/**
+ * Speaker delimiters for OpenAI- and Llama-family models. Structural, like the
+ * tags above — not vocabulary — so they belong here rather than in the phrase
+ * blocklist this module deliberately does not have.
+ */
+const MODEL_DELIMITERS = /<\|[^|>]{0,40}\|>|\[\/?INST\]|\[\/?SYS\]/gi;
+
 /** Default budget for one rendered field. Long enough for a real description
  *  line, short enough that no single field can dominate a result row. */
 const DEFAULT_MAX = 300;
@@ -42,15 +49,34 @@ const DEFAULT_MAX = 300;
  */
 export function sanitizeUntrusted(value: unknown, max: number = DEFAULT_MAX): string {
   if (typeof value !== "string") return "";
-  return value
-    .replace(SPEAKER_TAGS, " ")
+  // Loop to a fixpoint. One pass is bypassable by nesting a tag inside its own
+  // body: "<system<system>>" leaves "<system >", which SPEAKER_TAGS itself
+  // matches — so a single replace both let the tag through AND made the
+  // documented idempotence claim false. Bounded, because the input is hostile.
+  let out = value;
+  for (let i = 0; i < 8; i++) {
+    const next = out.replace(SPEAKER_TAGS, " ").replace(MODEL_DELIMITERS, " ");
+    if (next === out) break;
+    out = next;
+  }
+  return out
     // Control characters, which covers newlines and tabs: a field rendered
     // inline must not be able to open a new line and forge a row or heading.
+    // C0, DEL, C1, and the invisible formatting characters a payload hides
+    // behind: zero-width joiners/spaces (which JS \s does NOT match, so the
+    // whitespace collapse below misses them), bidi embeds/overrides/isolates
+    // (Trojan Source — text renders right-to-left and a human reviewing the
+    // output cannot read what the model consumed), and BOM.
     // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1f\x7f]+/g, " ")
+    .replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
+    // Array.from, not slice: a code-unit cut can split a surrogate pair and
+    // leave a lone surrogate in structuredContent.
+    .split("")
     .slice(0, max)
+    .join("")
+    .replace(/[\ud800-\udbff]$/, "")
     .trim();
 }
 
