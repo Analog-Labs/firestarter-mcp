@@ -731,7 +731,15 @@ export function shippingMethodTags(m: any, label: string): string[] {
  * rate, so a buyer who doesn't care about speed is never stalled. Rendered only
  * for purchasable options carrying a real choice (>= 2 methods).
  */
-export function renderDeliveryOptions(opt: any, dm: any): string[] {
+/**
+ * @param canChoose whether the buyer can still act on a choice. False once the
+ *   order is past approval: QA saw the full "pick a speed … approve with
+ *   shipping_option_index" menu on an order at `charging`, and again at
+ *   `delivered`. Offering a choice that can no longer be made invites a calling
+ *   agent to re-approve a completed purchase, on a money path (#599). The
+ *   speeds stay visible either way — the buyer should still see what they got.
+ */
+export function renderDeliveryOptions(opt: any, dm: any, canChoose: boolean = true): string[] {
   if (opt.purchasable === false) return [];
   const methods: any[] = Array.isArray(opt.shipping_options) ? opt.shipping_options : [];
   if (methods.length === 0) return [];
@@ -790,7 +798,18 @@ export function renderDeliveryOptions(opt: any, dm: any): string[] {
     return [`  Delivery: ${d.label} · ${d.parts.join(" · ")}${d.tags.length ? ` — ${d.tags.join(", ")}` : ""}`];
   }
 
-  // Two or more services: the numbered menu whose indices ARE shipping_option_index.
+  // Two or more services. While the buyer can still approve, this is a menu and
+  // the indices ARE shipping_option_index. Once they cannot, it is a record of
+  // what was available — same rows, no index, no call to action.
+  if (!canChoose) {
+    return [
+      "  Delivery options quoted for this order:",
+      ...methods.map((m: any) => {
+        const d = describe(m);
+        return `   ${d.label} · ${d.parts.join(" · ")}${d.tags.length ? ` — ${d.tags.join(", ")}` : ""}`;
+      }),
+    ];
+  }
   const lines: string[] = ["  Delivery options — pick a speed, or approve to use the cheapest:"];
   methods.forEach((m: any, i: number) => {
     const d = describe(m);
@@ -1122,8 +1141,34 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       if (opt.delivery_estimate) {
         const d = new Date(opt.delivery_estimate);
         if (!isNaN(d.getTime())) {
-          const days = Math.ceil((d.getTime() - Date.now()) / 86400000);
-          optLines.push(days > 0 ? `  Arrives in ~${days} day${days === 1 ? "" : "s"} (${opt.delivery_estimate})` : `  Delivery estimate: ${opt.delivery_estimate}`);
+          // Anchor the countdown to the same UTC calendar the date is rendered
+          // in. Diffing against Date.now() gives the UTC day-gap, which only
+          // agrees with `when` for a reader already in UTC: a Los Angeles buyer
+          // at 19:00 saw "in ~1 day (Sun, Aug 16)" when Aug 16 was two days out.
+          // "Today" is the BUYER's calendar day; the estimate keeps its own
+          // UTC day (it is a DATE, not an instant). Anchoring both to UTC was a
+          // mathematical no-op — ceil(N - fraction) === N for a UTC-midnight
+          // value — so the countdown stayed wrong for exactly the readers the
+          // date fix was for: an LA buyer at 19:00 still read "~1 day
+          // (Sun, Aug 16)" when Aug 16 was two days out, now contradicting the
+          // shipping row directly beneath it. One `new Date()`, because three
+          // can straddle a UTC midnight and yield "~367 days".
+          const now = new Date();
+          const todayLocal = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+          const days = Math.round((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - todayLocal) / 86400000);
+          // A DATE, not a timestamp. This printed the raw ISO string —
+          // "Arrives in ~2 days (2026-08-16T00:00:00.000Z)" — while the
+          // delivery-options rows two lines below already rendered the friendly
+          // form, so one unformatted field made the whole block look machine
+          // generated (#599 F15).
+          // timeZone: "UTC" is load-bearing. delivery_estimate is a DATE
+          // serialised at UTC midnight, and this package ships a bin + an .mcpb
+          // bundle, so it renders on the BUYER's machine. Without it,
+          // 2026-08-16 shows as "Sat, Aug 15" anywhere west of UTC — a wrong
+          // date that also contradicts the "~2 days" on the same line, on a
+          // delivery promise.
+          const when = d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
+          optLines.push(days > 0 ? `  Arrives in ~${days} day${days === 1 ? "" : "s"} (${when})` : `  Delivery estimate: ${when}`);
         }
       }
       // D3.5: a purchasable option's TRUE total includes the app margin (added
@@ -1150,7 +1195,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // shipping stops being an invisible auto-pick. Non-blocking — approving
       // without a choice still uses the cheapest rate.
       if (!browseOnly) {                                                                                    
-        for (const shipLine of renderDeliveryOptions(opt, dm)) optLines.push(shipLine);
+        for (const shipLine of renderDeliveryOptions(opt, dm, exec.status === "awaiting_approval")) optLines.push(shipLine);
         // Cross-border DAP disclosure (stamped on the option at quote time, #332):
         // import duties change what the buyer actually pays — they must hear it
         // WITH the price, before approving, not at the border.
@@ -1255,6 +1300,23 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
  * leaves it. Dropping them shifted the handler left by one and silently broke
  * every double that captures it positionally rather than as the last argument.
  */
+/**
+ * A read-only tool was handed the setter's arguments. Say so, and name the tool
+ * that would have worked.
+ *
+ * These tools declared `{}` as their input schema, so setter-shaped arguments
+ * were stripped by validation before the handler ran and the caller got a plain
+ * read back — indistinguishable from a successful write. A QA pass reported two
+ * P0 "silent no-op" regressions on that basis; the setters had simply never
+ * been called. One line of acknowledgement prevents the entire misdiagnosis
+ * (#599 F20).
+ */
+function readOnlyArgsNotice(args: unknown, setterTool: string): string {
+  const keys = args && typeof args === "object" ? Object.keys(args as object).filter((k) => (args as any)[k] !== undefined) : [];
+  if (keys.length === 0) return "";
+  return `\n\n⚠️ This tool only reads — it ignored ${keys.map((k) => `\`${k}\``).join(", ")} and changed nothing. Call \`${setterTool}\` to make that change.`;
+}
+
 function registerToolCompat(server: McpServer, name: string, config: any, handler: any): void {
   const s = server as any;
   if (typeof s.registerTool === "function") {
@@ -2366,17 +2428,28 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   server.tool(
     "firestarter_spend_cap",
     "Read the buyer's monthly spend cap - the safety limit on total monthly spend - and the alert threshold at which a warning fires. Read-only: use firestarter_set_spend_cap to raise, lower, set, or remove the cap (including after a purchase is rejected with SPEND_CAP_EXCEEDED).",
-    {},
+    // Accepted, never applied: the setter's arguments are taken so the response
+    // can SAY they were ignored. With `{}` they were stripped before the handler
+    // and the caller saw a plain read (#599 F20).
+    {
+      // z.unknown(), not z.number(): a typed schema makes a stringified
+      // number ("500", which models emit constantly) a hard InvalidParams
+      // error whose message names zod, not the setter — failing loudest in
+      // exactly the case this notice exists to catch.
+      spend_cap_dollars: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
+      alert_threshold_pct: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
+      disable: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
+    },
     { title: "Check Spending Cap", readOnlyHint: true, destructiveHint: false },
-    async () => {
+    async (args: any = {}) => {
       try {
         const balance = await apiRequest("GET", "/v1/billing/balance");
         const cap = balance.spend_cap_cents;
         const threshold = balance.alert_threshold_pct || 80;
         if (!cap) {
-          return { content: [{ type: "text" as const, text: `**No spend cap set.** There is currently no monthly spending limit. Use \`firestarter_set_spend_cap\` with \`spend_cap_dollars\` to set one.` }] };
+          return { content: [{ type: "text" as const, text: `**No spend cap set.** There is currently no monthly spending limit. Use \`firestarter_set_spend_cap\` with \`spend_cap_dollars\` to set one.${readOnlyArgsNotice(args, "firestarter_set_spend_cap")}` }] };
         }
-        return { content: [{ type: "text" as const, text: `**Monthly spend cap: $${(cap / 100).toFixed(2)}**\nAlert threshold: ${threshold}%\n\nPurchases that would exceed $${(cap / 100).toFixed(2)} in a calendar month are automatically rejected.` }] };
+        return { content: [{ type: "text" as const, text: `**Monthly spend cap: $${(cap / 100).toFixed(2)}**\nAlert threshold: ${threshold}%\n\nPurchases that would exceed $${(cap / 100).toFixed(2)} in a calendar month are automatically rejected.${readOnlyArgsNotice(args, "firestarter_set_spend_cap")}` }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error reading spend cap: ${toErrorMessage(err)}` }], isError: true };
       }
@@ -2463,9 +2536,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   server.tool(
     "firestarter_auto_approve_limit",
     "Read the buyer's PERSISTENT, account-level auto-approval limit for purchases. This is a real stored account setting (not a chat note or session memory): orders whose total is at or below the limit are auto-approved and paid without a manual confirmation step, and anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Read-only: use firestarter_set_auto_approve_limit to change or disable it.",
-    {},
+    // Accepted, never applied — see readOnlyArgsNotice (#599 F20).
+    {
+      set_limit_usd: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."),
+      disable: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."),
+    },
     { title: "Check Auto-Approve Limit", readOnlyHint: true, destructiveHint: false },
-    async () => {
+    async (args: any = {}) => {
       try {
         const bal = await apiRequest("GET", "/v1/billing/balance");
         const cents = bal.auto_approve_threshold_cents;
@@ -2478,7 +2555,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             : cents === 0
               ? "Your auto-approval limit is $0.00 per order — every order requires your manual approval."
               : `Your auto-approval limit is $${(cents / 100).toFixed(2)} per order. Orders at or below this auto-approve; anything above pauses for your approval.`;
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text: text + readOnlyArgsNotice(args, "firestarter_set_auto_approve_limit") }] };
       } catch (err: any) {
         return {
           content: [{ type: "text" as const, text: `Error reading auto-approval limit: ${toErrorMessage(err)}` }],

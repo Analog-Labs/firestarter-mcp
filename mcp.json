@@ -25,24 +25,24 @@
   "tools": [
     {
       "name": "firestarter_execute",
-      "description": "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+      "description": "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL \u2014 it does NOT pay yet. Full flow: firestarter_execute (find/price) \u2192 review options with the buyer \u2192 firestarter_approve (confirm + pay) \u2192 firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) \u2014 present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this \u2014 a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically \u2014 you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it \u2014 results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved \u2014 share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "request": {
             "type": "string",
-            "description": "Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."
+            "description": "Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field \u2014 call with just this and refine later."
           },
           "listing_id": {
             "type": "string",
-            "description": "Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."
+            "description": "Exact Firestarter listing id (lst_...) to buy \u2014 from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."
           },
           "budget_max": {
             "type": "number",
-            "description": "Maximum budget in USD. Optional — omit to see all options regardless of price."
+            "description": "Maximum budget in USD. Optional \u2014 omit to see all options regardless of price."
           },
           "delivery_address": {
-            "description": "Optional shipping address — pass EITHER a single-line string (e.g. \"123 Main St, Austin, TX 78701, US\") OR an object { name?, street1, street2?, city, state?, zip?, country? } (country is an ISO code, e.g. US/TH; defaults to US). The buyer's saved default address is used automatically at approval, so only pass one here if they have none saved or want it shipped elsewhere; prefer a saved address_id. A COMPLETE address (ZIP + state for US/CA/AU) lets execute quote a REAL carrier rate up front instead of the flat placeholder; a partial or odd-shaped address is accepted anyway (never rejected for shape) and the response's `needs_more` names exactly what to collect.",
+            "description": "Optional shipping address \u2014 pass EITHER a single-line string (e.g. \"123 Main St, Austin, TX 78701, US\") OR an object { name?, street1, street2?, city, state?, zip?, country? } (country is an ISO code, e.g. US/TH; defaults to US). The buyer's saved default address is used automatically at approval, so only pass one here if they have none saved or want it shipped elsewhere; prefer a saved address_id. A COMPLETE address (ZIP + state for US/CA/AU) lets execute quote a REAL carrier rate up front instead of the flat placeholder; a partial or odd-shaped address is accepted anyway (never rejected for shape) and the response's `needs_more` names exactly what to collect.",
             "anyOf": [
               {
                 "type": "string"
@@ -80,19 +80,19 @@
           },
           "address_id": {
             "type": "string",
-            "description": "A saved address id (addr_...) to ship to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Localizes search + shipping to that destination."
+            "description": "A saved address id (addr_...) to ship to, from firestarter_addresses. Optional \u2014 omit to use the buyer's default saved address. Localizes search + shipping to that destination."
           },
           "priority": {
             "type": "string",
-            "description": "Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated). Default cost — shipping is quoted and shipped at the cheapest carrier rate unless the buyer asks for speed/quality."
+            "description": "Optimization priority: cost (cheapest), speed (fastest delivery), quality (best rated). Default cost \u2014 shipping is quoted and shipped at the cheapest carrier rate unless the buyer asks for speed/quality."
           },
           "auto_pay": {
             "type": "boolean",
-            "description": "If true, automatically pay for the best option within budget WITHOUT a confirmation step — only when the buyer explicitly pre-authorized it. If false (default), options are returned for approval."
+            "description": "If true, automatically pay for the best option within budget WITHOUT a confirmation step \u2014 only when the buyer explicitly pre-authorized it. If false (default), options are returned for approval."
           },
           "voucher_code": {
             "type": "string",
-            "description": "A discount code the buyer already has (voucher / coupon / promo code). Pass it ONLY when the buyer gave you one — you do NOT need to hunt for codes, since the best publicly available voucher is applied automatically. Use this for a private or targeted code, which auto-apply cannot find. If the code can't be used the order still proceeds at the best price available, and the response explains why it didn't apply so you can tell the buyer."
+            "description": "A discount code the buyer already has (voucher / coupon / promo code). Pass it ONLY when the buyer gave you one \u2014 you do NOT need to hunt for codes, since the best publicly available voucher is applied automatically. Use this for a private or targeted code, which auto-apply cannot find. If the code can't be used the order still proceeds at the best price available, and the response explains why it didn't apply so you can tell the buyer."
           },
           "name": {
             "type": "string"
@@ -111,7 +111,7 @@
     },
     {
       "name": "firestarter_preview",
-      "description": "Preview real products for a natural-language request WITHOUT starting a purchase. Returns live options with prices, whether each can be bought through Firestarter (vs browse-only), shipping, and per-option eligibility — in budget, can arrive by the deadline, and ships to the destination. Use it to show the buyer what's available and answer \"what can you get me?\" before committing to firestarter_execute. Read-only: nothing is bought and no approval is created.",
+      "description": "Preview real products for a natural-language request WITHOUT starting a purchase. Returns live options with prices, whether each can be bought through Firestarter (vs browse-only), shipping, and per-option eligibility \u2014 in budget, can arrive by the deadline, and ships to the destination. Use it to show the buyer what's available and answer \"what can you get me?\" before committing to firestarter_execute. Read-only: nothing is bought and no approval is created.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -121,7 +121,7 @@
           },
           "country": {
             "type": "string",
-            "description": "Destination country (ISO alpha-2 or common name) — enables shipping/serviceability checks"
+            "description": "Destination country (ISO alpha-2 or common name) \u2014 enables shipping/serviceability checks"
           },
           "city": {
             "type": "string",
@@ -180,7 +180,7 @@
     },
     {
       "name": "firestarter_status",
-      "description": "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live) plus the ACCOUNT the configured API key belongs to (user + organization). Use this to check on orders, see what options were found, get tracking updates, confirm whether you are in test/sandbox mode, or answer 'which account/user am I operating as?' (call it with no arguments for the environment + account summary). Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
+      "description": "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live) plus the ACCOUNT the configured API key belongs to (user + organization). Use this to check on orders, see what options were found, get tracking updates, confirm whether you are in test/sandbox mode, or answer 'which account/user am I operating as?' (call it with no arguments for the environment + account summary). Firestarter DOES have a test mode: an `fs_test_\u2026` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking \u2014 no real money moves and no real seller is contacted); an `fs_live_\u2026` key is real. The mode is fixed by the configured API key, not a per-call option.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -198,7 +198,7 @@
     },
     {
       "name": "firestarter_approve",
-      "description": "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED — each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+      "description": "Confirm and place an order that is awaiting approval \u2014 this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval \u2192 you confirm the ship-to with the buyer \u2192 firestarter_approve places and pays for the order \u2192 the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically \u2014 you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED \u2014 each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) \u2014 if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved \u2014 browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim \u2014 it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected \u2014 collect one then.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -212,11 +212,11 @@
           },
           "option_id": {
             "type": "string",
-            "description": "Exact option id (e.g. 'opt_abc123') to approve — PREFERRED over selected_option, because it identifies the product itself rather than a position that can shift. Each purchasable option in firestarter_execute / firestarter_status output prints its own `option_id:`; copy that value verbatim. Takes precedence over selected_option."
+            "description": "Exact option id (e.g. 'opt_abc123') to approve \u2014 PREFERRED over selected_option, because it identifies the product itself rather than a position that can shift. Each purchasable option in firestarter_execute / firestarter_status output prints its own `option_id:`; copy that value verbatim. Takes precedence over selected_option."
           },
           "address_id": {
             "type": "string",
-            "description": "A saved address id (addr_...) to ship this order to, from firestarter_addresses. Optional — omit to use the buyer's default saved address. Pass only to ship somewhere other than their default."
+            "description": "A saved address id (addr_...) to ship this order to, from firestarter_addresses. Optional \u2014 omit to use the buyer's default saved address. Pass only to ship somewhere other than their default."
           },
           "confirm_total": {
             "type": "number",
@@ -229,7 +229,7 @@
     },
     {
       "name": "firestarter_addresses",
-      "description": "List the buyer's saved shipping addresses (masked). Use this to see if they already have an address on file BEFORE asking them to type one — then pass the matching `address_id` to firestarter_execute or firestarter_approve. The default address (used automatically at approval) is marked. Values are masked (partial street, no zip/phone); you don't need the full address to reference it by id.",
+      "description": "List the buyer's saved shipping addresses (masked). Use this to see if they already have an address on file BEFORE asking them to type one \u2014 then pass the matching `address_id` to firestarter_execute or firestarter_approve. The default address (used automatically at approval) is marked. Values are masked (partial street, no zip/phone); you don't need the full address to reference it by id.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -238,7 +238,7 @@
     },
     {
       "name": "firestarter_save_address",
-      "description": "Save a delivery address to the buyer's address book for reuse on future orders. Use this after a purchase when the buyer gave a new address, or when they explicitly ask to save an address. Pass an optional label (e.g. 'Home', 'Office', 'Mom's house') — if omitted, a default label is assigned. Set `is_default: true` to make it the default shipping address for future orders. Returns the saved address id.",
+      "description": "Save a delivery address to the buyer's address book for reuse on future orders. Use this after a purchase when the buyer gave a new address, or when they explicitly ask to save an address. Pass an optional label (e.g. 'Home', 'Office', 'Mom's house') \u2014 if omitted, a default label is assigned. Set `is_default: true` to make it the default shipping address for future orders. Returns the saved address id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -264,7 +264,7 @@
           },
           "country": {
             "type": "string",
-            "description": "ISO country code (e.g. US, PK, KE, NG). ALWAYS pass it when the buyer's country is known or named anywhere in the address — omitting it makes the API infer the country from the address text, falling back to US only as a last resort."
+            "description": "ISO country code (e.g. US, PK, KE, NG). ALWAYS pass it when the buyer's country is known or named anywhere in the address \u2014 omitting it makes the API infer the country from the address text, falling back to US only as a last resort."
           },
           "name": {
             "type": "string",
@@ -294,12 +294,19 @@
       "description": "Read the buyer's PERSISTENT, account-level auto-approval limit for purchases. This is a real stored account setting (not a chat note or session memory): orders whose total is at or below the limit are auto-approved and paid without a manual confirmation step, and anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Read-only: use firestarter_set_auto_approve_limit to change or disable it.",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "set_limit_usd": {
+            "description": "IGNORED here - this tool only reads. Use firestarter_set_auto_approve_limit."
+          },
+          "disable": {
+            "description": "IGNORED here - this tool only reads. Use firestarter_set_auto_approve_limit."
+          }
+        }
       }
     },
     {
       "name": "firestarter_set_auto_approve_limit",
-      "description": "Set or disable the buyer's PERSISTENT, account-level auto-approval limit for purchases. Orders at or below the limit are auto-approved and paid without a manual confirmation step; anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Pass set_limit_usd (e.g. 50 for '$50 per order'; 0 makes every order require manual approval) OR disable=true to turn auto-approval off entirely. The maximum limit is $10,000. Always confirm the exact dollar amount with the buyer before setting it — never invent, assume, or round a value the buyer did not state. Only report success after this tool returns a confirmation. Use firestarter_auto_approve_limit to read the current value without changing it.",
+      "description": "Set or disable the buyer's PERSISTENT, account-level auto-approval limit for purchases. Orders at or below the limit are auto-approved and paid without a manual confirmation step; anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Pass set_limit_usd (e.g. 50 for '$50 per order'; 0 makes every order require manual approval) OR disable=true to turn auto-approval off entirely. The maximum limit is $10,000. Always confirm the exact dollar amount with the buyer before setting it \u2014 never invent, assume, or round a value the buyer did not state. Only report success after this tool returns a confirmation. Use firestarter_auto_approve_limit to read the current value without changing it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -317,7 +324,7 @@
     },
     {
       "name": "firestarter_drops",
-      "description": "Community-sponsored drops: a community owner funds a discount on a specific listing for the first N members, sometimes opening it to higher tiers first. Use action 'list' with a listing_id to see any live drops on it — each shows the per-claim discount, how many slots remain, and whether it is still in a tier-gated early-access window. Use action 'claim' with a drop_id to reserve a slot for the buyer before checkout — first-come, first-served, one per member; the reserved discount then applies to that buyer's purchase of the listing. test/live follows the API key's environment.",
+      "description": "Community-sponsored drops: a community owner funds a discount on a specific listing for the first N members, sometimes opening it to higher tiers first. Use action 'list' with a listing_id to see any live drops on it \u2014 each shows the per-claim discount, how many slots remain, and whether it is still in a tier-gated early-access window. Use action 'claim' with a drop_id to reserve a slot for the buyer before checkout \u2014 first-come, first-served, one per member; the reserved discount then applies to that buyer's purchase of the listing. test/live follows the API key's environment.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -345,7 +352,7 @@
     },
     {
       "name": "firestarter_payment_method",
-      "description": "Check the buyer's payment method status and get a link to add or update their card. IMPORTANT — the card is the LAST step of a purchase, NOT a precondition: run firestarter_execute first and let the buyer see the shipping estimate and pick a delivery speed (shipping_option_index) BEFORE any card is collected. A card is only genuinely needed once an order is parked at awaiting_payment_method (after approval), or when the buyer explicitly asks to add one now. Do NOT collect a card up front just to browse, quote, or compare shipping — none of those need one. Use this tool when the buyer asks about payment or an order is waiting on a card. Returns a no-login Stripe setup link (works from any channel - WhatsApp, Slack, Telegram) plus a dashboard link.",
+      "description": "Check the buyer's payment method status and get a link to add or update their card. IMPORTANT \u2014 the card is the LAST step of a purchase, NOT a precondition: run firestarter_execute first and let the buyer see the shipping estimate and pick a delivery speed (shipping_option_index) BEFORE any card is collected. A card is only genuinely needed once an order is parked at awaiting_payment_method (after approval), or when the buyer explicitly asks to add one now. Do NOT collect a card up front just to browse, quote, or compare shipping \u2014 none of those need one. Use this tool when the buyer asks about payment or an order is waiting on a card. Returns a no-login Stripe setup link (works from any channel - WhatsApp, Slack, Telegram) plus a dashboard link.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -354,7 +361,7 @@
     },
     {
       "name": "firestarter_cancel",
-      "description": "Cancel an active execution. A not-yet-captured authorization hold is voided; an already-captured payment is refunded. An order that has already shipped can't be cancelled — use firestarter_return instead.",
+      "description": "Cancel an active execution. A not-yet-captured authorization hold is voided; an already-captured payment is refunded. An order that has already shipped can't be cancelled \u2014 use firestarter_return instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -374,13 +381,13 @@
     },
     {
       "name": "firestarter_shipping_options",
-      "description": "Show and compare the delivery speeds for an order awaiting approval, and preview the re-priced total for a chosen speed — before paying. Returns the numbered 'Delivery options' menu (Standard / Express / Same-Day, each with its price, ETA, and all-in total); the buyer picks one and you place the order by calling firestarter_approve with shipping_option_index set to that [number]. Use this when the buyer asks about delivery speed/cost, wants it faster, or you want to show the trade-off before they approve — otherwise firestarter_execute already lists these inline and approving without a pick uses the cheapest rate. Pass refresh:true to re-fetch live carrier rates (e.g. if the quote is stale), and select_index to preview one speed's new total. For a listing the buyer hasn't started buying yet (no execution), use firestarter_shipping_estimate instead.",
+      "description": "Show and compare the delivery speeds for an order awaiting approval, and preview the re-priced total for a chosen speed \u2014 before paying. Returns the numbered 'Delivery options' menu (Standard / Express / Same-Day, each with its price, ETA, and all-in total); the buyer picks one and you place the order by calling firestarter_approve with shipping_option_index set to that [number]. Use this when the buyer asks about delivery speed/cost, wants it faster, or you want to show the trade-off before they approve \u2014 otherwise firestarter_execute already lists these inline and approving without a pick uses the cheapest rate. Pass refresh:true to re-fetch live carrier rates (e.g. if the quote is stale), and select_index to preview one speed's new total. For a listing the buyer hasn't started buying yet (no execution), use firestarter_shipping_estimate instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "execution_id": {
             "type": "string",
-            "description": "The execution ID (exec_...) to show delivery options for — an order that is awaiting approval."
+            "description": "The execution ID (exec_...) to show delivery options for \u2014 an order that is awaiting approval."
           },
           "option_id": {
             "type": "string",
@@ -389,7 +396,7 @@
           "select_index": {
             "type": "integer",
             "minimum": 0,
-            "description": "Preview a specific delivery speed: the [number] from the menu. Shows that speed's new all-in total and the exact shipping_option_index to approve with. Does NOT select or pay — it's a preview."
+            "description": "Preview a specific delivery speed: the [number] from the menu. Shows that speed's new all-in total and the exact shipping_option_index to approve with. Does NOT select or pay \u2014 it's a preview."
           },
           "refresh": {
             "type": "boolean",
@@ -403,7 +410,7 @@
     },
     {
       "name": "firestarter_shipping_estimate",
-      "description": "Estimate shipping for a listing BEFORE starting a purchase — read-only: no execution is created, no approval, nothing is bought. Given a listing id (lst_...) and a destination — a saved address_id, or just a country + ZIP (or city); a full street address is NOT needed — returns the rated delivery options (price, ETA, carrier when known) the buyer would see at checkout. Use it to answer \"how much is shipping?\" or \"can this ship to me?\" while the buyer is still browsing, e.g. from firestarter_preview / firestarter_catalog_search results or a firestarter.network/l/<id> share link. The rows are informational, NOT a menu to approve from: to actually buy at a speed, run firestarter_execute with the listing_id and pick the speed at approval via shipping_option_index (or firestarter_shipping_options once the order exists). Street-less destinations may get estimate tiers; exact carrier rates are re-quoted at approval.",
+      "description": "Estimate shipping for a listing BEFORE starting a purchase \u2014 read-only: no execution is created, no approval, nothing is bought. Given a listing id (lst_...) and a destination \u2014 a saved address_id, or just a country + ZIP (or city); a full street address is NOT needed \u2014 returns the rated delivery options (price, ETA, carrier when known) the buyer would see at checkout. Use it to answer \"how much is shipping?\" or \"can this ship to me?\" while the buyer is still browsing, e.g. from firestarter_preview / firestarter_catalog_search results or a firestarter.network/l/<id> share link. The rows are informational, NOT a menu to approve from: to actually buy at a speed, run firestarter_execute with the listing_id and pick the speed at approval via shipping_option_index (or firestarter_shipping_options once the order exists). Street-less destinations may get estimate tiers; exact carrier rates are re-quoted at approval.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -413,19 +420,19 @@
           },
           "address_id": {
             "type": "string",
-            "description": "A saved buyer address id (addr_..., from firestarter_addresses) to estimate delivery to. Prefer this when the buyer has one on file — no need to ask where they live."
+            "description": "A saved buyer address id (addr_..., from firestarter_addresses) to estimate delivery to. Prefer this when the buyer has one on file \u2014 no need to ask where they live."
           },
           "country": {
             "type": "string",
-            "description": "Destination country — ISO code or common name (e.g. 'US', 'Thailand'). Pair it with zip or city; used only when address_id is not passed."
+            "description": "Destination country \u2014 ISO code or common name (e.g. 'US', 'Thailand'). Pair it with zip or city; used only when address_id is not passed."
           },
           "zip": {
             "type": "string",
-            "description": "Destination ZIP/postal code. Country + ZIP is enough for a real estimate — no street needed."
+            "description": "Destination ZIP/postal code. Country + ZIP is enough for a real estimate \u2014 no street needed."
           },
           "city": {
             "type": "string",
-            "description": "Destination city — an alternative locality when the buyer has no ZIP handy."
+            "description": "Destination city \u2014 an alternative locality when the buyer has no ZIP handy."
           }
         },
         "required": [
@@ -435,7 +442,7 @@
     },
     {
       "name": "firestarter_track_order",
-      "description": "Track a shipped order's delivery status. Returns carrier, tracking number, estimated delivery, and current location/events. Use when a buyer asks 'where's my order?' or 'when will it arrive?'. Only works after an order has been paid and shipped — for unpaid/unshipped orders, use firestarter_status instead.",
+      "description": "Track a shipped order's delivery status. Returns carrier, tracking number, estimated delivery, and current location/events. Use when a buyer asks 'where's my order?' or 'when will it arrive?'. Only works after an order has been paid and shipped \u2014 for unpaid/unshipped orders, use firestarter_status instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -471,7 +478,7 @@
     },
     {
       "name": "firestarter_receipt",
-      "description": "Get the payment receipt for an order the buyer has already paid for (after firestarter_approve completed). Returns an itemized breakdown — item, subtotal, shipping, tax, total — plus payment method and date, suitable for expense or invoice records. Use whenever the buyer asks for a receipt, invoice, proof of payment, or expense documentation. If the order hasn't been paid yet, there's no receipt: check firestarter_status instead. For delivery progress use firestarter_track_order; to send the item back use firestarter_return.",
+      "description": "Get the payment receipt for an order the buyer has already paid for (after firestarter_approve completed). Returns an itemized breakdown \u2014 item, subtotal, shipping, tax, total \u2014 plus payment method and date, suitable for expense or invoice records. Use whenever the buyer asks for a receipt, invoice, proof of payment, or expense documentation. If the order hasn't been paid yet, there's no receipt: check firestarter_status instead. For delivery progress use firestarter_track_order; to send the item back use firestarter_return.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -518,7 +525,7 @@
           },
           "query": {
             "type": "string",
-            "description": "What to watch — natural language (e.g. 'AirPods Pro 2 under $200')"
+            "description": "What to watch \u2014 natural language (e.g. 'AirPods Pro 2 under $200')"
           },
           "schedule": {
             "type": "string",
@@ -563,7 +570,7 @@
     },
     {
       "name": "firestarter_record_purchase",
-      "description": "Record a purchase completed OUTSIDE the network — e.g. after driving checkout on Lazada, a Shopify storefront, or any other store — so Firestarter keeps one purchase history across every marketplace and can reorder the item later. Call this right after an off-network checkout succeeds, with whatever details are visible on the confirmation page. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+      "description": "Record a purchase completed OUTSIDE the network \u2014 e.g. after driving checkout on Lazada, a Shopify storefront, or any other store \u2014 so Firestarter keeps one purchase history across every marketplace and can reorder the item later. Call this right after an off-network checkout succeeds, with whatever details are visible on the confirmation page. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -589,11 +596,11 @@
           },
           "seller_domain": {
             "type": "string",
-            "description": "Seller's domain (e.g. \"watsons.com.my\") — powers later reorders and seller discovery"
+            "description": "Seller's domain (e.g. \"watsons.com.my\") \u2014 powers later reorders and seller discovery"
           },
           "product_url": {
             "type": "string",
-            "description": "Direct product page URL — reorders reopen this"
+            "description": "Direct product page URL \u2014 reorders reopen this"
           },
           "image_url": {
             "type": "string",
@@ -621,7 +628,7 @@
     },
     {
       "name": "firestarter_purchases",
-      "description": "The buyer's cross-marketplace purchase history: everything recorded with firestarter_record_purchase, from any store, in one list — with the product URL and seller so an item can be reordered without re-searching. Use it to answer \"what did I buy\", find a past item's link/price, or start a reorder. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+      "description": "The buyer's cross-marketplace purchase history: everything recorded with firestarter_record_purchase, from any store, in one list \u2014 with the product URL and seller so an item can be reordered without re-searching. Use it to answer \"what did I buy\", find a past item's link/price, or start a reorder. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -723,7 +730,7 @@
           },
           "country": {
             "type": "string",
-            "description": "Optional. ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'US'. Pass it if the seller has already mentioned where they are — it is required later for Stripe payouts and recording it now saves an extra round-trip. Never invent one: omit it rather than guessing from language or timezone, because Stripe locks it permanently at account creation."
+            "description": "Optional. ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'US'. Pass it if the seller has already mentioned where they are \u2014 it is required later for Stripe payouts and recording it now saves an extra round-trip. Never invent one: omit it rather than guessing from language or timezone, because Stripe locks it permanently at account creation."
           }
         },
         "required": [
@@ -733,7 +740,7 @@
     },
     {
       "name": "firestarter_list",
-      "description": "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults — do NOT interrogate the seller for category, inventory, shipping, or ship-from. Create the listing immediately with what you have, then tell them what defaulted and how to refine it. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — offer these as refinements, don't demand them up front. If the seller already sent a photo in the conversation, reuse that URL in image_urls — never ask them to re-send it. The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
+      "description": "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults \u2014 do NOT interrogate the seller for category, inventory, shipping, or ship-from. Create the listing immediately with what you have, then tell them what defaulted and how to refine it. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants \u2014 offer these as refinements, don't demand them up front. If the seller already sent a photo in the conversation, reuse that URL in image_urls \u2014 never ask them to re-send it. The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -747,7 +754,7 @@
           },
           "category": {
             "type": "string",
-            "description": "Optional. Product category (e.g. 'electronics/audio/earbuds'). Infer a reasonable one from the product name if obvious; otherwise omit — don't ask."
+            "description": "Optional. Product category (e.g. 'electronics/audio/earbuds'). Infer a reasonable one from the product name if obvious; otherwise omit \u2014 don't ask."
           },
           "floor_price": {
             "type": "number",
@@ -763,7 +770,7 @@
           },
           "inventory_qty": {
             "type": "number",
-            "description": "Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."
+            "description": "Optional. Available quantity. Omit for unlimited \u2014 don't ask the seller unless they mention stock limits."
           },
           "image_urls": {
             "type": "array",
@@ -771,7 +778,7 @@
           },
           "shipping": {
             "type": "number",
-            "description": "Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."
+            "description": "Deprecated and ignored \u2014 shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."
           },
           "street1": {
             "type": "string"
@@ -800,7 +807,7 @@
     },
     {
       "name": "firestarter_bulk_list",
-      "description": "Create MANY products at once — for migrating an existing catalog (e.g. from a CSV or spreadsheet the seller pasted/described). Each product needs product_name and base_price at minimum; everything firestarter_list accepts per-item is accepted here too (brand, condition, sku, variants, etc.). Up to 100 products per call — for more, call this tool again with the next batch. One bad item never blocks the others: the response reports exactly which products were created and which failed, with why. For a SINGLE product, use firestarter_list instead — it has richer per-listing guidance in its response.",
+      "description": "Create MANY products at once \u2014 for migrating an existing catalog (e.g. from a CSV or spreadsheet the seller pasted/described). Each product needs product_name and base_price at minimum; everything firestarter_list accepts per-item is accepted here too (brand, condition, sku, variants, etc.). Up to 100 products per call \u2014 for more, call this tool again with the next batch. One bad item never blocks the others: the response reports exactly which products were created and which failed, with why. For a SINGLE product, use firestarter_list instead \u2014 it has richer per-listing guidance in its response.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1037,7 +1044,7 @@
     },
     {
       "name": "firestarter_payouts",
-      "description": "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Do NOT assume a seller's country is ineligible for Stripe — pass their real country and let Stripe answer; suggest PayPal when Stripe declines it, or when the seller prefers it.",
+      "description": "Manage seller payout method \u2014 REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Do NOT assume a seller's country is ineligible for Stripe \u2014 pass their real country and let Stripe answer; suggest PayPal when Stripe declines it, or when the seller prefers it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1053,7 +1060,7 @@
           },
           "country": {
             "type": "string",
-            "description": "ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'SG', 'US'. REQUIRED for provider='stripe' unless the seller recorded one at registration: the API refuses to guess, because Stripe locks the country permanently at account creation and a wrong one can only be fixed by discarding the account. If Stripe does not support it you get a clear 422 naming the country — do not pre-filter on the seller's behalf. Irrelevant for PayPal."
+            "description": "ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'SG', 'US'. REQUIRED for provider='stripe' unless the seller recorded one at registration: the API refuses to guess, because Stripe locks the country permanently at account creation and a wrong one can only be fixed by discarding the account. If Stripe does not support it you get a clear 422 naming the country \u2014 do not pre-filter on the seller's behalf. Irrelevant for PayPal."
           },
           "paypal_email": {
             "type": "string",
@@ -1072,13 +1079,13 @@
     },
     {
       "name": "firestarter_connect_shopify",
-      "description": "Connect a seller's Shopify store to Firestarter — step 1 of the Shopify flow: connect_shopify → (catalog syncs automatically) → firestarter_listings to see imported products → firestarter_sync_shopify to refresh after store edits → orders arrive via firestarter_seller_orders → firestarter_ship_order. Call with NO arguments first: if a store is already connected it returns the connection status, store name, and last sync time (and you're done); if not, it tells you to ask for the store handle. Once you have the handle, call again with shop_handle to mint a one-click install link — the seller clicks it, approves on Shopify, and their whole catalog syncs into Firestarter automatically (no tokens to paste). Use this whenever a seller mentions Shopify, wants to connect/link their store, or asks why their products aren't showing up. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain). To force a fresh catalog pull on an already-connected store, use firestarter_sync_shopify instead.",
+      "description": "Connect a seller's Shopify store to Firestarter \u2014 step 1 of the Shopify flow: connect_shopify \u2192 (catalog syncs automatically) \u2192 firestarter_listings to see imported products \u2192 firestarter_sync_shopify to refresh after store edits \u2192 orders arrive via firestarter_seller_orders \u2192 firestarter_ship_order. Call with NO arguments first: if a store is already connected it returns the connection status, store name, and last sync time (and you're done); if not, it tells you to ask for the store handle. Once you have the handle, call again with shop_handle to mint a one-click install link \u2014 the seller clicks it, approves on Shopify, and their whole catalog syncs into Firestarter automatically (no tokens to paste). Use this whenever a seller mentions Shopify, wants to connect/link their store, or asks why their products aren't showing up. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain). To force a fresh catalog pull on an already-connected store, use firestarter_sync_shopify instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "shop_handle": {
             "type": "string",
-            "description": "Optional. The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit on the first call to check existing connection status — only needed when no store is connected yet. Accepts the bare handle or the full myshopify.com domain (it's normalized). If the seller doesn't know it, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."
+            "description": "Optional. The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit on the first call to check existing connection status \u2014 only needed when no store is connected yet. Accepts the bare handle or the full myshopify.com domain (it's normalized). If the seller doesn't know it, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."
           }
         },
         "required": []
@@ -1092,7 +1099,7 @@
         "properties": {
           "access_token": {
             "type": "string",
-            "description": "The seller's TikTok Shop access token (from TikTok Shop Partner Center authorization). Omit to check status or get instructions. This is a secret — never echo it back."
+            "description": "The seller's TikTok Shop access token (from TikTok Shop Partner Center authorization). Omit to check status or get instructions. This is a secret \u2014 never echo it back."
           },
           "shop_domain": {
             "type": "string",
@@ -1120,19 +1127,19 @@
           },
           "access_token": {
             "type": "string",
-            "description": "Required for bigcommerce/shopee/lazada/wix. Not used for woocommerce — use consumer_key/consumer_secret instead."
+            "description": "Required for bigcommerce/shopee/lazada/wix. Not used for woocommerce \u2014 use consumer_key/consumer_secret instead."
           },
           "shop_domain": {
             "type": "string",
-            "description": "Store identifier: BigCommerce store hash, Shopee/Lazada shop id, Wix account id, or — for WooCommerce — your store's domain WITHOUT `https://` (e.g. `mystore.com`)."
+            "description": "Store identifier: BigCommerce store hash, Shopee/Lazada shop id, Wix account id, or \u2014 for WooCommerce \u2014 your store's domain WITHOUT `https://` (e.g. `mystore.com`)."
           },
           "consumer_key": {
             "type": "string",
-            "description": "WooCommerce only — from WooCommerce > Settings > Advanced > REST API."
+            "description": "WooCommerce only \u2014 from WooCommerce > Settings > Advanced > REST API."
           },
           "consumer_secret": {
             "type": "string",
-            "description": "WooCommerce only — paired with consumer_key."
+            "description": "WooCommerce only \u2014 paired with consumer_key."
           }
         },
         "required": [
@@ -1142,13 +1149,13 @@
     },
     {
       "name": "firestarter_sync_shopify",
-      "description": "Re-sync a connected store's catalog into Firestarter — pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter. Use this AFTER firestarter_connect_shopify, whenever the seller says they added/edited/removed products, prices look stale, a previous sync errored, or items aren't appearing. The store must already be connected (run firestarter_connect_shopify first if not). Syncing runs in the background and returns immediately — tell the seller it may take a moment, then confirm results with firestarter_listings. Read-mostly: it imports/updates Firestarter listings from the store but never changes the seller's Shopify store. By default it syncs the seller's connected Shopify store; pass connection_id to target a specific connection when several platforms are linked.",
+      "description": "Re-sync a connected store's catalog into Firestarter \u2014 pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter. Use this AFTER firestarter_connect_shopify, whenever the seller says they added/edited/removed products, prices look stale, a previous sync errored, or items aren't appearing. The store must already be connected (run firestarter_connect_shopify first if not). Syncing runs in the background and returns immediately \u2014 tell the seller it may take a moment, then confirm results with firestarter_listings. Read-mostly: it imports/updates Firestarter listings from the store but never changes the seller's Shopify store. By default it syncs the seller's connected Shopify store; pass connection_id to target a specific connection when several platforms are linked.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "connection_id": {
             "type": "string",
-            "description": "Optional. The platform connection id (conn_...) to re-sync. Omit to sync the seller's Shopify store automatically — only needed to disambiguate when the seller has connected more than one platform."
+            "description": "Optional. The platform connection id (conn_...) to re-sync. Omit to sync the seller's Shopify store automatically \u2014 only needed to disambiguate when the seller has connected more than one platform."
           }
         },
         "required": []
@@ -1156,13 +1163,13 @@
     },
     {
       "name": "firestarter_catalog_search",
-      "description": "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
+      "description": "Search the Firestarter NETWORK catalog \u2014 products listed for sale by ALL sellers \u2014 without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag \u2014 buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it \u2014 narrow the query or raise `limit`. Read-only: never charges or changes anything.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "query": {
             "type": "string",
-            "description": "Free-text product search of product name, description, and category — use real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Do NOT put prices in the query ('under $50' belongs in max_price, not here) and omit filler words like 'cheap' or 'best'; price phrases that do slip in are auto-extracted into the price filters."
+            "description": "Free-text product search of product name, description, and category \u2014 use real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Do NOT put prices in the query ('under $50' belongs in max_price, not here) and omit filler words like 'cheap' or 'best'; price phrases that do slip in are auto-extracted into the price filters."
           },
           "category": {
             "type": "string",
@@ -1226,7 +1233,7 @@
     },
     {
       "name": "firestarter_create_voucher",
-      "description": "Create a voucher (also called a coupon, promo code, or discount code) that buyers can apply to your listings. Requires a SELLER account with at least one listing — a community-market owner who only recommends other sellers' products has nothing of their own to discount and should reward members with tiered access (firestarter_set_market_tiers) instead. Supports percentage off, a fixed amount off, or free shipping, with an optional start/end date, usage cap, per-buyer limit, minimum order value, and scoping to a single listing. YOU FUND THE DISCOUNT: it comes out of your proceeds, and the platform fee is charged on the discounted total. Dates accept natural language — 'next Friday', 'in 2 weeks' — as well as ISO dates. A discount above 50% requires confirm_deep_discount, so confirm the number with the seller before re-sending. If the voucher would leave the seller's cheapest orders below the payable minimum the call is rejected with an explanation rather than creating something whose orders would fail at payment.",
+      "description": "Create a voucher (also called a coupon, promo code, or discount code) that buyers can apply to your listings. Requires a SELLER account with at least one listing \u2014 a community-market owner who only recommends other sellers' products has nothing of their own to discount and should reward members with tiered access (firestarter_set_market_tiers) instead. Supports percentage off, a fixed amount off, or free shipping, with an optional start/end date, usage cap, per-buyer limit, minimum order value, and scoping to a single listing. YOU FUND THE DISCOUNT: it comes out of your proceeds, and the platform fee is charged on the discounted total. Dates accept natural language \u2014 'next Friday', 'in 2 weeks' \u2014 as well as ISO dates. A discount above 50% requires confirm_deep_discount, so confirm the number with the seller before re-sending. If the voucher would leave the seller's cheapest orders below the payable minimum the call is rejected with an explanation rather than creating something whose orders would fail at payment.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1295,7 +1302,7 @@
     },
     {
       "name": "firestarter_update_voucher",
-      "description": "Pause, resume, extend, or adjust the limits on an existing voucher. Pausing (active=false) stops it being redeemed without deleting it, so its history is kept. The code and the discount VALUE cannot be changed — buyers may already hold the code, and repricing an offer someone was given is a different voucher, so pause this one and create another instead.",
+      "description": "Pause, resume, extend, or adjust the limits on an existing voucher. Pausing (active=false) stops it being redeemed without deleting it, so its history is kept. The code and the discount VALUE cannot be changed \u2014 buyers may already hold the code, and repricing an offer someone was given is a different voucher, so pause this one and create another instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1361,7 +1368,7 @@
           },
           "shipping": {
             "type": "number",
-            "description": "Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination. Accepted for backward compatibility only."
+            "description": "Deprecated and ignored \u2014 shipping is always estimated live from a delivery service provider based on the buyer's destination. Accepted for backward compatibility only."
           }
         },
         "required": [
@@ -1371,7 +1378,7 @@
     },
     {
       "name": "firestarter_update_listing",
-      "description": "Update a listing's product details — name, description, category, inventory, status, brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, or variants. Use this to rename a product, change its description, update stock levels, pause/reactivate a listing, or fill in/correct any of those detail fields. Also activates imported drafts (status 'active') - drafts need a positive price and at least one photo. High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code to relay, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
+      "description": "Update a listing's product details \u2014 name, description, category, inventory, status, brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, or variants. Use this to rename a product, change its description, update stock levels, pause/reactivate a listing, or fill in/correct any of those detail fields. Also activates imported drafts (status 'active') - drafts need a positive price and at least one photo. High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code to relay, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1411,7 +1418,7 @@
     },
     {
       "name": "firestarter_set_shipping_policy",
-      "description": "Set where a seller is willing to ship a listing. Use this when a buyer wants delivery to a country the listing does not yet cover (a checkout came back 'seller not shipping to that destination') and the seller agrees to ship there — or whenever the seller wants to change their shipping reach. mode 'domestic' = ship-from country only (the default); mode 'list' = the home country plus the countries you name (ISO alpha-2, e.g. ['CA','GB','AU']); mode 'worldwide' = everywhere except any you exclude. Sanctioned/embargoed destinations stay blocked regardless. Sets the policy for one listing — pass its ID.",
+      "description": "Set where a seller is willing to ship a listing. Use this when a buyer wants delivery to a country the listing does not yet cover (a checkout came back 'seller not shipping to that destination') and the seller agrees to ship there \u2014 or whenever the seller wants to change their shipping reach. mode 'domestic' = ship-from country only (the default); mode 'list' = the home country plus the countries you name (ISO alpha-2, e.g. ['CA','GB','AU']); mode 'worldwide' = everywhere except any you exclude. Sanctioned/embargoed destinations stay blocked regardless. Sets the policy for one listing \u2014 pass its ID.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1440,7 +1447,7 @@
     },
     {
       "name": "firestarter_ship_from_locations",
-      "description": "List the seller's ship-from (fulfillment) locations. The PRIMARY location is the origin every shipping quote is rated from — if buyers see wrong shipping prices or 'can't ship there', check this first. Use firestarter_save_ship_from to add/correct one and firestarter_delete_ship_from to remove one. Seller accounts only.",
+      "description": "List the seller's ship-from (fulfillment) locations. The PRIMARY location is the origin every shipping quote is rated from \u2014 if buyers see wrong shipping prices or 'can't ship there', check this first. Use firestarter_save_ship_from to add/correct one and firestarter_delete_ship_from to remove one. Seller accounts only.",
       "inputSchema": {
         "type": "object",
         "properties": {}
@@ -1448,7 +1455,7 @@
     },
     {
       "name": "firestarter_save_ship_from",
-      "description": "Add or update a seller ship-from (fulfillment) location — the address shipping rates are quoted FROM. Three forms: (1) no location_id → create (street1 + city required; state/zip also required for US/CA/AU origins); (2) location_id + address fields → update that location; (3) location_id + is_primary true and NO address fields → just make it the primary. Set is_primary on the address parcels actually dispatch from — the primary drives every quote's origin. Seller accounts only.",
+      "description": "Add or update a seller ship-from (fulfillment) location \u2014 the address shipping rates are quoted FROM. Three forms: (1) no location_id \u2192 create (street1 + city required; state/zip also required for US/CA/AU origins); (2) location_id + address fields \u2192 update that location; (3) location_id + is_primary true and NO address fields \u2192 just make it the primary. Set is_primary on the address parcels actually dispatch from \u2014 the primary drives every quote's origin. Seller accounts only.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1470,11 +1477,11 @@
           },
           "state": {
             "type": "string",
-            "description": "State/province — required for US/CA/AU origins"
+            "description": "State/province \u2014 required for US/CA/AU origins"
           },
           "zip": {
             "type": "string",
-            "description": "Postal/ZIP — required for US/CA/AU origins"
+            "description": "Postal/ZIP \u2014 required for US/CA/AU origins"
           },
           "country": {
             "type": "string",
@@ -1497,7 +1504,7 @@
     },
     {
       "name": "firestarter_delete_ship_from",
-      "description": "Delete a seller ship-from (fulfillment) location by id (floc_..., from firestarter_ship_from_locations). If you delete the primary, add or promote another with firestarter_save_ship_from — otherwise quotes fall back to the platform origin. Seller accounts only.",
+      "description": "Delete a seller ship-from (fulfillment) location by id (floc_..., from firestarter_ship_from_locations). If you delete the primary, add or promote another with firestarter_save_ship_from \u2014 otherwise quotes fall back to the platform origin. Seller accounts only.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1534,7 +1541,7 @@
     },
     {
       "name": "firestarter_delist",
-      "description": "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting — this takes the product off the market immediately.",
+      "description": "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting \u2014 this takes the product off the market immediately.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1550,7 +1557,7 @@
     },
     {
       "name": "firestarter_seller_orders",
-      "description": "View the seller's incoming orders — product, quantity, amount, net payout, order status, payout status, and carrier tracking when shipped. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
+      "description": "View the seller's incoming orders \u2014 product, quantity, amount, net payout, order status, payout status, and carrier tracking when shipped. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) \u2192 firestarter_confirm_order (accept a pending order) \u2192 firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -1559,7 +1566,7 @@
     },
     {
       "name": "firestarter_confirm_order",
-      "description": "Accept a pending incoming order — step 2 of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). Use when a seller wants to accept/confirm an order a buyer placed. Confirming notifies the buyer that the order is accepted and is the gate before shipping. Pass the order_id exactly as shown by firestarter_seller_orders (the order_id field, NOT the exec_... execution id). Only orders still in 'pending' can be confirmed — an order that's already confirmed or shipped doesn't need this; go straight to firestarter_ship_order.",
+      "description": "Accept a pending incoming order \u2014 step 2 of the seller fulfillment flow (firestarter_seller_orders \u2192 firestarter_confirm_order \u2192 firestarter_ship_order). Use when a seller wants to accept/confirm an order a buyer placed. Confirming notifies the buyer that the order is accepted and is the gate before shipping. Pass the order_id exactly as shown by firestarter_seller_orders (the order_id field, NOT the exec_... execution id). Only orders still in 'pending' can be confirmed \u2014 an order that's already confirmed or shipped doesn't need this; go straight to firestarter_ship_order.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1575,7 +1582,7 @@
     },
     {
       "name": "firestarter_ship_order",
-      "description": "Mark an order shipped by attaching a carrier and tracking number — the final step of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required; carrier is optional and defaults to USPS. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
+      "description": "Mark an order shipped by attaching a carrier and tracking number \u2014 the final step of the seller fulfillment flow (firestarter_seller_orders \u2192 firestarter_confirm_order \u2192 firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required; carrier is optional and defaults to USPS. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1589,7 +1596,7 @@
           },
           "carrier": {
             "type": "string",
-            "description": "Optional. Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL'). Defaults to USPS when omitted — don't ask the seller unless they used a non-USPS carrier."
+            "description": "Optional. Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL'). Defaults to USPS when omitted \u2014 don't ask the seller unless they used a non-USPS carrier."
           }
         },
         "required": [
@@ -1609,7 +1616,7 @@
     },
     {
       "name": "firestarter_seller_disputes",
-      "description": "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
+      "description": "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT \u2014 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong \u2014 use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1644,7 +1651,7 @@
     },
     {
       "name": "firestarter_disputes",
-      "description": "For BUYERS: open, check, and resolve disputes on orders the user BOUGHT. Use this whenever a buyer asks 'is there a dispute on my order?', wants to open a dispute (item never arrived, arrived damaged / wrong / not as described), or needs to respond to one — post a note or photo, accept / reject / counter the seller's partial-refund offer, withdraw, or escalate to Firestarter. Call with NO arguments to list the buyer's disputes; pass an order's execution_id (exec_…) to check whether THAT order has a dispute; pass a dispute_id (disp_…) to see the full thread. This is the BUYER side — for disputes on orders the user is SELLING, use firestarter_seller_disputes instead.",
+      "description": "For BUYERS: open, check, and resolve disputes on orders the user BOUGHT. Use this whenever a buyer asks 'is there a dispute on my order?', wants to open a dispute (item never arrived, arrived damaged / wrong / not as described), or needs to respond to one \u2014 post a note or photo, accept / reject / counter the seller's partial-refund offer, withdraw, or escalate to Firestarter. Call with NO arguments to list the buyer's disputes; pass an order's execution_id (exec_\u2026) to check whether THAT order has a dispute; pass a dispute_id (disp_\u2026) to see the full thread. This is the BUYER side \u2014 for disputes on orders the user is SELLING, use firestarter_seller_disputes instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1659,15 +1666,15 @@
               "withdraw",
               "escalate"
             ],
-            "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
+            "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional \u2014 defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
           },
           "execution_id": {
             "type": "string",
-            "description": "Order / execution id (exec_…). Required for 'open'. With no action, pass this to check whether a specific order has a dispute. May also stand in for dispute_id on actions — the dispute on that order is looked up."
+            "description": "Order / execution id (exec_\u2026). Required for 'open'. With no action, pass this to check whether a specific order has a dispute. May also stand in for dispute_id on actions \u2014 the dispute on that order is looked up."
           },
           "dispute_id": {
             "type": "string",
-            "description": "Dispute id (disp_…). Identifies which dispute to view or act on for message / accept / reject / counter / withdraw / escalate."
+            "description": "Dispute id (disp_\u2026). Identifies which dispute to view or act on for message / accept / reject / counter / withdraw / escalate."
           },
           "reason": {
             "type": "string",
@@ -1691,7 +1698,7 @@
           },
           "image_base64": {
             "type": "string",
-            "description": "For 'message': an optional evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). It is uploaded and attached to the message."
+            "description": "For 'message': an optional evidence photo as a base64 data-URI ('data:image/jpeg;base64,\u2026'). It is uploaded and attached to the message."
           },
           "offer_id": {
             "type": "string",
@@ -1757,7 +1764,17 @@
       "description": "Read the buyer's monthly spend cap - the safety limit on total monthly spend - and the alert threshold at which a warning fires. Read-only: use firestarter_set_spend_cap to raise, lower, set, or remove the cap (including after a purchase is rejected with SPEND_CAP_EXCEEDED).",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "spend_cap_dollars": {
+            "description": "IGNORED here - this tool only reads. Use firestarter_set_spend_cap."
+          },
+          "alert_threshold_pct": {
+            "description": "IGNORED here - this tool only reads. Use firestarter_set_spend_cap."
+          },
+          "disable": {
+            "description": "IGNORED here - this tool only reads. Use firestarter_set_spend_cap."
+          }
+        }
       }
     },
     {
@@ -1783,7 +1800,7 @@
     },
     {
       "name": "firestarter_create_market",
-      "description": "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use this WHENEVER a user asks to create, set up, or start a community market, affiliate program, or 'store for my audience' (e.g. Discord/Telegram/X following) — call this tool directly; do NOT route them through seller onboarding or ask about their country. Creating a market does NOT require being a Firestarter seller, connecting Stripe, or living in a payout-supported country — it works from ANY country, including ones where seller payouts aren't yet available. (A payout method is only needed LATER to withdraw accrued earnings, and can be connected any time.) Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Optionally claim a `handle` now for a memorable community URL (firestarter.network/m/<handle>); you can also set or change it later with firestarter_set_market_handle. Then call firestarter_market_link to get a share code for the community.",
+      "description": "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use this WHENEVER a user asks to create, set up, or start a community market, affiliate program, or 'store for my audience' (e.g. Discord/Telegram/X following) \u2014 call this tool directly; do NOT route them through seller onboarding or ask about their country. Creating a market does NOT require being a Firestarter seller, connecting Stripe, or living in a payout-supported country \u2014 it works from ANY country, including ones where seller payouts aren't yet available. (A payout method is only needed LATER to withdraw accrued earnings, and can be connected any time.) Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Optionally claim a `handle` now for a memorable community URL (firestarter.network/m/<handle>); you can also set or change it later with firestarter_set_market_handle. Then call firestarter_market_link to get a share code for the community.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1812,7 +1829,7 @@
           "handle": {
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{1,30}$",
-            "description": "Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase), so 'Analog' and 'analog' are the same handle. Must be unique; the API rejects handles that are reserved or shaped like a share code. If it's taken the whole create fails, so retry with a different handle (or omit it and claim one later with firestarter_set_market_handle)."
+            "description": "Optional vanity handle for the community URL \u2014 firestarter.network/m/<handle> instead of a random share code. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase), so 'Analog' and 'analog' are the same handle. Must be unique; the API rejects handles that are reserved or shaped like a share code. If it's taken the whole create fails, so retry with a different handle (or omit it and claim one later with firestarter_set_market_handle)."
           }
         },
         "required": [
@@ -1822,7 +1839,7 @@
     },
     {
       "name": "firestarter_market_link",
-      "description": "Mint a shareable join code for a market you own (from firestarter_create_market). Give the code to your community — when a member redeems it (firestarter_join_market) they are attributed to your program so you earn on their activity. Optionally tag a channel/campaign for tracking.",
+      "description": "Mint a shareable join code for a market you own (from firestarter_create_market). Give the code to your community \u2014 when a member redeems it (firestarter_join_market) they are attributed to your program so you earn on their activity. Optionally tag a channel/campaign for tracking.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1857,7 +1874,7 @@
           "handle": {
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{1,30}$",
-            "description": "Vanity handle for the community URL — firestarter.network/m/<handle>. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase). Must be unique; reserved words and share-code-shaped strings are rejected."
+            "description": "Vanity handle for the community URL \u2014 firestarter.network/m/<handle>. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase). Must be unique; reserved words and share-code-shaped strings are rejected."
           }
         },
         "required": [
@@ -1914,7 +1931,7 @@
     },
     {
       "name": "firestarter_set_market_tiers",
-      "description": "Configure member tiers for a community market you own. Tiers reward members with ACCESS, never money or discounts — a higher tier sees picks you've staged early (firestarter_set_market_picks with min_tier). A member's tier is derived from their qualifying orders in your community over the last 12 months; nothing is stored per member, so there is no balance to top up and nothing expires. Every market already has working defaults (Member 0 / Regular 2 / Insider 5) — only call this to rename rungs, change how many orders each needs, add a 4th rung, or switch tiers off. Raising a threshold never demotes an existing member for 30 days.",
+      "description": "Configure member tiers for a community market you own. Tiers reward members with ACCESS, never money or discounts \u2014 a higher tier sees picks you've staged early (firestarter_set_market_picks with min_tier). A member's tier is derived from their qualifying orders in your community over the last 12 months; nothing is stored per member, so there is no balance to top up and nothing expires. Every market already has working defaults (Member 0 / Regular 2 / Insider 5) \u2014 only call this to rename rungs, change how many orders each needs, add a 4th rung, or switch tiers off. Raising a threshold never demotes an existing member for 30 days.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1959,7 +1976,7 @@
     },
     {
       "name": "firestarter_create_drop",
-      "description": "Create a community-sponsored DROP on a market you own: a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). It applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Who funds it depends on whose listing it is: on YOUR OWN listing it goes live immediately with no approval needed — funded from your drop wallet if it covers the whole pot (max_claims × discount), otherwise from your own seller proceeds; on ANOTHER seller's listing it goes live now only if your drop wallet covers the pot (topped up via firestarter_fund_wallet, and the seller is made whole from it) or that seller has granted your community standing approval — otherwise it waits as a request for the seller to approve (firestarter_drop_requests). Distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
+      "description": "Create a community-sponsored DROP on a market you own: a per-claim discount on ONE listing for the first N members, optionally opening it to higher tiers first (a tier-gated early-access window). It applies at checkout when a member claims a slot (firestarter_drops action 'claim'), first-come first-served, one per member. Who funds it depends on whose listing it is: on YOUR OWN listing it goes live immediately with no approval needed \u2014 funded from your drop wallet if it covers the whole pot (max_claims \u00d7 discount), otherwise from your own seller proceeds; on ANOTHER seller's listing it goes live now only if your drop wallet covers the pot (topped up via firestarter_fund_wallet, and the seller is made whole from it) or that seller has granted your community standing approval \u2014 otherwise it waits as a request for the seller to approve (firestarter_drop_requests). Distinct from tiered ACCESS (firestarter_set_market_tiers), which never discounts. test/live follows your API key's environment.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1969,7 +1986,7 @@
           },
           "listing_id": {
             "type": "string",
-            "description": "The listing (lst_...) to discount — find one with firestarter_catalog_search. Must be a real, sellable listing."
+            "description": "The listing (lst_...) to discount \u2014 find one with firestarter_catalog_search. Must be a real, sellable listing."
           },
           "discount_cents": {
             "type": "integer",
@@ -1977,7 +1994,7 @@
           },
           "max_claims": {
             "type": "integer",
-            "description": "How many members can claim it (the 'first N') — first-come, first-served, one per member."
+            "description": "How many members can claim it (the 'first N') \u2014 first-come, first-served, one per member."
           },
           "min_tier": {
             "type": "integer",
@@ -2018,13 +2035,13 @@
     },
     {
       "name": "firestarter_cancel_drop",
-      "description": "Withdraw a drop request you created (with firestarter_create_drop) on a market you own, while it is still pending the seller's approval. Once cancelled it stops being visible to that seller and can never be approved — create a new request with firestarter_create_drop if you change your mind. This only works on still-pending requests; a drop that's already live, expired, exhausted, or already decided can't be cancelled this way.",
+      "description": "Withdraw a drop request you created (with firestarter_create_drop) on a market you own, while it is still pending the seller's approval. Once cancelled it stops being visible to that seller and can never be approved \u2014 create a new request with firestarter_create_drop if you change your mind. This only works on still-pending requests; a drop that's already live, expired, exhausted, or already decided can't be cancelled this way.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "program_id": {
             "type": "string",
-            "description": "The market/program id you own (from firestarter_my_markets) — the drop belongs to this program."
+            "description": "The market/program id you own (from firestarter_my_markets) \u2014 the drop belongs to this program."
           },
           "drop_id": {
             "type": "string",
@@ -2039,7 +2056,7 @@
     },
     {
       "name": "firestarter_drop_requests",
-      "description": "List the community-sponsored drop requests waiting on YOUR decision as a seller: a community owner has proposed a per-claim discount on one of your listings, and it stays invisible to buyers and unclaimable until you approve or reject it (or expires on its own). Shows the requesting community, the listing, the discount, how many members can claim it, and the deadline to decide. Use firestarter_approve_drop or firestarter_reject_drop with a request's drop id — or firestarter_trust_community_drops to stop reviewing this community's requests one by one.",
+      "description": "List the community-sponsored drop requests waiting on YOUR decision as a seller: a community owner has proposed a per-claim discount on one of your listings, and it stays invisible to buyers and unclaimable until you approve or reject it (or expires on its own). Shows the requesting community, the listing, the discount, how many members can claim it, and the deadline to decide. Use firestarter_approve_drop or firestarter_reject_drop with a request's drop id \u2014 or firestarter_trust_community_drops to stop reviewing this community's requests one by one.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -2048,7 +2065,7 @@
     },
     {
       "name": "firestarter_approve_drop",
-      "description": "Approve a pending community drop request on one of your listings (from firestarter_drop_requests), making it go live immediately so members can start claiming it. IMPORTANT: the per-claim discount comes out of YOUR proceeds on each claimed sale — not Firestarter's platform fee — so only approve amounts that still leave you a margin you're happy with. The requesting community is notified of the approval.",
+      "description": "Approve a pending community drop request on one of your listings (from firestarter_drop_requests), making it go live immediately so members can start claiming it. IMPORTANT: the per-claim discount comes out of YOUR proceeds on each claimed sale \u2014 not Firestarter's platform fee \u2014 so only approve amounts that still leave you a margin you're happy with. The requesting community is notified of the approval.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2064,7 +2081,7 @@
     },
     {
       "name": "firestarter_reject_drop",
-      "description": "Decline a pending community drop request on one of your listings (from firestarter_drop_requests). It never goes live, nothing is charged against your proceeds, and the requesting community owner is notified — optionally with your reason. This decides only this one request; the same community can still ask again later unless you also revoke standing trust with firestarter_untrust_community_drops.",
+      "description": "Decline a pending community drop request on one of your listings (from firestarter_drop_requests). It never goes live, nothing is charged against your proceeds, and the requesting community owner is notified \u2014 optionally with your reason. This decides only this one request; the same community can still ask again later unless you also revoke standing trust with firestarter_untrust_community_drops.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2084,13 +2101,13 @@
     },
     {
       "name": "firestarter_trust_community_drops",
-      "description": "Grant a community program standing approval to run drops on your listings: from now on, its drop requests go live immediately with no per-request review, and any of its requests you're currently sitting on get auto-approved right away. Use this once you're comfortable a community's asks are reasonable and you'd rather not approve/reject each one — you can always revoke it later with firestarter_untrust_community_drops (that only stops NEW requests from auto-approving; anything already live stays live). Every approved drop's discount still comes out of YOUR proceeds per claim, trust or no trust.",
+      "description": "Grant a community program standing approval to run drops on your listings: from now on, its drop requests go live immediately with no per-request review, and any of its requests you're currently sitting on get auto-approved right away. Use this once you're comfortable a community's asks are reasonable and you'd rather not approve/reject each one \u2014 you can always revoke it later with firestarter_untrust_community_drops (that only stops NEW requests from auto-approving; anything already live stays live). Every approved drop's discount still comes out of YOUR proceeds per claim, trust or no trust.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "program_id": {
             "type": "string",
-            "description": "The community/market program id to trust — appears on each request from firestarter_drop_requests, or shared directly by the community owner."
+            "description": "The community/market program id to trust \u2014 appears on each request from firestarter_drop_requests, or shared directly by the community owner."
           }
         },
         "required": [
@@ -2100,7 +2117,7 @@
     },
     {
       "name": "firestarter_untrust_community_drops",
-      "description": "Revoke a standing approval you granted with firestarter_trust_community_drops: this community's NEW drop requests on your listings go back to needing your manual decision via firestarter_approve_drop / firestarter_reject_drop. Anything already live from this community before the revoke keeps running until it expires or is exhausted — this does not cancel existing drops.",
+      "description": "Revoke a standing approval you granted with firestarter_trust_community_drops: this community's NEW drop requests on your listings go back to needing your manual decision via firestarter_approve_drop / firestarter_reject_drop. Anything already live from this community before the revoke keeps running until it expires or is exhausted \u2014 this does not cancel existing drops.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2116,7 +2133,7 @@
     },
     {
       "name": "firestarter_set_market_picks",
-      "description": "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) — find them with firestarter_catalog_search. `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
+      "description": "Curate the shelf ('Recommends') for a community market you own \u2014 the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) \u2014 find them with firestarter_catalog_search. `action`: 'replace' (default \u2014 the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2132,7 +2149,7 @@
               "properties": {
                 "listing_id": {
                   "type": "string",
-                  "description": "A listing id (lst_...) to feature — another seller's listing, not your own."
+                  "description": "A listing id (lst_...) to feature \u2014 another seller's listing, not your own."
                 },
                 "note": {
                   "type": "string",
@@ -2168,7 +2185,7 @@
     },
     {
       "name": "firestarter_connect_payouts",
-      "description": "Connect a Stripe payout account so a community-market owner can WITHDRAW their accrued earnings. Earnings accrue with no Stripe needed — creating a market and earning a share works from any country — but PAYING OUT requires this. Returns a Stripe onboarding link for the owner to open in a browser; once they finish, payouts enable. Use when an owner asks to get paid, cash out, set up payouts, or connect Stripe. If already fully set up, it just says so. Optionally pass the owner's country (ISO-3166-1 alpha-2) if onboarding asks.",
+      "description": "Connect a Stripe payout account so a community-market owner can WITHDRAW their accrued earnings. Earnings accrue with no Stripe needed \u2014 creating a market and earning a share works from any country \u2014 but PAYING OUT requires this. Returns a Stripe onboarding link for the owner to open in a browser; once they finish, payouts enable. Use when an owner asks to get paid, cash out, set up payouts, or connect Stripe. If already fully set up, it just says so. Optionally pass the owner's country (ISO-3166-1 alpha-2) if onboarding asks.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2181,7 +2198,7 @@
     },
     {
       "name": "firestarter_fund_wallet",
-      "description": "Deposit money into your drop wallet via Stripe Checkout — the prepaid balance that self-funds drops you create (firestarter_create_drop). Once a drop's whole pot (max_claims x discount) is covered by your wallet balance, it goes LIVE IMMEDIATELY with no seller approval needed, because you're paying for the discount yourself rather than asking the seller to eat it. $1.00 minimum deposit. Returns a Stripe Checkout link to open in a browser; the wallet credits once payment completes (poll with firestarter_wallet_balance). Use when an owner asks to fund/top up/add money to their drop wallet.",
+      "description": "Deposit money into your drop wallet via Stripe Checkout \u2014 the prepaid balance that self-funds drops you create (firestarter_create_drop). Once a drop's whole pot (max_claims x discount) is covered by your wallet balance, it goes LIVE IMMEDIATELY with no seller approval needed, because you're paying for the discount yourself rather than asking the seller to eat it. $1.00 minimum deposit. Returns a Stripe Checkout link to open in a browser; the wallet credits once payment completes (poll with firestarter_wallet_balance). Use when an owner asks to fund/top up/add money to their drop wallet.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2207,7 +2224,7 @@
     },
     {
       "name": "firestarter_withdraw_wallet",
-      "description": "Cash out unused drop-wallet balance to your connected Stripe payout account (set one up with firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn — funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; check firestarter_wallet_balance first if unsure. $1.00 minimum. IMPORTANT: each call is an INDEPENDENT withdrawal attempt — it is NOT a deduped replay of a prior call, so calling it twice withdraws twice. If a call times out or errors and you're unsure whether the payout went through, do NOT simply call again — first check firestarter_wallet_balance (a completed withdrawal reduces the balance), and only withdraw again for the remaining amount you actually intend to move.",
+      "description": "Cash out unused drop-wallet balance to your connected Stripe payout account (set one up with firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn \u2014 funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; check firestarter_wallet_balance first if unsure. $1.00 minimum. IMPORTANT: each call is an INDEPENDENT withdrawal attempt \u2014 it is NOT a deduped replay of a prior call, so calling it twice withdraws twice. If a call times out or errors and you're unsure whether the payout went through, do NOT simply call again \u2014 first check firestarter_wallet_balance (a completed withdrawal reduces the balance), and only withdraw again for the remaining amount you actually intend to move.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2224,7 +2241,7 @@
     },
     {
       "name": "firestarter_market_preview",
-      "description": "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, its curated shelf (the owner's picks of OTHER sellers' products), and what the community itself sells (its own listings) — every item with a listing_id you can buy via firestarter_execute. Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend / what's in this market' before committing — show both surfaces, then let them choose to join (firestarter_join_market) or just buy an item. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: JOINING itself gives the buyer no automatic discount or cashback — their price is unchanged and the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. A community MAY separately fund drops (real discounts the buyer claims before checkout) and reward members with tiered early access — surface those when present, but never imply that joining alone grants a discount.",
+      "description": "Preview a community market BEFORE joining \u2014 read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, its curated shelf (the owner's picks of OTHER sellers' products), and what the community itself sells (its own listings) \u2014 every item with a listing_id you can buy via firestarter_execute. Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend / what's in this market' before committing \u2014 show both surfaces, then let them choose to join (firestarter_join_market) or just buy an item. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: JOINING itself gives the buyer no automatic discount or cashback \u2014 their price is unchanged and the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. A community MAY separately fund drops (real discounts the buyer claims before checkout) and reward members with tiered early access \u2014 surface those when present, but never imply that joining alone grants a discount.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2240,7 +2257,7 @@
     },
     {
       "name": "firestarter_discover_markets",
-      "description": "Browse public community markets a buyer can join (the 'Discover communities' list): each one's name, tagline, community URL/handle, join code, and social proof (members, orders driven). Use when a buyer asks what communities exist, wants to find one to support, or says 'discover community markets'. To see a specific community's curated shelf use firestarter_market_preview; to join one use firestarter_join_market with its code. Read-only, public — no sign-in needed.",
+      "description": "Browse public community markets a buyer can join (the 'Discover communities' list): each one's name, tagline, community URL/handle, join code, and social proof (members, orders driven). Use when a buyer asks what communities exist, wants to find one to support, or says 'discover community markets'. To see a specific community's curated shelf use firestarter_market_preview; to join one use firestarter_join_market with its code. Read-only, public \u2014 no sign-in needed.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2253,7 +2270,7 @@
     },
     {
       "name": "firestarter_join_market",
-      "description": "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. If the buyer is already supporting a different community, confirm with them first — joining moves their attribution to the new community. Use when a user pastes a Firestarter join/market code or asks to join a community's market. Tip: to show the community's picks BEFORE joining, call firestarter_market_preview first.",
+      "description": "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. If the buyer is already supporting a different community, confirm with them first \u2014 joining moves their attribution to the new community. Use when a user pastes a Firestarter join/market code or asks to join a community's market. Tip: to show the community's picks BEFORE joining, call firestarter_market_preview first.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2269,7 +2286,7 @@
     },
     {
       "name": "firestarter_my_market",
-      "description": "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, AND its products — what the community recommends (its curated shelf) and what it sells (its own listings), each buyable via firestarter_execute. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
+      "description": "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, AND its products \u2014 what the community recommends (its curated shelf) and what it sells (its own listings), each buyable via firestarter_execute. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state \u2014 it doubles as a re-discovery of the community's picks. Read-only.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -2278,7 +2295,7 @@
     },
     {
       "name": "firestarter_leave_market",
-      "description": "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch to another one. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
+      "description": "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch to another one. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling \u2014 this is an account-level change.",
       "inputSchema": {
         "type": "object",
         "properties": {},
