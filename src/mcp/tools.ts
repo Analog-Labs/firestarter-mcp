@@ -160,11 +160,14 @@ function formatCommunityShelf(community: any): string | null {
   const name =
     typeof community?.name === "string" && community.name.trim() ? community.name.trim() : "this community";
 
-  const lines: string[] = [`**What ${name} recommends:**`];
+  const lines: string[] = [`**What ${sanitizeUntrusted(name, 120) || "this community"} recommends:**`];
   for (const p of picks.slice(0, SHELF_RENDER_LIMIT)) {
-    const nm = typeof p?.product_name === "string" && p.product_name.trim() ? p.product_name.trim() : "Untitled";
+    // Same two fields toCatalogStructured sanitises, reaching the buyer through
+    // market_preview / join_market / my_market instead of catalog_search.
+    const nm = sanitizeUntrusted(p?.product_name) || "Untitled";
     const price = Number.isFinite(Number(p?.price)) ? `$${Number(p.price).toFixed(2)}` : "price at checkout";
-    const note = typeof p?.note === "string" && p.note.trim() ? ` — "${p.note.trim()}"` : "";
+    const noteText = sanitizeUntrusted(p?.note);
+    const note = noteText ? ` — "${noteText}"` : "";
     const id = typeof p?.listing_id === "string" && p.listing_id ? ` (listing_id: \`${p.listing_id}\`)` : "";
     lines.push(`• ${nm} — ${price}${note}${id}`);
     const drops: any[] = Array.isArray(p?.drops) ? p.drops : [];
@@ -1051,9 +1054,14 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
           : externalResult
             ? " - browse-only (external)"
             : "";
-      optLines.push(`\n**${i + 1}. ${opt.product_title}${condition}** from ${opt.supplier || opt.store || "Unknown"}${browseLabel}`);
-      const included = typeof opt.metadata?.included === "string" ? opt.metadata.included.trim() : "";
-      const missing = typeof opt.metadata?.missing === "string" ? opt.metadata.missing.trim() : "";
+      // Seller-supplied, on the money path. formatExecution backs execute,
+      // status, approve and message, so these land in the calling agent's
+      // context right beside a real price and a real approval instruction — a
+      // newline here forges a row inside a genuine approval block (#599).
+      optLines.push(`\n**${i + 1}. ${sanitizeUntrusted(opt.product_title)}${condition}** from ${sanitizeUntrusted(opt.supplier || opt.store) || "Unknown"}${browseLabel}`);
+      // .trim() alone left newlines intact, which is the whole attack.
+      const included = sanitizeUntrusted(opt.metadata?.included);
+      const missing = sanitizeUntrusted(opt.metadata?.missing);
       if (included) optLines.push(`  Includes: ${included}`);
       if (missing) optLines.push(`  Not included: ${missing}`);
       // Surface the product image URL so the agent can relay it and chat
@@ -3915,7 +3923,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (applied) lines.push(`Price phrase moved out of the search text and applied as a filter (${applied}).`);
         }
         if (communityName && pickCount > 0) {
-          lines.push(`★ = picked by **${communityName}**, the community you're in (${pickCount} here).`);
+          lines.push(`★ = picked by **${sanitizeUntrusted(communityName, 120)}**, the community you're in (${pickCount} here).`);
         }
         lines.push("");
         for (const l of listings) {
@@ -4770,7 +4778,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         const lines = [`**Disputes** (${disputes.length})\n`];
         for (const d of disputes) {
-          lines.push(`- **${d.product || "Order"}** (${d.id}) - Reason: ${d.reason || "Not specified"} - Status: ${d.status}${d.resolution ? ` - Resolution: ${d.resolution}` : ""}`);
+          lines.push(`- **${sanitizeUntrusted(d.product) || "Order"}** (${d.id}) - Reason: ${sanitizeUntrusted(d.reason, 300) || "Not specified"} - Status: ${d.status}${d.resolution ? ` - Resolution: ${sanitizeUntrusted(d.resolution, 300)}` : ""}`);
         }
         lines.push(`\nTo act on one, call again with its dispute_id and an action (refund / contest / split).`);
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
@@ -4956,7 +4964,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               for (const m of messages) {
                 const who = m.sender_role === "buyer" ? "You" : m.sender_role === "seller" ? "Seller" : "Firestarter";
                 const nAtt = Array.isArray(m.attachment_urls) ? m.attachment_urls.length : 0;
-                lines.push(`- **${who}:** ${m.message}${nAtt ? ` _(${nAtt} photo${nAtt > 1 ? "s" : ""})_` : ""}`);
+                // The counterparty types this straight into the reader's
+                // context during a refund negotiation. Cross-principal, so the
+                // "sellers read back their own text" exemption does not apply.
+                lines.push(`- **${who}:** ${sanitizeUntrusted(m.message, 600)}${nAtt ? ` _(${nAtt} photo${nAtt > 1 ? "s" : ""})_` : ""}`);
               }
             }
 
