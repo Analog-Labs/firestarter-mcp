@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `@analog-labs/mcp-server` publishes to npm with provenance on every release, and firestarter-commerce automatically opens a PR pinning each new version.
+**Goal:** `@analog-labs/firestarter-mcp` publishes to npm with provenance on every release, and firestarter-commerce automatically opens a PR pinning each new version.
 
 **Architecture:** The existing `release.yml` in firestarter-mcp gains a guarded `npm publish` (OIDC trusted publishing, no npm secret) and a `repository_dispatch` ping to commerce. A new `bump-mcp.yml` in commerce receives the ping (plus a daily schedule and manual trigger), regenerates the lockfile with `npm install --save-exact`, and opens a PR-gated bump. A one-time stub publish bootstraps the package so trusted publishing can be configured.
 
@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Package name: `@analog-labs/mcp-server` — exactly this string everywhere; the `firestarter-mcp` bin name and `firestarter.mcpb` bundle names do NOT change.
+- Package name: `@analog-labs/firestarter-mcp` — exactly this string everywhere; the `firestarter-mcp` bin name and `firestarter.mcpb` bundle names do NOT change.
 - Trusted publishing needs npm ≥ 11.5.1; both repos' jobs run Node 22 (npm 10.9.x), so the release job must `npm install -g npm@latest` before publishing.
 - Dispatch payload contract: bare semver, no `v` prefix (`2.3.1`, never `v2.3.1`).
 - Version 2.3.0 is already taken by in-flight work (grid PR #23) — this plan's firestarter-mcp changes ride the same 2.3.0 release; do NOT bump the version anywhere in this plan.
@@ -51,7 +51,7 @@ Expected: `no v2.3.0 tag (expected)` and version `2.3.0`. If a `v2.3.0` tag alre
 
 ---
 
-### Task 2: firestarter-mcp — rename to `@analog-labs/mcp-server`
+### Task 2: firestarter-mcp — rename to `@analog-labs/firestarter-mcp`
 
 **Files:**
 - Modify: `package.json:2` (name), plus add `publishConfig`
@@ -59,7 +59,7 @@ Expected: `no v2.3.0 tag (expected)` and version `2.3.0`. If a `v2.3.0` tag alre
 - Branch: `feat/npm-publish` created from `docs/npm-publish-spec` (so the committed spec+plan travel with the code PR)
 
 **Interfaces:**
-- Produces: package named `@analog-labs/mcp-server` with `publishConfig: {"access":"public"}`; `npm pack` now emits `analog-labs-mcp-server-2.3.0.tgz`. Tasks 3–4 edit the workflow in this same branch; Task 8's cutover consumes the published name.
+- Produces: package named `@analog-labs/firestarter-mcp` with `publishConfig: {"access":"public"}`; `npm pack` now emits `analog-labs-firestarter-mcp-2.3.0.tgz`. Tasks 3–4 edit the workflow in this same branch; Task 8's cutover consumes the published name.
 
 - [ ] **Step 1: Create the branch**
 
@@ -84,7 +84,7 @@ Expected (RED): tarball name still `firestarter-mcp-server-2.3.0.tgz`; `MISSING 
 In `package.json`, change line 2 and add `publishConfig` after `"license"`:
 
 ```json
-  "name": "@analog-labs/mcp-server",
+  "name": "@analog-labs/firestarter-mcp",
 ```
 ```json
   "license": "MIT",
@@ -99,7 +99,7 @@ In `package.json`, change line 2 and add `publishConfig` after `"license"`:
 npm install
 node -p 'require("./package.json").repository.url'
 ```
-Expected: lockfile's two `name` fields now `@analog-labs/mcp-server` (`grep -n '@analog-labs/mcp-server' package-lock.json | head -3`); repository.url prints exactly `git+https://github.com/Analog-Labs/firestarter-mcp.git` — case-sensitive match with the real repo (`Analog-Labs/firestarter-mcp`) is required or npm rejects provenance with a 422 (npm/cli#8036). It already matches; just confirm.
+Expected: lockfile's two `name` fields now `@analog-labs/firestarter-mcp` (`grep -n '@analog-labs/firestarter-mcp' package-lock.json | head -3`); repository.url prints exactly `git+https://github.com/Analog-Labs/firestarter-mcp.git` — case-sensitive match with the real repo (`Analog-Labs/firestarter-mcp`) is required or npm rejects provenance with a 422 (npm/cli#8036). It already matches; just confirm.
 
 - [ ] **Step 5: Verify GREEN + full gates**
 
@@ -107,13 +107,13 @@ Expected: lockfile's two `name` fields now `@analog-labs/mcp-server` (`grep -n '
 npm pack --dry-run --silent 2>/dev/null | tail -1
 npm ci && npm run typecheck && npm test
 ```
-Expected: `analog-labs-mcp-server-2.3.0.tgz`; `npm ci` succeeds against the regenerated lockfile (the failure mode this prevents is EUSAGE name-mismatch in the release job); typecheck and all tests pass.
+Expected: `analog-labs-firestarter-mcp-2.3.0.tgz`; `npm ci` succeeds against the regenerated lockfile (the failure mode this prevents is EUSAGE name-mismatch in the release job); typecheck and all tests pass.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add package.json package-lock.json
-git commit -m "feat: rename package to @analog-labs/mcp-server for npm publishing"
+git commit -m "feat: rename package to @analog-labs/firestarter-mcp for npm publishing"
 ```
 
 ---
@@ -125,7 +125,7 @@ git commit -m "feat: rename package to @analog-labs/mcp-server for npm publishin
 
 **Interfaces:**
 - Consumes: `steps.pack.outputs.tarball` (existing pack step) and `needs.decide.outputs.tag` (existing decide job).
-- Produces: `@analog-labs/mcp-server@<version>` on registry.npmjs.org with provenance, before the GitHub release exists. Task 4 appends the dispatch after the release step.
+- Produces: `@analog-labs/firestarter-mcp@<version>` on registry.npmjs.org with provenance, before the GitHub release exists. Task 4 appends the dispatch after the release step.
 
 - [ ] **Step 1: Job-level permissions + registry-url**
 
@@ -198,7 +198,7 @@ Expected: parses; `release perms: {"contents":"write","id-token":"write"}`; the 
 name="react"
 existing="$(npm view "${name}@18.2.0" version 2>/dev/null || true)"; [ -n "$existing" ] && echo "GUARD: would skip (correct for existing)"
 existing="$(npm view "${name}@99.99.99" version 2>/dev/null || true)"; [ -z "$existing" ] && echo "GUARD: would publish (correct for missing)"
-existing="$(npm view "@analog-labs/mcp-server@2.3.0" version 2>/dev/null || true)"; [ -z "$existing" ] && echo "GUARD: would publish (correct for unpublished package)"
+existing="$(npm view "@analog-labs/firestarter-mcp@2.3.0" version 2>/dev/null || true)"; [ -z "$existing" ] && echo "GUARD: would publish (correct for unpublished package)"
 ```
 Expected: all three `GUARD:` lines print — the guard skips existing versions, publishes missing ones, and treats a wholly-unpublished package (E404) as publishable.
 
@@ -276,10 +276,10 @@ git add .github/workflows/release.yml
 git commit -m "feat(release): notify firestarter-commerce via repository_dispatch"
 git push origin HEAD:refs/heads/feat/npm-publish
 gh pr create --repo Analog-Labs/firestarter-mcp --base staging --head feat/npm-publish \
-  --title "feat: publish @analog-labs/mcp-server to npm + notify commerce" \
+  --title "feat: publish @analog-labs/firestarter-mcp to npm + notify commerce" \
   --body "Implements docs/superpowers/specs/2026-08-13-npm-publish-auto-consume-design.md (spec + plan included on this branch).
 
-- Rename @firestarter/mcp-server -> @analog-labs/mcp-server (lockfile regenerated)
+- Rename @firestarter/mcp-server -> @analog-labs/firestarter-mcp (lockfile regenerated)
 - publishConfig access public; repository.url verified for provenance
 - release.yml: OIDC trusted publish (guarded, npm>=11.5.1) between pack and release-create
 - repository_dispatch 'mcp-release' to firestarter-commerce, best-effort with visible warning
@@ -297,7 +297,7 @@ Expected: PR URL printed. **Do not merge yet** — Task 7 gates the merge on the
 **Files:** none in-repo. Scratch dir only.
 
 **Interfaces:**
-- Produces: `@analog-labs/mcp-server` exists on the registry (stub `0.0.0-bootstrap.0` behind dist-tag `bootstrap`); trusted publisher configured; secrets `COMMERCE_DISPATCH_TOKEN` (firestarter-mcp) and `MCP_BUMP_TOKEN` (commerce). Tasks 6–8 depend on all of it.
+- Produces: `@analog-labs/firestarter-mcp` exists on the registry (stub `0.0.0-bootstrap.0` behind dist-tag `bootstrap`); trusted publisher configured; secrets `COMMERCE_DISPATCH_TOKEN` (firestarter-mcp) and `MCP_BUMP_TOKEN` (commerce). Tasks 6–8 depend on all of it.
 
 This task cannot be executed by an agent — `npm login` is a browser flow and PAT minting is a GitHub UI flow. Present these commands to Ali verbatim and wait for confirmation.
 
@@ -315,7 +315,7 @@ Then on npmjs.com: create org `analog-labs` (or confirm you own it). **If the na
 mkdir -p /tmp/mcp-stub && cd /tmp/mcp-stub
 cat > package.json <<'EOF'
 {
-  "name": "@analog-labs/mcp-server",
+  "name": "@analog-labs/firestarter-mcp",
   "version": "0.0.0-bootstrap.0",
   "description": "Placeholder enabling npm trusted publishing for github.com/Analog-Labs/firestarter-mcp — real releases are >= 2.3.0.",
   "license": "MIT"
@@ -323,13 +323,13 @@ cat > package.json <<'EOF'
 EOF
 printf 'Placeholder — real package: https://github.com/Analog-Labs/firestarter-mcp\n' > README.md
 npm publish --access public --tag bootstrap
-npm view @analog-labs/mcp-server dist-tags   # expect: { bootstrap: '0.0.0-bootstrap.0' } and NO latest
+npm view @analog-labs/firestarter-mcp dist-tags   # expect: { bootstrap: '0.0.0-bootstrap.0' } and NO latest
 ```
 The `bootstrap` dist-tag means `latest` won't exist until the workflow publishes 2.3.0 — nothing can install the stub by accident.
 
 - [ ] **Step 3 (Ali): Configure the trusted publisher**
 
-On npmjs.com → package `@analog-labs/mcp-server` → Settings → Trusted publisher: **GitHub Actions**, organization `Analog-Labs`, repository `firestarter-mcp`, workflow filename `release.yml`, environment: leave blank.
+On npmjs.com → package `@analog-labs/firestarter-mcp` → Settings → Trusted publisher: **GitHub Actions**, organization `Analog-Labs`, repository `firestarter-mcp`, workflow filename `release.yml`, environment: leave blank.
 
 - [ ] **Step 4 (Ali): Mint the two PATs and store them**
 
@@ -352,8 +352,8 @@ gh secret set MCP_BUMP_TOKEN --repo Analog-Labs/firestarter-commerce        # pa
 - Branch: `feat/bump-mcp-workflow` off `origin/staging`
 
 **Interfaces:**
-- Consumes: `github.event.client_payload.version` (bare semver, from Task 4); secret `MCP_BUMP_TOKEN` (Task 5); the `@analog-labs/mcp-server` dependency key in `apps/api/package.json` (absent until Task 8 — the dependency guard makes that a clean no-op).
-- Produces: PR-gated bump PRs on branch `chore/bump-mcp-<version>`, base `staging`, title `chore(api): bump @analog-labs/mcp-server to v<version>`.
+- Consumes: `github.event.client_payload.version` (bare semver, from Task 4); secret `MCP_BUMP_TOKEN` (Task 5); the `@analog-labs/firestarter-mcp` dependency key in `apps/api/package.json` (absent until Task 8 — the dependency guard makes that a clean no-op).
+- Produces: PR-gated bump PRs on branch `chore/bump-mcp-<version>`, base `staging`, title `chore(api): bump @analog-labs/firestarter-mcp to v<version>`.
 
 - [ ] **Step 1: Branch**
 
@@ -373,7 +373,7 @@ The resolve logic is the only real logic in the workflow — test it as plain ba
 set -u
 fixture() { # $1=dep-version-or-empty  $2=dispatched  $3=typed
   dir="$(mktemp -d)"; mkdir -p "$dir/apps/api"
-  if [ -n "$1" ]; then deps="{\"@analog-labs/mcp-server\": \"$1\"}"; else deps="{}"; fi
+  if [ -n "$1" ]; then deps="{\"@analog-labs/firestarter-mcp\": \"$1\"}"; else deps="{}"; fi
   printf '{ "name": "api", "dependencies": %s }' "$deps" > "$dir/apps/api/package.json"
   ( cd "$dir" && DISPATCHED="$2" TYPED="$3" bash /tmp/resolve-target.sh )
 }
@@ -394,9 +394,9 @@ Save as `/tmp/resolve-target.sh` — this exact body goes into the workflow in S
 
 ```bash
 set -euo pipefail
-PKG="@analog-labs/mcp-server"
+PKG="@analog-labs/firestarter-mcp"
 GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/stdout}"
-dep="$(node -p "require('./apps/api/package.json').dependencies['@analog-labs/mcp-server'] ?? ''")"
+dep="$(node -p "require('./apps/api/package.json').dependencies['@analog-labs/firestarter-mcp'] ?? ''")"
 if [ -z "$dep" ]; then
   echo "::notice::apps/api does not depend on ${PKG} yet (pre-cutover) — nothing to bump."
   echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
@@ -436,7 +436,7 @@ Create `.github/workflows/bump-mcp.yml`:
 ```yaml
 name: Bump MCP server
 
-# Opens a PR bumping @analog-labs/mcp-server when firestarter-mcp releases.
+# Opens a PR bumping @analog-labs/firestarter-mcp when firestarter-mcp releases.
 #
 # Three doors into one job: the release's repository_dispatch (fast path,
 # minutes), a daily schedule (catch-up if a dispatch is ever lost — this is
@@ -490,8 +490,8 @@ jobs:
           TYPED: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          PKG="@analog-labs/mcp-server"
-          dep="$(node -p "require('./apps/api/package.json').dependencies['@analog-labs/mcp-server'] ?? ''")"
+          PKG="@analog-labs/firestarter-mcp"
+          dep="$(node -p "require('./apps/api/package.json').dependencies['@analog-labs/firestarter-mcp'] ?? ''")"
           if [ -z "$dep" ]; then
             echo "::notice::apps/api does not depend on ${PKG} yet (pre-cutover) — nothing to bump."
             echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
@@ -547,12 +547,12 @@ jobs:
           git config user.name "mcp-bump-bot"
           git config user.email "noreply@analog.one"
           git checkout -b "$branch"
-          ( cd apps/api && npm install "@analog-labs/mcp-server@${VERSION}" --save-exact )
+          ( cd apps/api && npm install "@analog-labs/firestarter-mcp@${VERSION}" --save-exact )
           git add apps/api/package.json apps/api/package-lock.json
-          git commit -m "chore(api): bump @analog-labs/mcp-server to v${VERSION}"
+          git commit -m "chore(api): bump @analog-labs/firestarter-mcp to v${VERSION}"
           git push origin "HEAD:refs/heads/${branch}"
           gh pr create --repo "$GITHUB_REPOSITORY" --base staging --head "$branch" \
-            --title "chore(api): bump @analog-labs/mcp-server to v${VERSION}" \
+            --title "chore(api): bump @analog-labs/firestarter-mcp to v${VERSION}" \
             --body "Automated bump ${CURRENT} -> ${VERSION} (lockfile regenerated via npm install --save-exact). Merge when CI Gate is green."
           # Close superseded bump PRs — but ONLY strictly-lower versions, so a
           # late-arriving dispatch for an older release can never close a newer PR.
@@ -590,10 +590,10 @@ print('triggers OK')
 
 ```bash
 git add .github/workflows/bump-mcp.yml
-git commit -m "ci: auto-bump @analog-labs/mcp-server on release (PR-gated)"
+git commit -m "ci: auto-bump @analog-labs/firestarter-mcp on release (PR-gated)"
 git push origin HEAD:refs/heads/feat/bump-mcp-workflow
 gh pr create --repo Analog-Labs/firestarter-commerce --base staging --head feat/bump-mcp-workflow \
-  --title "ci: auto-bump @analog-labs/mcp-server on release (PR-gated)" \
+  --title "ci: auto-bump @analog-labs/firestarter-mcp on release (PR-gated)" \
   --body "Receives firestarter-mcp's repository_dispatch (plus daily schedule + manual trigger) and opens a lockfile-coherent bump PR into staging. Guards: not-yet-a-dependency no-op, semver validation of untrusted input, no downgrades, per-version idempotency, supersede-close of lower-version PRs only. Uses MCP_BUMP_TOKEN so bump PRs actually trigger CI (github.token-created PRs do not).
 
 Live only once promoted to main (repository_dispatch/schedule fire from the default branch).
@@ -610,12 +610,12 @@ Expected: PR URL. Ali merges to staging, then this must ride the next staging→
 
 **Interfaces:**
 - Consumes: Task 4's producer PR, Task 5's bootstrap, Task 6's consumer PR.
-- Produces: `@analog-labs/mcp-server@2.3.0` on npm with provenance; `latest` dist-tag exists. Task 8 pins it.
+- Produces: `@analog-labs/firestarter-mcp@2.3.0` on npm with provenance; `latest` dist-tag exists. Task 8 pins it.
 
 - [ ] **Step 1 (Ali): Merge order**
 
 1. Merge the commerce `feat/bump-mcp-workflow` PR into `staging`, and promote commerce `staging` → `main` (normal promotion PR) so `bump-mcp.yml` is on the default branch.
-2. Confirm Task 5 bootstrap is fully done (stub visible: `npm view @analog-labs/mcp-server dist-tags` shows `bootstrap`; both secrets set).
+2. Confirm Task 5 bootstrap is fully done (stub visible: `npm view @analog-labs/firestarter-mcp dist-tags` shows `bootstrap`; both secrets set).
 3. Merge the firestarter-mcp `feat/npm-publish` PR into `staging`, then open and merge the staging→main promotion PR in firestarter-mcp.
 
 - [ ] **Step 2: Watch the release run**
@@ -629,9 +629,9 @@ Expected: decide=release (no v2.3.0 tag) → gates → publish step runs the rea
 - [ ] **Step 3: Verify the published artifact**
 
 ```bash
-npm view @analog-labs/mcp-server@2.3.0 version dist.tarball
-npm view @analog-labs/mcp-server dist-tags        # latest: 2.3.0, bootstrap: 0.0.0-bootstrap.0
-npm view @analog-labs/mcp-server@2.3.0 --json | node -p 'JSON.parse(require("fs").readFileSync(0)).dist.attestations?.url ?? "NO PROVENANCE"'
+npm view @analog-labs/firestarter-mcp@2.3.0 version dist.tarball
+npm view @analog-labs/firestarter-mcp dist-tags        # latest: 2.3.0, bootstrap: 0.0.0-bootstrap.0
+npm view @analog-labs/firestarter-mcp@2.3.0 --json | node -p 'JSON.parse(require("fs").readFileSync(0)).dist.attestations?.url ?? "NO PROVENANCE"'
 ```
 Expected: version resolves; `latest` now points at 2.3.0; an attestations URL prints (provenance). `NO PROVENANCE` = trusted-publisher misconfig — fix on npmjs.com and re-run the release workflow (idempotent: decide still releases? No — the tag now exists, so re-run via `workflow_dispatch` re-enters decide; the guard means only the publish is skipped if it succeeded. If the publish itself failed, the release job failed BEFORE `gh release create`, so no tag exists and a plain re-run repeats cleanly.)
 
@@ -653,7 +653,7 @@ Expected: one run, `event: repository_dispatch`, `conclusion: success` — the d
 - Branch: `chore/mcp-registry-cutover` off `origin/staging`
 
 **Interfaces:**
-- Consumes: `@analog-labs/mcp-server@2.3.0` on the registry (Task 7).
+- Consumes: `@analog-labs/firestarter-mcp@2.3.0` on the registry (Task 7).
 - Produces: commerce consuming the registry pin; from here `bump-mcp.yml`'s dependency guard passes and the steady-state loop is live.
 
 - [ ] **Step 1: Branch + RED check**
@@ -670,7 +670,7 @@ Expected: `42 refs (expect 42)` (±small drift if staging moved — any nonzero 
 
 ```bash
 git grep -l '@firestarter/mcp-server' -- 'apps/api' ':!apps/api/package-lock.json' \
-  | xargs sed -i '' 's|@firestarter/mcp-server|@analog-labs/mcp-server|g'
+  | xargs sed -i '' 's|@firestarter/mcp-server|@analog-labs/firestarter-mcp|g'
 git grep -c '@firestarter/mcp-server' -- 'apps/api' ':!apps/api/package-lock.json' || echo "0 refs left (GREEN)"
 ```
 Expected: `0 refs left (GREEN)`.
@@ -681,19 +681,19 @@ The sed above renamed the KEY in `apps/api/package.json` but its VALUE is still 
 
 ```bash
 cd apps/api
-npm install @analog-labs/mcp-server@2.3.0 --save-exact
-node -p 'require("./package.json").dependencies["@analog-labs/mcp-server"]'   # expect "2.3.0"
-grep -n '"@analog-labs/mcp-server"' package-lock.json | head -3               # resolved to registry.npmjs.org
+npm install @analog-labs/firestarter-mcp@2.3.0 --save-exact
+node -p 'require("./package.json").dependencies["@analog-labs/firestarter-mcp"]'   # expect "2.3.0"
+grep -n '"@analog-labs/firestarter-mcp"' package-lock.json | head -3               # resolved to registry.npmjs.org
 cd ../..
 ```
-Expected: pin `2.3.0`; lockfile resolves to `https://registry.npmjs.org/@analog-labs/mcp-server/-/mcp-server-2.3.0.tgz` with integrity hash.
+Expected: pin `2.3.0`; lockfile resolves to `https://registry.npmjs.org/@analog-labs/firestarter-mcp/-/mcp-server-2.3.0.tgz` with integrity hash.
 
 - [ ] **Step 4: Delete the stale vendored-era manifest**
 
 ```bash
 git rm apps/api/mcp.json
 ```
-(Verified imported by nothing: `discovery.ts:3` imports the package's copy via `@analog-labs/mcp-server/mcp.json`.)
+(Verified imported by nothing: `discovery.ts:3` imports the package's copy via `@analog-labs/firestarter-mcp/mcp.json`.)
 
 - [ ] **Step 5: Verify — install, typecheck, tests**
 
@@ -710,13 +710,13 @@ Expected: `npm ci` clean against the regenerated lockfile; typecheck and the ful
 
 ```bash
 git add -A
-git commit -m "chore(api): consume @analog-labs/mcp-server from npm (v2.3.0)"
+git commit -m "chore(api): consume @analog-labs/firestarter-mcp from npm (v2.3.0)"
 git push origin HEAD:refs/heads/chore/mcp-registry-cutover
 gh pr create --repo Analog-Labs/firestarter-commerce --base staging --head chore/mcp-registry-cutover \
-  --title "chore(api): consume @analog-labs/mcp-server from npm (v2.3.0)" \
+  --title "chore(api): consume @analog-labs/firestarter-mcp from npm (v2.3.0)" \
   --body "Cutover from the GitHub-release tarball URL to the npm registry pin.
 
-- Rename @firestarter/mcp-server -> @analog-labs/mcp-server (42 refs, 21 files)
+- Rename @firestarter/mcp-server -> @analog-labs/firestarter-mcp (42 refs, 21 files)
 - URL dep -> exact pin 2.3.0 (provenance-attested, published by release.yml via OIDC)
 - Lockfile regenerated; stale vendored-era apps/api/mcp.json deleted (imported by nothing)
 

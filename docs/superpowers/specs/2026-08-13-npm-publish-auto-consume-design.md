@@ -1,4 +1,4 @@
-# Publish `@analog-labs/mcp-server` to npm; auto-consume in commerce
+# Publish `@analog-labs/firestarter-mcp` to npm; auto-consume in commerce
 
 **Date:** 2026-08-13
 **Status:** Approved design (adversarially verified), pending implementation plan
@@ -28,7 +28,7 @@ today's hand-written URL-bump PRs.
   regenerating the lockfile.
 - Dependabot has `open-pull-requests-limit: 0` on all ecosystems and cannot
   bump URL deps anyway. No Renovate. No cross-repo automation.
-- `@analog-labs/mcp-server` is unpublished (404). `origin/main` ==
+- `@analog-labs/firestarter-mcp` is unpublished (404). `origin/main` ==
   `origin/staging` at 2.2.2; grid PR #23 (base `staging`) carries 2.3.0; no
   `v2.3.0` tag exists. Commerce's default branch is `main`.
 - Both repos' workflows use `actions/setup-node@v4` with Node 22, which
@@ -38,7 +38,7 @@ today's hand-written URL-bump PRs.
 
 | Decision | Choice |
 |---|---|
-| npm organisation | `analog-labs` (package renamed `@analog-labs/mcp-server`) |
+| npm organisation | `analog-labs` (package renamed `@analog-labs/firestarter-mcp`) |
 | Update mechanism | Release-triggered `repository_dispatch` → bot PR in commerce |
 | Publish auth | npm OIDC trusted publishing (no long-lived npm write token) |
 | Merge gating | PR-gated — a human merges every bump PR; no auto-merge |
@@ -46,7 +46,7 @@ today's hand-written URL-bump PRs.
 
 ## Part 1 — Package rename
 
-`@firestarter/mcp-server` → `@analog-labs/mcp-server`.
+`@firestarter/mcp-server` → `@analog-labs/firestarter-mcp`.
 
 - **firestarter-mcp:** the npm name appears in `package.json` (name field)
   **and** `package-lock.json` (root name) — the rename PR must regenerate the
@@ -59,7 +59,7 @@ today's hand-written URL-bump PRs.
   tests ×30 across 15 files). Mechanical find-and-replace in the cutover PR;
   the lockfile is regenerated, never hand-edited; typecheck + tests catch
   stragglers.
-- The `npm pack` tarball filename becomes `analog-labs-mcp-server-<ver>.tgz`;
+- The `npm pack` tarball filename becomes `analog-labs-firestarter-mcp-<ver>.tgz`;
   `release.yml` derives the name dynamically — no workflow change for this.
 - `package.json`'s `repository.url` must exactly match
   `Analog-Labs/firestarter-mcp` (case-sensitive) — npm rejects the provenance
@@ -118,7 +118,7 @@ New workflow, one job, three triggers:
 
 Guards, in order, before any work:
 
-1. **Dependency guard:** if `@analog-labs/mcp-server` is not yet a dependency
+1. **Dependency guard:** if `@analog-labs/firestarter-mcp` is not yet a dependency
    of `apps/api`, no-op with a visible notice (protects the window before the
    cutover PR, and makes pre-bootstrap schedule runs clean no-ops).
 2. **Version validation:** normalize the target (strip a leading `v`, from
@@ -133,10 +133,10 @@ Guards, in order, before any work:
    the run visibly and retries next schedule.
 
 Job: checkout `staging` → `cd apps/api && npm install
-@analog-labs/mcp-server@<version> --save-exact` (regenerates the lockfile —
+@analog-labs/firestarter-mcp@<version> --save-exact` (regenerates the lockfile —
 this kills the EUSAGE failure class) → push branch `chore/bump-mcp-<version>`
 → open a PR into `staging` titled
-`chore(api): bump @analog-labs/mcp-server to v<version>` → close any still-open
+`chore(api): bump @analog-labs/firestarter-mcp to v<version>` → close any still-open
 bump PR for a lower version (superseded). Idempotent: skip when a PR for the
 target version is already open.
 
@@ -158,7 +158,7 @@ promoted to commerce's `main` before the automation is live.
 One atomic PR in commerce (imports must match the installed package):
 
 1. Rename all 42 `@firestarter/mcp-server` references to
-   `@analog-labs/mcp-server`.
+   `@analog-labs/firestarter-mcp`.
 2. `apps/api/package.json`: URL dependency → exact registry pin of the first
    workflow-published version (2.3.0 — see Sequencing; the pin target must
    exist on the registry before this PR can pass `npm ci`).
@@ -178,7 +178,7 @@ exist; open feature request npm/cli#8544). So:
    free — if `analog-labs` turns out to be held by a third party, **stop**:
    the scope decision reopens and cascades into every rename.
 2. **Stub publish** — from a scratch directory (never the real repo), publish
-   a minimal placeholder: `{ "name": "@analog-labs/mcp-server", "version":
+   a minimal placeholder: `{ "name": "@analog-labs/firestarter-mcp", "version":
    "0.0.0-bootstrap.0" }` + README pointing at the repo, via
    `npm publish --access public --tag bootstrap`. The `bootstrap` dist-tag
    means `latest` never exists until the first real release, so nothing can
@@ -265,7 +265,7 @@ Hard ordering constraints — each step assumes all prior ones:
   version → warning no-op.
 - Producer: the sequenced go-live (step 5) exercises decide → gates → OIDC
   publish → provenance → release → dispatch on the first real release;
-  verify with `npm view @analog-labs/mcp-server@2.3.0` and the provenance
+  verify with `npm view @analog-labs/firestarter-mcp@2.3.0` and the provenance
   badge on npmjs.com.
 - Success criteria: a version bump merged in firestarter-mcp results — with
   no human action other than merging the bot PR — in commerce running that
