@@ -14,6 +14,10 @@ name: Release
 # branches, not tags, so the Actions token can create v<version> even though it
 # cannot push a commit to a protected main. The version bump arrives through
 # code review like any other change.
+#
+# That reasoning covers tagging only. This workflow also publishes to npm, and
+# branch protection does NOT contain that — see the environment binding on the
+# release job for why, and for what has to be configured outside this file.
 on:
   push:
     branches: [main]
@@ -70,6 +74,23 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    # THE branch guard for publishing, and it has to live here rather than in
+    # an `if:` further down. npm's trusted publisher matches on {org, repo,
+    # workflow filename, environment} — there is NO ref in that tuple. Combined
+    # with workflow_dispatch (and push, which an attacker can add to their own
+    # copy) running the workflow file FROM THE SELECTED REF, anyone with write
+    # access could otherwise branch, rewrite this file to strip the gates,
+    # dispatch it, and publish as `latest` with a valid provenance attestation
+    # that faithfully records their branch. main's push restriction never gets
+    # involved, because nothing is pushed to main.
+    #
+    # An in-file `if: github.ref == 'refs/heads/main'` cannot fix that: it sits
+    # in the file being rewritten. Only an out-of-file binding holds, so this
+    # environment MUST be configured with "Deployment branches and tags:
+    # Selected branches -> main", and the npm trusted publisher MUST name this
+    # same environment. If npm's environment field is left blank, an attacker
+    # simply deletes this line on their branch and publishes anyway.
+    environment: npm-publish
     steps:
       - uses: actions/checkout@v4
 
@@ -146,6 +167,10 @@ jobs:
       # Publishing the packed tarball rather than the working tree keeps the
       # registry bits byte-identical to the release asset attached below.
       - name: Publish to npm (skipped when the version already exists)
+        # Defence in depth only — the environment's deployment-branch rule is
+        # the guard that actually holds. This line is in the file an attacker
+        # would be rewriting, so it stops an accident, not an adversary.
+        if: github.ref == 'refs/heads/main'
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
         run: |
