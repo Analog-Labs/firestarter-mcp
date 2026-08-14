@@ -11,6 +11,25 @@
  */
 import { z } from "zod";
 import { toMinorUnits } from "./ucp-schema.js";
+import { listingShareUrl } from "../lib/share-link.js";
+
+/**
+ * Parse an API money field into a float, or null when it is absent or not a
+ * number. `Number(null)` is 0 and `Number(undefined)` is NaN — neither is a
+ * price, and NaN passes `typeof === "number"` while failing the schema, so both
+ * are collapsed here rather than at each call site.
+ */
+function toPriceOrNull(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Keep only http(s) URLs — the grid must never be handed a broken or unsafe src. */
+function httpImages(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u));
+}
 
 /** Dated schema version, surfaced in every structured payload (à la UCP). */
 export const MCP_OUTPUT_SCHEMA_VERSION = "2026-07-07";
@@ -232,5 +251,175 @@ export function toCatalogStructured(
     broadened_to: broadenedTo,
     community: typeof data?.query?.community?.name === "string" ? data.query.community.name : null,
     listings: rows,
+  };
+}
+
+/**
+ * Seller-facing status → the badge the product grid shows on the card. A
+ * seller's own listing carries a lifecycle status, never the `buyable` flag the
+ * buyer-facing tools return, and the widget's fallback badge is "Browse-only" —
+ * so without an explicit label a seller's own live listing would render as
+ * something nobody can buy. Unknown statuses fall through to the raw string
+ * rather than being dropped.
+ */
+const SELLER_STATUS_LABELS: Record<string, string> = {
+  active: "Active",
+  draft: "Draft",
+  paused: "Paused",
+  delisted: "Delisted",
+  sold_out: "Sold out",
+};
+
+const sellerListing = z.object({
+  /** Listing id (lst_...) — pass to firestarter_update_listing or share. */
+  id: z.string(),
+  product_name: z.string(),
+  current_price: z.number().nullable(),
+  currency: z.string(),
+  /** Integer minor units (e.g. cents) in the listing's native currency. */
+  price: z.object({ currency: z.string(), amount_minor: z.number().int().nullable() }),
+  /** Raw lifecycle status from the API (active, draft, …). */
+  status: z.string().nullable(),
+  /** Human-readable badge for the grid; null when the API sent no status. */
+  status_label: z.string().nullable(),
+  inventory_qty: z.number().int().nullable(),
+  created_at: z.string().nullable(),
+  /** Null for sandbox and non-active listings, which have no public page. */
+  share_url: z.string().nullable(),
+  /** http(s) product photo URLs; the shopping-results app renders images[0]. */
+  images: z.array(z.string()),
+});
+
+/** Raw shape advertised as `firestarter_listings`'s `outputSchema`. */
+export const sellerListingsOutputShape = {
+  schema_version: z.literal(MCP_OUTPUT_SCHEMA_VERSION),
+  count: z.number().int(),
+  active_count: z.number().int(),
+  listings: z.array(sellerListing),
+};
+
+export const sellerListingsOutputSchema = z.object(sellerListingsOutputShape);
+export type SellerListingsStructured = z.infer<typeof sellerListingsOutputSchema>;
+
+/**
+ * Map `/v1/listings` rows (list view or a single detail row) into the typed
+ * payload the shopping-results MCP App renders. Same `listings` key the catalog
+ * mapper emits, so the widget needs no branch to tell the two apart.
+ *
+ * Every field is defaulted: the SDK validates `structuredContent` against the
+ * advertised `outputSchema` on every call, so an empty or partial API response
+ * must still map to a schema-valid object rather than a tool error.
+ */
+export function toSellerListingsStructured(listings: any[]): SellerListingsStructured {
+  const rows = (Array.isArray(listings) ? listings : []).map((l: any) => {
+    const current_price = toPriceOrNull(l?.current_price);
+    const currency = typeof l?.currency === "string" ? l.currency : "USD";
+    const status = typeof l?.status === "string" && l.status.trim() ? l.status.trim() : null;
+    const qty = Number(l?.inventory_qty);
+    return {
+      id: typeof l?.id === "string" ? l.id : "",
+      product_name: typeof l?.product_name === "string" ? l.product_name : "",
+      current_price,
+      currency,
+      price: { currency, amount_minor: toMinorUnits(current_price, currency) },
+      status,
+      status_label: status ? (SELLER_STATUS_LABELS[status] ?? status) : null,
+      inventory_qty: Number.isInteger(qty) ? qty : null,
+      created_at: typeof l?.created_at === "string" ? l.created_at : null,
+      share_url: listingShareUrl(l),
+      images: httpImages(l?.images),
+    };
+  });
+  return {
+    schema_version: MCP_OUTPUT_SCHEMA_VERSION,
+    count: rows.length,
+    active_count: rows.filter((r) => r.status === "active").length,
+    listings: rows,
+  };
+}
+
+/**
+ * Badge per shelf surface. A community market shows two disjoint sets of
+ * products — listings the owner curated from other sellers, and the owner's
+ * own stock — and flattening them into one grid would erase that distinction
+ * without a label. Neither surface carries a buyability flag, so the badge is
+ * provenance, not checkout state.
+ */
+const SHELF_KIND_LABELS = { pick: "★ Pick", sells: "Sold here" } as const;
+
+const shelfItem = z.object({
+  /** Listing id (lst_...) — chain to firestarter_execute's listing_id to buy. */
+  id: z.string(),
+  product_name: z.string(),
+  current_price: z.number().nullable(),
+  currency: z.string(),
+  /** Integer minor units (e.g. cents) in the listing's native currency. */
+  price: z.object({ currency: z.string(), amount_minor: z.number().int().nullable() }),
+  /** http(s) product photo URLs; the shopping-results app renders images[0]. */
+  images: z.array(z.string()),
+  /** Which surface this came from: a curated pick, or the community's own stock. */
+  kind: z.enum(["pick", "sells"]),
+  status_label: z.string(),
+  /** The curator's note on a pick — why they chose it. */
+  note: z.string().nullable(),
+  /** Tier gate on a pick (0 = open to every member). */
+  min_tier: z.number().int().nullable(),
+});
+
+/** Raw shape advertised as the community-market tools' `outputSchema`. */
+export const shelfOutputShape = {
+  schema_version: z.literal(MCP_OUTPUT_SCHEMA_VERSION),
+  community: z.string().nullable(),
+  pick_count: z.number().int(),
+  sells_count: z.number().int(),
+  listings: z.array(shelfItem),
+};
+
+export const shelfOutputSchema = z.object(shelfOutputShape);
+export type ShelfStructured = z.infer<typeof shelfOutputSchema>;
+
+/**
+ * Map a community's `picks` + `sells` into the typed payload the
+ * shopping-results MCP App renders, picks first.
+ *
+ * Two normalizations matter here. The shelf API sends a single `image` string
+ * where the widget expects an `images` array, and a bare number `price` where a
+ * `price` key means `{amount_minor, currency}` — a number falls through the
+ * widget's price formatting and renders blank. Both are fixed here rather than
+ * by loosening the widget, which would weaken the typed contract for agents.
+ *
+ * The shelf payload carries no currency; the prose render has always assumed
+ * dollars, so USD stays the default.
+ *
+ * Unlike the prose render this does NOT truncate at SHELF_RENDER_LIMIT — a grid
+ * has room for the whole shelf, which is the point of showing one.
+ */
+export function toShelfStructured(community: any): ShelfStructured {
+  const mapRow = (row: any, kind: "pick" | "sells") => {
+    const current_price = toPriceOrNull(row?.price);
+    const currency = typeof row?.currency === "string" ? row.currency : "USD";
+    const minTier = Number(row?.min_tier);
+    return {
+      id: typeof row?.listing_id === "string" ? row.listing_id : "",
+      product_name: typeof row?.product_name === "string" ? row.product_name : "",
+      current_price,
+      currency,
+      price: { currency, amount_minor: toMinorUnits(current_price, currency) },
+      images: httpImages([row?.image]),
+      kind,
+      status_label: SHELF_KIND_LABELS[kind],
+      note: typeof row?.note === "string" && row.note.trim() ? row.note.trim() : null,
+      min_tier: Number.isInteger(minTier) ? minTier : null,
+    };
+  };
+  const picks = (Array.isArray(community?.picks) ? community.picks : []).map((p: any) => mapRow(p, "pick"));
+  const sells = (Array.isArray(community?.sells) ? community.sells : []).map((s: any) => mapRow(s, "sells"));
+  return {
+    schema_version: MCP_OUTPUT_SCHEMA_VERSION,
+    community:
+      typeof community?.name === "string" && community.name.trim() ? community.name.trim() : null,
+    pick_count: picks.length,
+    sells_count: sells.length,
+    listings: [...picks, ...sells],
   };
 }

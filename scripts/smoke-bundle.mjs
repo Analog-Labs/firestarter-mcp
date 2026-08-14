@@ -36,7 +36,15 @@ const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results";
 const APP_MIME_TYPE = "text/html;profile=mcp-app";
 /** Tools whose results the grid is supposed to render. Losing the wiring on
  *  one of these is the regression this file exists to catch. */
-const GRID_TOOLS = ["firestarter_preview", "firestarter_catalog_search"];
+const GRID_TOOLS = [
+  "firestarter_preview",
+  "firestarter_catalog_search",
+  "firestarter_listings",
+  "firestarter_market_preview",
+  "firestarter_join_market",
+  "firestarter_my_market",
+  "firestarter_set_market_picks",
+];
 
 if (!existsSync(bundle)) {
   console.error(`No bundle at ${bundle} — run \`npm run build:mcpb\` first.`);
