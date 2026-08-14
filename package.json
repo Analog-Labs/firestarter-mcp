@@ -17,6 +17,9 @@
     "mcp.json",
     "mcpb/dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build:ui": "node scripts/build-shopping-ui.mjs",
     "build": "node scripts/build-shopping-ui.mjs && tsc",
