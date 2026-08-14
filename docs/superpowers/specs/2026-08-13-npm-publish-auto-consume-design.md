@@ -38,7 +38,7 @@ today's hand-written URL-bump PRs.
 
 | Decision | Choice |
 |---|---|
-| npm organisation | `analog-labs` (package renamed `@analog-labs/firestarter-mcp`) |
+| npm organisation | `analog-labs` — an org's name IS its scope, so the package must be `@analog-labs/…`. `analog` is **not** ours (verified 2026-08-14, see Bootstrap 1). |
 | Update mechanism | Release-triggered `repository_dispatch` → bot PR in commerce |
 | Publish auth | npm OIDC trusted publishing (no long-lived npm write token) |
 | Merge gating | PR-gated — a human merges every bump PR; no auto-merge |
@@ -172,11 +172,24 @@ Trusted publishing **cannot** mint the first publish of a not-yet-existing
 package (docs.npmjs.com/cli/v11/commands/npm-trust: the package must already
 exist; open feature request npm/cli#8544). So:
 
-1. **Create or confirm the `analog-labs` org on npmjs.com** (fresh
-   `npm login` — the token on this machine is dead, E401). A 404 on the scope
-   proves only that no packages are published, **not** that the org name is
-   free — if `analog-labs` turns out to be held by a third party, **stop**:
-   the scope decision reopens and cascades into every rename.
+1. **Confirm the `analog-labs` org** (fresh `npm login` — the token on this
+   machine was dead, E401 — then `npm org ls analog-labs`). **Settled on
+   2026-08-14: the scope is `analog-labs`, not `analog`.**
+
+   An npm org's name IS its scope, so the package name's scope is not a free
+   choice — `@analog/…` would require owning the `analog` org, and we do not.
+   `npm publish` of `@analog/firestarter-mcp` returned **404 on the PUT**,
+   which is what npm returns for a scope you cannot write to (it 404s rather
+   than 403 to avoid disclosing whether a scope exists). `analog-labs` is
+   ours; it already carries `@analog-labs/timegraph-js`.
+
+   Note for anyone re-checking this: an unauthenticated probe of
+   `registry.npmjs.org/-/org/<scope>/package` distinguishes free (`404
+   {"error":"Scope not found"}`) from claimed (`200`), but **cannot** tell
+   *whose* a claimed scope is — `analog` returns `200 {}`, which looks
+   identical whether it is ours with only private packages or a stranger's.
+   Only an authenticated `npm org ls`, or an actual publish attempt, settles
+   ownership.
 2. **Stub publish** — from a scratch directory (never the real repo), publish
    a minimal placeholder: `{ "name": "@analog-labs/firestarter-mcp", "version":
    "0.0.0-bootstrap.0" }` + README pointing at the repo, via
