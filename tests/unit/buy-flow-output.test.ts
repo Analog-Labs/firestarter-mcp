@@ -1,0 +1,98 @@
+/**
+ * Output defects from the #599 buy-side audit that live in what the tools SAY,
+ * not in what they do.
+ */
+import { describe, it, expect } from "vitest";
+import { vi, afterEach } from "vitest";
+import { renderDeliveryOptions, arrivalDateFromDays } from "../../src/mcp/tools.js";
+
+const TWO_METHODS = {
+  purchasable: true,
+  subtotal: 58,
+  shipping_options: [
+    { label: "UPSDAP Ground", price_cents: 791, delivery_days: 3 },
+    { label: "USPS GroundAdvantage", price_cents: 665, delivery_days: 2 },
+  ],
+};
+
+describe("delivery menu (F12)", () => {
+  it("offers the numbered menu while the buyer can still approve", () => {
+    const lines = renderDeliveryOptions(TWO_METHODS, null, true).join("\n");
+    expect(lines).toContain("pick a speed");
+    expect(lines).toContain("shipping_option_index");
+    expect(lines).toContain("[0]");
+  });
+
+  it("stops inviting a re-approval once the order is paid", () => {
+    // QA saw the full "pick a speed … approve with shipping_option_index" menu
+    // on an order at status charging, and again at delivered. Offering a choice
+    // that can no longer be made invites an agent to re-approve a completed
+    // purchase — on a money path.
+    const lines = renderDeliveryOptions(TWO_METHODS, null, false).join("\n");
+    expect(lines, "still telling the caller to approve a paid order").not.toContain("shipping_option_index");
+    expect(lines).not.toContain("pick a speed");
+    // The speeds themselves stay visible — the buyer should still see what they got.
+    expect(lines).toContain("USPS GroundAdvantage");
+  });
+
+  it("defaults to choosable, so existing callers are unchanged", () => {
+    expect(renderDeliveryOptions(TWO_METHODS, null).join("\n")).toContain("shipping_option_index");
+  });
+});
+
+describe("arrival date formatting (F15)", () => {
+  it("renders a human date, never a raw ISO timestamp", () => {
+    const out = arrivalDateFromDays(2, new Date("2026-08-14T00:00:00.000Z"));
+    expect(out).not.toMatch(/T\d{2}:\d{2}/);
+    expect(out).toMatch(/[A-Z][a-z]{2}/);
+  });
+});
+
+/**
+ * F20 — a read-only tool that silently swallows setter-shaped arguments.
+ *
+ * `firestarter_spend_cap` declared `{}` as its input schema, so
+ * `{ spend_cap_dollars: 50 }` was stripped by validation before the handler and
+ * the caller got an ordinary read back — indistinguishable from a successful
+ * write. That is how a QA pass came to report two P0 "silent no-op" regressions
+ * that did not exist: the setters (firestarter_set_spend_cap /
+ * firestarter_set_auto_approve_limit) were simply never called. Saying so
+ * costs one line and prevents the whole misdiagnosis.
+ */
+import { registerTools } from "../../src/mcp/tools.js";
+
+function captureTool(name: string): (args: any) => Promise<any> {
+  let handler: ((args: any) => Promise<any>) | null = null;
+  const stub = {
+    tool: (toolName: string, _d: string, _s: any, _a: any, cb: any) => {
+      if (toolName === name) handler = cb;
+    },
+  } as any;
+  registerTools(stub, "fs_test_readonly", "http://127.0.0.1:1");
+  if (!handler) throw new Error(`tool ${name} was not registered`);
+  return handler;
+}
+
+function stubBalance(body: Record<string, unknown>) {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), {
+    status: 200, headers: { "content-type": "application/json" },
+  })));
+}
+afterEach(() => vi.unstubAllGlobals());
+
+describe("read-only tools given setter arguments (F20)", () => {
+  it("spend_cap names the setter instead of returning a bare read", async () => {
+    stubBalance({ spend_cap_cents: null });
+    const text = (await captureTool("firestarter_spend_cap")({ spend_cap_dollars: 50 }))
+      .content[0].text as string;
+    expect(text).toContain("firestarter_set_spend_cap");
+    expect(text.toLowerCase()).toMatch(/only reads|did not|not set|no change/);
+  });
+
+  it("auto_approve_limit does the same", async () => {
+    stubBalance({ auto_approve_threshold_cents: 2000 });
+    const text = (await captureTool("firestarter_auto_approve_limit")({ set_limit_usd: 25 }))
+      .content[0].text as string;
+    expect(text).toContain("firestarter_set_auto_approve_limit");
+  });
+});
