@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.2.2",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 83 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 85 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -559,6 +559,89 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "firestarter_record_purchase",
+      "description": "Record a purchase completed OUTSIDE the network — e.g. after driving checkout on Lazada, a Shopify storefront, or any other store — so Firestarter keeps one purchase history across every marketplace and can reorder the item later. Call this right after an off-network checkout succeeds, with whatever details are visible on the confirmation page. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Where the purchase happened, lowercase (e.g. \"lazada\", \"shopify\", \"shopee\", \"amazon\", \"other\")"
+          },
+          "title": {
+            "type": "string",
+            "description": "Product title as shown by the store"
+          },
+          "amount": {
+            "type": "number",
+            "description": "Total paid, in the purchase currency"
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO currency code (e.g. \"MYR\", \"USD\")"
+          },
+          "seller_name": {
+            "type": "string",
+            "description": "Store / seller name"
+          },
+          "seller_domain": {
+            "type": "string",
+            "description": "Seller's domain (e.g. \"watsons.com.my\") — powers later reorders and seller discovery"
+          },
+          "product_url": {
+            "type": "string",
+            "description": "Direct product page URL — reorders reopen this"
+          },
+          "image_url": {
+            "type": "string",
+            "description": "Product image URL"
+          },
+          "external_order_ref": {
+            "type": "string",
+            "description": "The store's order id/reference from the confirmation"
+          },
+          "purchased_at": {
+            "type": "string",
+            "description": "ISO 8601 purchase timestamp; omit for 'just now'"
+          },
+          "raw_payload": {
+            "type": "object",
+            "description": "Any extra captured details (confirmation-page fields, shipping, options)",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "source",
+          "title"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_purchases",
+      "description": "The buyer's cross-marketplace purchase history: everything recorded with firestarter_record_purchase, from any store, in one list — with the product URL and seller so an item can be reordered without re-searching. Use it to answer \"what did I buy\", find a past item's link/price, or start a reorder. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "purchase_id": {
+            "type": "string",
+            "description": "Get one purchase (pur_...) with full details. Omit to list."
+          },
+          "query": {
+            "type": "string",
+            "description": "Filter by words in the title or seller name"
+          },
+          "source": {
+            "type": "string",
+            "description": "Only purchases from one marketplace (e.g. \"lazada\")"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20, max 50)"
+          }
+        }
       }
     },
     {
