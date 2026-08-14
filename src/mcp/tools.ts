@@ -1134,7 +1134,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
           // delivery-options rows two lines below already rendered the friendly
           // form, so one unformatted field made the whole block look machine
           // generated (#599 F15).
-          const when = d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+          // timeZone: "UTC" is load-bearing. delivery_estimate is a DATE
+          // serialised at UTC midnight, and this package ships a bin + an .mcpb
+          // bundle, so it renders on the BUYER's machine. Without it,
+          // 2026-08-16 shows as "Sat, Aug 15" anywhere west of UTC — a wrong
+          // date that also contradicts the "~2 days" on the same line, on a
+          // delivery promise.
+          const when = d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
           optLines.push(days > 0 ? `  Arrives in ~${days} day${days === 1 ? "" : "s"} (${when})` : `  Delivery estimate: ${when}`);
         }
       }
@@ -2385,8 +2391,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // can SAY they were ignored. With `{}` they were stripped before the handler
     // and the caller saw a plain read (#599 F20).
     {
-      spend_cap_dollars: z.number().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
-      alert_threshold_pct: z.number().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
+      // z.unknown(), not z.number(): a typed schema makes a stringified
+      // number ("500", which models emit constantly) a hard InvalidParams
+      // error whose message names zod, not the setter — failing loudest in
+      // exactly the case this notice exists to catch.
+      spend_cap_dollars: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
+      alert_threshold_pct: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
+      remove: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
     },
     { title: "Check Spending Cap", readOnlyHint: true, destructiveHint: false },
     async (args: any = {}) => {
@@ -2486,8 +2497,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "Read the buyer's PERSISTENT, account-level auto-approval limit for purchases. This is a real stored account setting (not a chat note or session memory): orders whose total is at or below the limit are auto-approved and paid without a manual confirmation step, and anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Read-only: use firestarter_set_auto_approve_limit to change or disable it.",
     // Accepted, never applied — see readOnlyArgsNotice (#599 F20).
     {
-      set_limit_usd: z.number().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."),
-      disable: z.boolean().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."),
+      set_limit_usd: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."),
+      disable: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."),
     },
     { title: "Check Auto-Approve Limit", readOnlyHint: true, destructiveHint: false },
     async (args: any = {}) => {

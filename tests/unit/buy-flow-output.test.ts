@@ -46,6 +46,23 @@ describe("arrival date formatting (F15)", () => {
     expect(out).not.toMatch(/T\d{2}:\d{2}/);
     expect(out).toMatch(/[A-Z][a-z]{2}/);
   });
+
+  /**
+   * Review finding: the assertion above tests arrivalDateFromDays, which this
+   * change never touched — the actual edit formats `delivery_estimate` inline
+   * in formatExecution. That gap is why an off-by-one-day bug shipped green:
+   * delivery_estimate is a DATE at UTC midnight, and toLocaleDateString with
+   * no timeZone renders in the HOST's zone. This package runs on the buyer's
+   * own machine (bin + .mcpb), so anywhere west of UTC showed the day before.
+   */
+  it("renders the promised date, not the day before, west of UTC", () => {
+    const d = new Date("2026-08-16T00:00:00.000Z");
+    const utc = d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
+    const la = d.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles", weekday: "short", month: "short", day: "numeric" });
+    // The bug: without an explicit zone these disagree by a day.
+    expect(la).not.toBe(utc);
+    expect(utc).toBe("Sun, Aug 16");
+  });
 });
 
 /**
