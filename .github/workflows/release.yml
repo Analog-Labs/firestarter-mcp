@@ -207,35 +207,14 @@ jobs:
             --title "$TAG" \
             --generate-notes
 
-      # Tell firestarter-commerce a new version is on the registry. Best-effort
-      # by design: a dead dispatch (expired PAT, missing secret) must not fail a
-      # release that already published and tagged — commerce's daily schedule
-      # catches up within 24h — but it must be VISIBLE, hence the warning
-      # annotation rather than a silent exit 0.
+      # No repository_dispatch to firestarter-commerce, deliberately. Commerce
+      # consumes releases through Dependabot (its .github/dependabot.yml allows
+      # @analog-labs/firestarter-mcp on a daily poll), which needs nothing from
+      # this side: it authenticates itself, and its PRs trigger CI, which PRs
+      # opened with a github.token do not.
       #
-      # Payload contract: bare semver, no v prefix. bump-mcp.yml re-validates it
-      # against a semver regex before use, so a malformed value fails there
-      # rather than being interpolated into a shell command.
-      #
-      # Ordering matters: this runs after both the publish and the release, so
-      # commerce is never told about a version the registry cannot serve yet.
-      - name: Notify firestarter-commerce (repository_dispatch)
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.COMMERCE_DISPATCH_TOKEN }}
-          TAG: ${{ needs.decide.outputs.tag }}
-        run: |
-          set -euo pipefail
-          version="${TAG#v}"
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::warning::COMMERCE_DISPATCH_TOKEN is not set — commerce picks this up via its daily schedule instead."
-            exit 1
-          fi
-          if gh api "repos/Analog-Labs/firestarter-commerce/dispatches" \
-              -f event_type=mcp-release \
-              -f "client_payload[version]=${version}"; then
-            echo "dispatched mcp-release ${version} to firestarter-commerce"
-          else
-            echo "::warning::repository_dispatch to firestarter-commerce failed — its daily schedule will catch up within 24h."
-            exit 1
-          fi
+      # An earlier revision notified commerce directly. That required a
+      # cross-repo write token stored here, and it could not be scoped properly
+      # — fine-grained PATs against this org need an owner to enable them and we
+      # are members, so the fallback was a classic repo-scoped token. Trading
+      # minutes of latency for deleting that credential is the right way round.

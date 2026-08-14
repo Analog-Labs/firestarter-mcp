@@ -214,6 +214,16 @@ git commit -m "feat(release): publish to npm via OIDC trusted publishing"
 
 ### Task 4: firestarter-mcp — dispatch to commerce after the release
 
+> **SUPERSEDED 2026-08-14 — do not implement.** Commerce now consumes releases via
+> Dependabot (`firestarter-commerce` PR #759), which needs nothing from this side.
+> The dispatch step was written and then removed; see the comment where it used to
+> sit in `release.yml`. It required a cross-repo write token stored in this repo,
+> and that token could not be scoped properly: fine-grained PATs against
+> `Analog-Labs` need an org owner to enable them and we are members, so the only
+> fallback was a classic `repo`-scoped token. Deleting the credential was worth
+> more than the minutes of latency it bought. `COMMERCE_DISPATCH_TOKEN` is no
+> longer needed anywhere. Kept below as the record of what was tried.
+
 **Files:**
 - Modify: `.github/workflows/release.yml` (append one step after `Create the tag and publish the release`)
 
@@ -363,6 +373,22 @@ gh secret set MCP_BUMP_TOKEN --repo Analog-Labs/firestarter-commerce        # pa
 ---
 
 ### Task 6: commerce — `bump-mcp.yml`
+
+> **SUPERSEDED 2026-08-14 — do not implement.** `bump-mcp.yml` was built (#746),
+> then removed (#759) in favour of Dependabot, which `firestarter-commerce`
+> already configured for `apps/api` against the same target branch and the same
+> CI Gate — it was simply disabled with `open-pull-requests-limit: 0`.
+>
+> This workflow existed for one reason: the MCP server was consumed as a release
+> **tarball URL**, which Dependabot cannot version-bump. Once Task 8's cutover
+> makes it a registry pin, that reason is gone. The whole `MCP_BUMP_TOKEN`
+> requirement went with it — the token was needed only because PRs opened with
+> the built-in `github.token` do not trigger `pull_request` workflows, and
+> Dependabot's PRs do trigger CI while authenticating themselves.
+>
+> Replaced by an `allow`-scoped entry in `.github/dependabot.yml`. The `allow`
+> list is load-bearing: a non-zero limit without it opens PRs for every npm
+> dependency under `apps/api`. Kept below as the record of what was tried.
 
 **Files:**
 - Create: `.github/workflows/bump-mcp.yml` (in firestarter-commerce)
