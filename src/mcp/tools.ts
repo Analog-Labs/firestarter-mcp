@@ -2100,7 +2100,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const lines = drops.map((d) => {
           const dollars = (Number(d.discount_cents) / 100).toFixed(2);
           const gate = d.in_priority_window && Number(d.min_tier) > 0 ? ` · early access for tier ${d.min_tier}+ until ${d.priority_until}` : "";
-          return `- \`${d.id}\` — $${dollars} off · ${d.remaining} left${gate}`;
+          // Name the funder. Two identical live drops on one listing are legal
+          // only across DIFFERENT communities (#529), so without this neither
+          // the buyer nor the agent can tell an eligible drop from an
+          // ineligible one, or two communities from a dedupe regression (#599
+          // F19). Creator-supplied, so it goes through the same sanitiser as
+          // every other piece of third-party text this file emits.
+          const who = sanitizeUntrusted(d.community_name, 120);
+          return `- \`${d.id}\` — $${dollars} off${who ? ` · from ${who}` : ""} · ${d.remaining} left${gate}`;
         });
         return { content: [{ type: "text" as const, text: `**Live drops on this listing**\n${lines.join("\n")}\n\nClaim one with action 'claim' and its drop_id.` }] };
       } catch (err: any) {
