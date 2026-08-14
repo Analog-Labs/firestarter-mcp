@@ -29,34 +29,61 @@
  * manufactured by the sanitiser itself.
  */
 
-/** Conversational and structural markers that let text change who is speaking. */
-const SPEAKER_TAGS = /<\/?\s*(?:system|user|assistant|human|instructions?|listing|intent|tool_result|tool_use|function_results?|thinking)\s*\/?>/gi;
+/** Zero-width joiners a marker can hide behind. Kept in the TEXT (emoji
+ *  sequences, Persian/Urdu orthography) but seen through by the matchers. */
+const ZW = "[\u200c\u200d]*";
+
+/** Interleave ZW between every character, so `<sys‍tem>` matches `<system>`
+ *  without stripping joiners from text that merely contains them. */
+function seeThrough(word: string): string {
+  return word.split("").join(ZW);
+}
+
+const SPEAKER_WORDS = [
+  "system", "user", "assistant", "human", "instructions?", "listing", "intent",
+  // Tool-use grammars. `function_calls`/`invoke`/`parameter` are Claude's own,
+  // which makes them the likeliest consumer of this server's output.
+  "tool_result", "tool_use", "tool_call", "function_results?", "function_calls",
+  "invoke", "parameter", "thinking", "document", "start_of_turn", "end_of_turn",
+];
 
 /**
- * Speaker delimiters for OpenAI- and Llama-family models. Structural, like the
- * tags above, so they belong here rather than in the phrase blocklist this
+ * Conversational and structural markers that let text change who is speaking.
+ *
+ * `\b[^<>]*` after the word is load-bearing: requiring `>` immediately meant a
+ * single attribute walked straight through — `<system priority="max">` was
+ * emitted byte-identical, and whitespace normalisation even tidied a multi-line
+ * one into a better-formed tag than the input.
+ */
+const SPEAKER_TAGS = new RegExp(
+  `<${ZW}\\/?${ZW}\\s*(?:${SPEAKER_WORDS.map(seeThrough).join("|")})\\b[^<>]*>`,
+  "gi",
+);
+
+/**
+ * Speaker delimiters for OpenAI-, Llama- and Mistral-family models, plus the
+ * sentence markers some tokenizers treat as turn boundaries. Structural, like
+ * the tags above, so they belong here rather than in the phrase blocklist this
  * module deliberately does not have.
  */
-const MODEL_DELIMITERS = /<\|[^|>]{0,40}\|>|\[\/?INST\]|<<\/?SYS>>/gi;
+const MODEL_DELIMITERS = /<\|[^|>]*\|>|\[\s*\/?\s*INST\s*\]|<<\s*\/?\s*SYS\s*>>|<\/?s>/gi;
 
 /**
  * Characters with no legitimate place in a product name that DO have a use in
- * an attack: C0, DEL, C1, the bidi embeds/overrides/isolates behind Trojan
- * Source (text renders right-to-left and a human cannot read what the model
- * consumed), and BOM.
+ * an attack: C0, DEL, C1, soft hyphen and combining grapheme joiner, the bidi
+ * embeds/overrides/isolates behind Trojan Source (including U+061C ALM), the
+ * Hangul/Braille filler blocks used as invisible padding, BOM, and the
+ * U+E0000 tag block — the canonical channel for smuggling invisible text past
+ * a human reader.
  *
  * Zero-width joiner (U+200D) and non-joiner (U+200C) are deliberately NOT here.
- * ZWJ is what holds an emoji sequence together — stripping it turns
- * "👨‍👩‍👧" into three separate people — and ZWNJ is grammatically required in
- * Persian, Urdu and Devanagari, where removing it splits one word into two.
- * They are handled by letting the tag patterns match through them instead, so a
- * hostile `<system‍>` is still caught while a real product name survives.
+ * ZWJ holds an emoji sequence together — stripping it turns "👨‍👩‍👧" into
+ * three separate people — and ZWNJ is grammatically required in Persian, Urdu
+ * and Devanagari, where removing it splits one word into two. The matchers see
+ * through them instead (see ZW above).
  */
 // eslint-disable-next-line no-control-regex
-const INVISIBLE = /[\x00-\x1f\x7f-\x9f​‎‏‪-‮⁠-⁤⁦-⁯﻿]+/g;
-
-/** Zero-width characters left in the text, which a tag may hide behind. */
-const ZERO_WIDTH_IN_TAG = /[‌‍]/g;
+const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\u2800\u3164\ufeff\uffa0]+|[\u{e0000}-\u{e007f}]+/gu;
 
 /** Default budget for one rendered field. */
 const DEFAULT_MAX = 300;
@@ -72,16 +99,11 @@ const DEFAULT_MAX = 300;
 function stripSpeakerMarkers(input: string): string {
   let out = input;
   for (let i = 0; i < 12; i++) {
-    // Probe with the kept zero-width characters removed, so `<system‍>` is
-    // still caught — but only ADOPT the probe when it actually revealed a
-    // marker. Otherwise benign text keeps its ZWJ/ZWNJ, which is the whole
-    // reason they are not stripped outright: emoji sequences and Persian
-    // orthography depend on them.
-    const probe = out.replace(ZERO_WIDTH_IN_TAG, "");
     SPEAKER_TAGS.lastIndex = 0;
     MODEL_DELIMITERS.lastIndex = 0;
-    if (!SPEAKER_TAGS.test(probe) && !MODEL_DELIMITERS.test(probe)) return out;
-    out = probe.replace(SPEAKER_TAGS, " ").replace(MODEL_DELIMITERS, " ");
+    const next = out.replace(SPEAKER_TAGS, " ").replace(MODEL_DELIMITERS, " ");
+    if (next === out) return out;
+    out = next;
   }
   // Did not converge. Anything that survives 12 peels is adversarial, so drop
   // the characters a tag cannot exist without.

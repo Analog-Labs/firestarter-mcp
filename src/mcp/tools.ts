@@ -1046,7 +1046,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       const optLines: string[] = [];
       // #256: lead with the product name AND condition (new/used/refurbished —
       // often the deciding factor), then what's included/missing, from metadata.
-      const condition = typeof opt.metadata?.condition === "string" && opt.metadata.condition.trim() ? ` (${opt.metadata.condition.trim()})` : "";
+      // Sanitise the VALUE, then format. Sanitising the pre-formatted string
+      // both ate the leading space and let two individually-clean fields
+      // compose into a marker across the join: a title ending "<|im_start"
+      // plus a condition of "|>" produced output this module would itself
+      // reject (#599, round 3).
+      const conditionText = sanitizeUntrusted(opt.metadata?.condition, 78);
+      const condition = conditionText ? ` (${conditionText})` : "";
       const browseLabel = isOwnListing
         ? " - your listing"
         : unconnectedStore
@@ -1058,7 +1064,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // status, approve and message, so these land in the calling agent's
       // context right beside a real price and a real approval instruction — a
       // newline here forges a row inside a genuine approval block (#599).
-      optLines.push(`\n**${i + 1}. ${sanitizeUntrusted(opt.product_title)}${sanitizeUntrusted(condition, 80)}** from ${sanitizeUntrusted(opt.supplier || opt.store) || "Unknown"}${browseLabel}`);
+      optLines.push(`\n**${i + 1}. ${sanitizeUntrusted(opt.product_title)}${condition}** from ${sanitizeUntrusted(opt.supplier || opt.store) || "Unknown"}${browseLabel}`);
       // .trim() alone left newlines intact, which is the whole attack.
       const included = sanitizeUntrusted(opt.metadata?.included);
       const missing = sanitizeUntrusted(opt.metadata?.missing);
