@@ -56,7 +56,9 @@ const SPEAKER_WORDS = [
  * one into a better-formed tag than the input.
  */
 const SPEAKER_TAGS = new RegExp(
-  `<${ZW}\\/?${ZW}\\s*(?:${SPEAKER_WORDS.map(seeThrough).join("|")})\\b[^<>]*>`,
+  // \s* on BOTH sides of the slash: "< /user>" slipped through a pattern that
+  // only allowed whitespace after it. Found by the contract fuzz, not by hand.
+  `<${ZW}\\s*\\/?${ZW}\\s*(?:${SPEAKER_WORDS.map(seeThrough).join("|")})\\b[^<>]*>`,
   "gi",
 );
 
