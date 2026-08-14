@@ -9,6 +9,7 @@ import { isRelevantMatch } from "../lib/relevance.js";
 import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalogOutputShape, toCatalogStructured } from "./schemas.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
+import { sanitizeUntrusted } from "./untrusted.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
@@ -1535,8 +1536,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const ship = o.shipping?.known
             ? (o.shipping.amount_usd === 0 ? " + free shipping" : ` + $${Number(o.shipping.amount_usd).toFixed(2)} shipping`)
             : " (shipping at checkout)";
-          text += `\n${i + 1}. **${o.title}** — ${price}${ship}`;
-          if (o.seller) text += ` · ${o.seller}`;
+          // Seller-supplied. Sanitised because this line lands verbatim in the
+          // CALLING agent's context, which we neither own nor instruct (#599).
+          text += `\n${i + 1}. **${sanitizeUntrusted(o.title)}** — ${price}${ship}`;
+          if (o.seller) text += ` · ${sanitizeUntrusted(o.seller, 120)}`;
           text += `\n   ${o.purchasable ? "✓ buyable through Firestarter" : `browse-only${o.url ? ` — view: ${tidyProductUrl(o.url)}` : ""}`}`;
           if (o.purchasable) {
             if (o.eligible) {
@@ -3910,8 +3913,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // sandbox-only wording.
           const shareText = l.share_url ? l.share_url : "sandbox-only, no public link yet";
           lines.push(
-            `- ${picked ? "★ " : ""}**${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}` +
-            `${note ? `\n  _"${note}"_${communityName ? ` — ${communityName}` : ""}` : ""}` +
+            `- ${picked ? "★ " : ""}**${sanitizeUntrusted(l.product_name)}** — ${price} [${tag}]${l.category ? ` · ${sanitizeUntrusted(l.category, 80)}` : ""}` +
+            `${note ? `\n  _"${sanitizeUntrusted(note)}"_${communityName ? ` — ${sanitizeUntrusted(communityName, 120)}` : ""}` : ""}` +
             `\n  id: \`${l.id}\` · ${shareText}${img0 ? `\n  ${img0}` : ""}`,
           );
         }

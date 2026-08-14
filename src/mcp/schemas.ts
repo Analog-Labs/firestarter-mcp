@@ -10,6 +10,7 @@
  * See MCP_P1_STRUCTURED_OUTPUTS.html for the audit + rollout plan.
  */
 import { z } from "zod";
+import { sanitizeUntrusted, sanitizeUntrustedOrNull } from "./untrusted.js";
 import { toMinorUnits } from "./ucp-schema.js";
 
 /** Dated schema version, surfaced in every structured payload (à la UCP). */
@@ -104,7 +105,7 @@ export function toPreviewStructured(
     return {
       rank: i + 1,
       id: typeof o?.id === "string" ? o.id : "",
-      title: typeof o?.title === "string" ? o.title : "",
+      title: sanitizeUntrusted(o?.title),
       price_usd,
       currency,
       // Machine-precise money in the option's native currency, alongside the float
@@ -112,7 +113,7 @@ export function toPreviewStructured(
       price: { currency, amount_minor: toMinorUnits(price_usd, currency) },
       shipping: { known, amount_usd },
       total_usd,
-      seller: typeof o?.seller === "string" ? o.seller : null,
+      seller: sanitizeUntrustedOrNull(o?.seller, 120),
       source: typeof o?.source === "string" ? o.source : "unknown",
       url: typeof o?.url === "string" ? o.url : null,
       image_url: typeof o?.image_url === "string" ? o.image_url : null,
@@ -209,8 +210,8 @@ export function toCatalogStructured(
     const currency = typeof l?.currency === "string" ? l.currency : "USD";
     return {
       id: typeof l?.id === "string" ? l.id : "",
-      product_name: typeof l?.product_name === "string" ? l.product_name : "",
-      category: typeof l?.category === "string" ? l.category : null,
+      product_name: sanitizeUntrusted(l?.product_name),
+      category: sanitizeUntrustedOrNull(l?.category, 80),
       current_price,
       currency,
       price: { currency, amount_minor: toMinorUnits(current_price, currency) },
@@ -220,7 +221,7 @@ export function toCatalogStructured(
         ? l.images.filter((u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
         : [],
       picked_by_community: l?.picked_by_community === true,
-      pick_note: typeof l?.pick_note === "string" && l.pick_note.trim() ? l.pick_note.trim() : null,
+      pick_note: sanitizeUntrustedOrNull(l?.pick_note),
     };
   });
   return {
@@ -230,7 +231,7 @@ export function toCatalogStructured(
     buyable_count: rows.filter((r) => r.buyable).length,
     has_more: !!data?.has_more,
     broadened_to: broadenedTo,
-    community: typeof data?.query?.community?.name === "string" ? data.query.community.name : null,
+    community: sanitizeUntrustedOrNull(data?.query?.community?.name, 120),
     listings: rows,
   };
 }
