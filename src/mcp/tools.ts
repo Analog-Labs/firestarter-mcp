@@ -1132,8 +1132,17 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
           // in. Diffing against Date.now() gives the UTC day-gap, which only
           // agrees with `when` for a reader already in UTC: a Los Angeles buyer
           // at 19:00 saw "in ~1 day (Sun, Aug 16)" when Aug 16 was two days out.
-          const todayUtc = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
-          const days = Math.round((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - todayUtc) / 86400000);
+          // "Today" is the BUYER's calendar day; the estimate keeps its own
+          // UTC day (it is a DATE, not an instant). Anchoring both to UTC was a
+          // mathematical no-op — ceil(N - fraction) === N for a UTC-midnight
+          // value — so the countdown stayed wrong for exactly the readers the
+          // date fix was for: an LA buyer at 19:00 still read "~1 day
+          // (Sun, Aug 16)" when Aug 16 was two days out, now contradicting the
+          // shipping row directly beneath it. One `new Date()`, because three
+          // can straddle a UTC midnight and yield "~367 days".
+          const now = new Date();
+          const todayLocal = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+          const days = Math.round((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - todayLocal) / 86400000);
           // A DATE, not a timestamp. This printed the raw ISO string —
           // "Arrives in ~2 days (2026-08-16T00:00:00.000Z)" — while the
           // delivery-options rows two lines below already rendered the friendly

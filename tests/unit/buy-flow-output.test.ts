@@ -59,6 +59,10 @@ describe("arrival date formatting (F15)", () => {
   it("renders the promised date and an agreeing countdown, west of UTC", async () => {
     const realTz = process.env.TZ;
     process.env.TZ = "America/Los_Angeles";
+    // 19:00 in Los Angeles on Aug 14 — the exact scenario reported: the UTC
+    // date has already rolled to Aug 15 while the buyer's calendar says Aug 14.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-08-15T02:00:00.000Z"));
     try {
       vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
         id: "exec_1", status: "awaiting_approval", request_text: "mug",
@@ -77,8 +81,18 @@ describe("arrival date formatting (F15)", () => {
 
       expect(text, "rendered the day before the promised date").toContain("Aug 16");
       expect(text).not.toContain("Aug 15");
+      // The countdown must agree with the date AND with the buyer's calendar.
+      // Round 2 fixed the date and left this; round 3's first attempt anchored
+      // "today" to UTC, which is a no-op for a UTC-midnight DATE. Asserting
+      // only the date is what let both ship green.
+      expect(text, "countdown disagrees with the rendered date").toMatch(/~2 days/);
     } finally {
-      process.env.TZ = realTz;
+      // `process.env.TZ = undefined` stringifies to the literal "undefined",
+      // which silently pins the rest of the worker to UTC. TZ is unset by
+      // default on dev machines and CI runners, so this is the common path.
+      vi.useRealTimers();
+      if (realTz === undefined) delete process.env.TZ;
+      else process.env.TZ = realTz;
     }
   });
 });
