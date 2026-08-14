@@ -187,10 +187,11 @@ Insert between the pack step and `Create the tag and publish the release`:
 - [ ] **Step 3: Validate the workflow file parses**
 
 ```bash
-node -e "const y=require('yaml');const fs=require('fs');const d=y.parse(fs.readFileSync('.github/workflows/release.yml','utf8'));console.log('jobs:',Object.keys(d.jobs));console.log('release perms:',JSON.stringify(d.jobs.release.permissions));console.log('steps:',d.jobs.release.steps.map(s=>s.name||s.uses||s.run.slice(0,30)).join(' | '))"
+npx --yes js-yaml .github/workflows/release.yml > /tmp/rel.json
+node -e "const d=require('/tmp/rel.json');console.log('jobs:',Object.keys(d.jobs));console.log('release perms:',JSON.stringify(d.jobs.release.permissions));console.log('environment:',JSON.stringify(d.jobs.release.environment));console.log('steps:',d.jobs.release.steps.map(s=>s.name||s.uses||'run').join(' | '))"
 ```
-(`yaml` is already in node_modules via transitive deps; if not: `npm exec --yes -- yaml --help` is unnecessary — fall back to `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/release.yml'))" && echo OK`.)
-Expected: parses; `release perms: {"contents":"write","id-token":"write"}`; the publish step sits between the pack and release-create steps.
+(Uses `npx --yes js-yaml`, which ships a CLI that prints the parsed document as JSON. Do **not** use `require('yaml')` — it is not a dependency of this repo and is absent from `node_modules`; `python3 -c "import yaml"` is equally unavailable on a stock macOS/CI box, and `pip install pyyaml` is blocked by PEP 668 on Homebrew Python. Both of those were in an earlier draft of this plan and neither runs.)
+Expected: parses; `release perms: {"contents":"write","id-token":"write"}`; `environment: "npm-publish"`; the publish step sits between the pack and release-create steps.
 
 - [ ] **Step 4: Test the guard logic locally against real registry data**
 
@@ -255,18 +256,22 @@ git commit -m "feat(release): publish to npm via OIDC trusted publishing"
 - [ ] **Step 2: Validate parse + step order**
 
 ```bash
-python3 -c "
-import yaml
-d = yaml.safe_load(open('.github/workflows/release.yml'))
-steps = [s.get('name', s.get('uses','run')) for s in d['jobs']['release']['steps']]
-print('\n'.join(steps))
-assert steps[-1] == 'Notify firestarter-commerce (repository_dispatch)'
-assert 'Publish to npm (skipped when the version already exists)' in steps
-i_pub, i_rel, i_disp = (steps.index(x) for x in ['Publish to npm (skipped when the version already exists)','Create the tag and publish the release','Notify firestarter-commerce (repository_dispatch)'])
-assert i_pub < i_rel < i_disp, 'publish -> release -> dispatch ordering violated'
-print('ORDERING OK')
+npx --yes js-yaml .github/workflows/release.yml > /tmp/rel.json
+node -e "
+const d = require('/tmp/rel.json');
+const steps = d.jobs.release.steps.map(s => s.name || s.uses || 'run');
+console.log(steps.join('\n'));
+const PUB = 'Publish to npm (skipped when the version already exists)';
+const REL = 'Create the tag and publish the release';
+const DIS = 'Notify firestarter-commerce (repository_dispatch)';
+if (steps[steps.length - 1] !== DIS) throw new Error('dispatch is not the last step');
+if (!steps.includes(PUB)) throw new Error('publish step missing');
+const [iPub, iRel, iDis] = [PUB, REL, DIS].map(x => steps.indexOf(x));
+if (!(iPub < iRel && iRel < iDis)) throw new Error('publish -> release -> dispatch ordering violated');
+console.log('ORDERING OK');
 "
 ```
+(Same note as Task 3 Step 3: `python3 -c "import yaml"` does not run here — PyYAML is not installed and PEP 668 blocks `pip install` on Homebrew Python. `npx --yes js-yaml` is the portable option.)
 Expected: step list ends with the dispatch step and `ORDERING OK`.
 
 - [ ] **Step 3: Commit and open the producer PR**
@@ -304,10 +309,22 @@ This task cannot be executed by an agent — `npm login` is a browser flow and P
 - [ ] **Step 1 (Ali): Claim/confirm the org and log in**
 
 ```bash
-npm login   # fresh login — the token in ~/.npmrc is dead (E401)
-npm whoami  # expect your username
+npm login             # fresh login — the token in ~/.npmrc is dead (E401)
+npm whoami            # expect your username
+npm org ls analog-labs
 ```
-Then on npmjs.com: create org `analog-labs` (or confirm you own it). **If the name is held by a third party, STOP — the scope decision reopens and cascades into every rename (spec, Bootstrap 1).**
+
+**Settled 2026-08-14: the scope is `analog-labs`.** An npm org's name IS its scope, so the scope half of a package name is not a free choice — `@analog/…` requires owning the `analog` org, and we do not own it. Publishing `@analog/firestarter-mcp` returned:
+
+```
+npm error 404 Not Found - PUT https://registry.npmjs.org/@analog%2ffirestarter-mcp
+```
+
+npm returns 404 rather than 403 for a scope you cannot write to, so as not to disclose whether it exists. `analog-labs` is ours — it already carries `@analog-labs/timegraph-js`.
+
+**Do not re-litigate this with an unauthenticated probe.** `registry.npmjs.org/-/org/<scope>/package` separates free (`404 {"error":"Scope not found"}`) from claimed (`200`), but says nothing about *whose* a claimed scope is: `analog` returns `200 {}`, which is indistinguishable between "ours, private packages only" and "a stranger's". Only an authenticated `npm org ls` or a real publish attempt settles ownership. Two hours were spent on this; the probe is in the history of this file if you want it.
+
+**Publishing also requires 2FA now**, and TOTP enrolment has been retired — `npm profile enable-2fa` fails with `404 Adding a new TOTP 2FA is no longer supported`. Register a **security key / passkey** at `npmjs.com/settings/<user>/tfa` (Touch ID counts), then re-run `npm login` with `auth-type=web` (the default) so the session carries the 2FA. Granular tokens with "bypass 2FA" also work but are being restricted for direct publishing — do not build on them.
 
 - [ ] **Step 2 (Ali): Publish the stub**
 

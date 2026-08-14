@@ -14,6 +14,10 @@ name: Release
 # branches, not tags, so the Actions token can create v<version> even though it
 # cannot push a commit to a protected main. The version bump arrives through
 # code review like any other change.
+#
+# That reasoning covers tagging only. This workflow also publishes to npm, and
+# branch protection does NOT contain that — see the environment binding on the
+# release job for why, and for what has to be configured outside this file.
 on:
   push:
     branches: [main]
@@ -63,6 +67,30 @@ jobs:
     needs: decide
     if: needs.decide.outputs.release == 'true'
     runs-on: ubuntu-latest
+    # id-token lets npm's trusted-publishing OIDC exchange run, which is what
+    # removes the need for an npm token anywhere in this repo. contents must be
+    # restated: job-level permissions REPLACE the workflow-level block above,
+    # they do not merge with it, and gh release create needs contents: write.
+    permissions:
+      contents: write
+      id-token: write
+    # THE branch guard for publishing, and it has to live here rather than in
+    # an `if:` further down. npm's trusted publisher matches on {org, repo,
+    # workflow filename, environment} — there is NO ref in that tuple. Combined
+    # with workflow_dispatch (and push, which an attacker can add to their own
+    # copy) running the workflow file FROM THE SELECTED REF, anyone with write
+    # access could otherwise branch, rewrite this file to strip the gates,
+    # dispatch it, and publish as `latest` with a valid provenance attestation
+    # that faithfully records their branch. main's push restriction never gets
+    # involved, because nothing is pushed to main.
+    #
+    # An in-file `if: github.ref == 'refs/heads/main'` cannot fix that: it sits
+    # in the file being rewritten. Only an out-of-file binding holds, so this
+    # environment MUST be configured with "Deployment branches and tags:
+    # Selected branches -> main", and the npm trusted publisher MUST name this
+    # same environment. If npm's environment field is left blank, an attacker
+    # simply deletes this line on their branch and publishes anyway.
+    environment: npm-publish
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +98,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          registry-url: "https://registry.npmjs.org"
 
       - run: npm ci
 
@@ -123,6 +152,47 @@ jobs:
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
           echo "packed $tarball"
 
+      # Publish to npm via OIDC trusted publishing — no token exists anywhere in
+      # this repo, which is the point: there is nothing to leak or rotate.
+      # Requires npm >= 11.5.1 (Node 22 bundles 10.9.x, hence the upgrade) and a
+      # GitHub-hosted runner.
+      #
+      # The guard tests npm view's OUTPUT, not its exit code: some npm versions
+      # exit 0 with empty output for a missing version, and a wholly unpublished
+      # package E404s. Both mean "not on the registry" and both must publish.
+      # This makes re-runs and the bootstrapped-stub era skip cleanly, which
+      # matters because npm forbids republishing a version that already exists —
+      # without the guard, any re-run of a completed release fails the job.
+      #
+      # Publishing the packed tarball rather than the working tree keeps the
+      # registry bits byte-identical to the release asset attached below.
+      - name: Publish to npm (skipped when the version already exists)
+        # Defence in depth only — the environment's deployment-branch rule is
+        # the guard that actually holds. This line is in the file an attacker
+        # would be rewriting, so it stops an accident, not an adversary.
+        if: github.ref == 'refs/heads/main'
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          # Pinned rather than @latest. Trusted publishing needs npm >= 11.5.1;
+          # npm@latest is 12.x, whose engines floor is ^22.22.2 while node 22
+          # resolves to 22.23.2 — one patch of margin on a step that only runs
+          # on release day. npm@^11.5.1 resolves to 11.19.0, engines
+          # ^20.17.0 || >=22.9.0, and its OIDC implementation is byte-identical
+          # to 12.x's.
+          npm install -g npm@^11.5.1
+          npm --version
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          existing="$(npm view "${name}@${version}" version 2>/dev/null || true)"
+          if [ -n "$existing" ]; then
+            echo "${name}@${version} is already on the registry — skipping publish."
+          else
+            npm publish "$TARBALL" --provenance --access public
+            echo "published ${name}@${version} with provenance"
+          fi
+
       # gh release create makes the tag itself, pointed at this commit, so the
       # workflow never pushes to the protected branch.
       - name: Create the tag and publish the release
@@ -136,3 +206,36 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "$TAG" \
             --generate-notes
+
+      # Tell firestarter-commerce a new version is on the registry. Best-effort
+      # by design: a dead dispatch (expired PAT, missing secret) must not fail a
+      # release that already published and tagged — commerce's daily schedule
+      # catches up within 24h — but it must be VISIBLE, hence the warning
+      # annotation rather than a silent exit 0.
+      #
+      # Payload contract: bare semver, no v prefix. bump-mcp.yml re-validates it
+      # against a semver regex before use, so a malformed value fails there
+      # rather than being interpolated into a shell command.
+      #
+      # Ordering matters: this runs after both the publish and the release, so
+      # commerce is never told about a version the registry cannot serve yet.
+      - name: Notify firestarter-commerce (repository_dispatch)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.COMMERCE_DISPATCH_TOKEN }}
+          TAG: ${{ needs.decide.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::COMMERCE_DISPATCH_TOKEN is not set — commerce picks this up via its daily schedule instead."
+            exit 1
+          fi
+          if gh api "repos/Analog-Labs/firestarter-commerce/dispatches" \
+              -f event_type=mcp-release \
+              -f "client_payload[version]=${version}"; then
+            echo "dispatched mcp-release ${version} to firestarter-commerce"
+          else
+            echo "::warning::repository_dispatch to firestarter-commerce failed — its daily schedule will catch up within 24h."
+            exit 1
+          fi
