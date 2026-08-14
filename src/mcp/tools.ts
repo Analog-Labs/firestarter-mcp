@@ -1058,7 +1058,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // status, approve and message, so these land in the calling agent's
       // context right beside a real price and a real approval instruction — a
       // newline here forges a row inside a genuine approval block (#599).
-      optLines.push(`\n**${i + 1}. ${sanitizeUntrusted(opt.product_title)}${condition}** from ${sanitizeUntrusted(opt.supplier || opt.store) || "Unknown"}${browseLabel}`);
+      optLines.push(`\n**${i + 1}. ${sanitizeUntrusted(opt.product_title)}${sanitizeUntrusted(condition, 80)}** from ${sanitizeUntrusted(opt.supplier || opt.store) || "Unknown"}${browseLabel}`);
       // .trim() alone left newlines intact, which is the whole attack.
       const included = sanitizeUntrusted(opt.metadata?.included);
       const missing = sanitizeUntrusted(opt.metadata?.missing);
@@ -1767,7 +1767,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // mis-resolution visible in the same message as the total.
         const boughtTitle =
           typeof exec.selected_option?.product_title === "string" ? exec.selected_option.product_title : null;
-        const itemLine = boughtTitle ? [`Item: ${boughtTitle}`] : [];
+        const itemLine = boughtTitle ? [`Item: ${sanitizeUntrusted(boughtTitle)}`] : [];
 
         // #272: when approval transitions to awaiting_payment_method, return a
         // concise one-shot message instead of the full execution dump (which
@@ -1869,7 +1869,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
         const lines: string[] = [];
-        lines.push(`Delivery options${data.product_title ? ` for ${data.product_title}` : ""} — pick a speed, or approve to use the cheapest:`);
+        lines.push(`Delivery options${data.product_title ? ` for ${sanitizeUntrusted(data.product_title)}` : ""} — pick a speed, or approve to use the cheapest:`);
         // From → to route (coarse localities from the structured origin/destination
         // objects), so the delivery provider's origin and the buyer's destination
         // are visible before any speed is chosen.
@@ -2234,7 +2234,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (data.ship_from) {
           text += `Ships from: ${[data.ship_from.city, data.ship_from.state, data.ship_from.country].filter(Boolean).join(", ")}\n`;
         }
-        text += `Carrier: ${data.carrier || "Unknown"}\n`;
+        text += `Carrier: ${sanitizeUntrusted(data.carrier, 80) || "Unknown"}\n`;
         // Post-ship the label is BOUGHT: `provider` is the logistics service the
         // label was purchased through (EasyPost/DHL/Shippo/Sendcloud) — distinct
         // from the carrier moving the parcel. Say it in those terms.
@@ -2243,7 +2243,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (bookedVia) text += `Label booked via: ${bookedVia}\n`;
         }
         if (data.shipping_method?.service) text += `Service: ${data.shipping_method.service}\n`;
-        text += `Tracking: ${data.tracking_number}\n`;
+        text += `Tracking: ${sanitizeUntrusted(data.tracking_number, 80)}\n`;
         if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
         // Carrier ETA when the shipment has one; else fall back to the date
         // promised at quote time so "when will it arrive?" always has an answer.
@@ -2443,7 +2443,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const data = await apiRequest("GET", `/v1/executions/${execution_id}/receipt`);
         let text = `**Receipt — Order ${execution_id}**\n`;
         text += `Date: ${data.paid_at || data.created_at || "N/A"}\n`;
-        if (data.product_title) text += `Item: ${data.product_title}\n`;
+        if (data.product_title) text += `Item: ${sanitizeUntrusted(data.product_title)}\n`;
         if (data.subtotal_cents != null) text += `Subtotal: $${(data.subtotal_cents / 100).toFixed(2)}\n`;
         // subtotal is GROSS — state the discount so it doesn't look silently
         // dropped between the subtotal and the (already-net) total below.
@@ -4941,7 +4941,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             const lines: string[] = [];
             lines.push(`**Dispute ${d.id}** — status: ${statusLabel(d.status)}`);
             if (d.execution_id) lines.push(`Order: ${d.execution_id}`);
-            if (d.reason) lines.push(`Reason: ${d.reason}${d.dispute_type ? ` (${statusLabel(d.dispute_type)})` : ""}`);
+            // Counterparty free text in the detail view, same as the thread below.
+            if (d.reason) lines.push(`Reason: ${sanitizeUntrusted(d.reason, 600)}${d.dispute_type ? ` (${statusLabel(d.dispute_type)})` : ""}`);
             if (OPEN_STATES.has(d.status) && d.seller_deadline_at) lines.push(`Seller must respond by ${new Date(d.seller_deadline_at).toUTCString()}.`);
             if (!OPEN_STATES.has(d.status)) {
               const pct = typeof d.buyer_refund_pct === "number" ? ` — you were refunded ${d.buyer_refund_pct}%` : "";
@@ -4954,7 +4955,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               for (const o of offers) {
                 const state = o.accepted_at ? "accepted" : o.rejected_at ? "rejected" : "pending";
                 const who = o.offered_by === "seller" ? "Seller" : "You";
-                lines.push(`- ${who}: **${o.buyer_pct}% refund to you / ${o.seller_pct}% to seller** — ${state}${o.reasoning ? ` — "${o.reasoning}"` : ""}`);
+                lines.push(`- ${who}: **${o.buyer_pct}% refund to you / ${o.seller_pct}% to seller** — ${state}${o.reasoning ? ` — "${sanitizeUntrusted(o.reasoning, 400)}"` : ""}`);
               }
             }
 
