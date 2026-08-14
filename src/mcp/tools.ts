@@ -10,6 +10,7 @@ import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalog
 import { SHARE_LINK_BASE, listingShareUrl } from "../lib/share-link.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
+import { enforceSchemaDialect } from "./schema-dialect.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
@@ -188,6 +189,54 @@ export function formatCommunitySells(community: any): string | null {
     lines.push(`• ${nm} — ${price}${id}`);
   }
   return lines.join("\n");
+}
+
+/**
+ * Render seller analytics. Revenue counts only LIVE, paid orders — but
+ * firestarter_seller_orders lists every order a seller has, test-mode and
+ * unpaid ones included, so the two surfaces can legitimately show different
+ * counts. Printing a bare "$0.00" next to a 17-line order list is what turned
+ * that into a bug report (firestarter-commerce#726), so whenever orders exist
+ * that revenue does NOT count, say which ones and why. Silence otherwise —
+ * a seller whose figures already add up gets no extra noise.
+ *
+ * Tolerates an API response without the newer fields (older api deployments):
+ * the reconciliation lines simply don't render. Exported for tests.
+ */
+export function formatSellerAnalytics(data: any): string {
+  const money = (cents: unknown) => `$${((Number(cents) || 0) / 100).toFixed(2)}`;
+  const count = (v: unknown) => Math.max(0, Number(v) || 0);
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+  const orders = count(data?.orders);
+  const testOrders = count(data?.test_orders);
+  // orders_recorded counts rows in `orders`; live + test count ledger rows.
+  // The remainder is orders that never produced one — unpaid, or created
+  // outside the pay path.
+  const unpaid = Math.max(0, count(data?.orders_recorded) - orders - testOrders);
+
+  let text = "**Seller Analytics**\n";
+  text += `Total revenue: ${money(data?.revenue_cents)}\n`;
+  text += `Total orders: ${orders}\n`;
+  text += `Average order: ${money(data?.avg_order_cents)}\n`;
+
+  if (testOrders > 0) {
+    text += `\n${plural(testOrders, "order")} ${testOrders === 1 ? "is" : "are"} in test mode `
+      + `(${money(data?.test_revenue_cents)}) and excluded above — test mode moves no real money.\n`;
+  }
+  if (unpaid > 0) {
+    text += `\n${plural(unpaid, "order")} ${unpaid === 1 ? "is" : "are"} not yet paid, `
+      + `so ${unpaid === 1 ? "it doesn't" : "they don't"} count toward revenue.\n`;
+  }
+
+  if (data?.daily?.length > 0) {
+    text += `\n**Last 30 days:**\n`;
+    for (const d of data.daily.slice(-7)) {
+      text += `  ${d.date}: ${money(d.revenue_cents)} (${plural(count(d.orders), "order")})\n`;
+    }
+    if (data.daily.length > 7) text += `  ... and ${data.daily.length - 7} more days\n`;
+  }
+  return text;
 }
 
 /**
@@ -2577,6 +2626,93 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_record_purchase
+  server.tool(
+    "firestarter_record_purchase",
+    "Record a purchase completed OUTSIDE the network — e.g. after driving checkout on Lazada, a Shopify storefront, or any other store — so Firestarter keeps one purchase history across every marketplace and can reorder the item later. Call this right after an off-network checkout succeeds, with whatever details are visible on the confirmation page. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+    {
+      source: z.string().describe("Where the purchase happened, lowercase (e.g. \"lazada\", \"shopify\", \"shopee\", \"amazon\", \"other\")"),
+      title: z.string().describe("Product title as shown by the store"),
+      amount: z.number().optional().describe("Total paid, in the purchase currency"),
+      currency: z.string().optional().describe("ISO currency code (e.g. \"MYR\", \"USD\")"),
+      seller_name: z.string().optional().describe("Store / seller name"),
+      seller_domain: z.string().optional().describe("Seller's domain (e.g. \"watsons.com.my\") — powers later reorders and seller discovery"),
+      product_url: z.string().optional().describe("Direct product page URL — reorders reopen this"),
+      image_url: z.string().optional().describe("Product image URL"),
+      external_order_ref: z.string().optional().describe("The store's order id/reference from the confirmation"),
+      purchased_at: z.string().optional().describe("ISO 8601 purchase timestamp; omit for 'just now'"),
+      raw_payload: z.record(z.string(), z.unknown()).optional().describe("Any extra captured details (confirmation-page fields, shipping, options)"),
+    },
+    { title: "Record External Purchase", readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    async (args) => {
+      try {
+        const res = await apiRequest("POST", "/v1/external-purchases", args);
+        const p = res.purchase;
+        const price = p.amount != null ? ` — ${p.currency ?? ""} ${p.amount}`.trimEnd() : "";
+        return {
+          content: [{
+            type: "text" as const,
+            text: `**Purchase recorded** (${p.environment} mode) — \`${p.id}\`\n${p.title}${price} · ${p.source}${p.seller_name ? ` · ${p.seller_name}` : ""}\nSee it anytime with \`firestarter_purchases\`.`,
+          }],
+        };
+      } catch (err: any) {
+        if (err?.code === "TEST_MODE_ONLY") {
+          return { content: [{ type: "text" as const, text: "Purchase capture is test-mode only right now. Use a test key (fs_test_*) or enable test mode for the org — live keys can't record purchases yet." }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: `Couldn't record the purchase: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_purchases
+  server.tool(
+    "firestarter_purchases",
+    "The buyer's cross-marketplace purchase history: everything recorded with firestarter_record_purchase, from any store, in one list — with the product URL and seller so an item can be reordered without re-searching. Use it to answer \"what did I buy\", find a past item's link/price, or start a reorder. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+    {
+      purchase_id: z.string().optional().describe("Get one purchase (pur_...) with full details. Omit to list."),
+      query: z.string().optional().describe("Filter by words in the title or seller name"),
+      source: z.string().optional().describe("Only purchases from one marketplace (e.g. \"lazada\")"),
+      limit: z.number().optional().describe("Max results (default 20, max 50)"),
+    },
+    { title: "My Purchases", readOnlyHint: true, destructiveHint: false },
+    async ({ purchase_id, query, source, limit }) => {
+      try {
+        if (purchase_id) {
+          const res = await apiRequest("GET", `/v1/external-purchases/${encodeURIComponent(purchase_id)}`);
+          const p = res.purchase;
+          let text = `**${p.title}** — \`${p.id}\` (${p.environment} mode)\nSource: ${p.source}${p.seller_name ? ` · ${p.seller_name}` : ""}${p.seller_domain ? ` (${p.seller_domain})` : ""}\n`;
+          if (p.amount != null) text += `Paid: ${p.currency ?? ""} ${p.amount}\n`;
+          if (p.external_order_ref) text += `Order ref: ${p.external_order_ref}\n`;
+          if (p.purchased_at) text += `Purchased: ${p.purchased_at}\n`;
+          if (p.product_url) text += `Reorder here: ${p.product_url}\n`;
+          return { content: [{ type: "text" as const, text }] };
+        }
+        const params = new URLSearchParams();
+        if (query) params.set("q", query);
+        if (source) params.set("source", source);
+        if (limit) params.set("limit", String(limit));
+        const qs = params.toString();
+        const res = await apiRequest("GET", `/v1/external-purchases${qs ? `?${qs}` : ""}`);
+        const purchases = res.purchases || [];
+        if (purchases.length === 0) {
+          return { content: [{ type: "text" as const, text: "No purchases recorded yet. After an off-network checkout, record it with `firestarter_record_purchase`." }] };
+        }
+        const lines = [`**Your purchases** (${purchases.length})\n`];
+        for (const p of purchases) {
+          const price = p.amount != null ? ` — ${p.currency ?? ""} ${p.amount}`.trimEnd() : "";
+          lines.push(`- **${p.title}**${price} · ${p.source}${p.seller_name ? ` · ${p.seller_name}` : ""}`);
+          lines.push(`  id: \`${p.id}\`${p.purchased_at ? ` · ${p.purchased_at.slice(0, 10)}` : ""}${p.product_url ? ` · ${p.product_url}` : ""}`);
+        }
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err: any) {
+        if (err?.code === "TEST_MODE_ONLY") {
+          return { content: [{ type: "text" as const, text: "Purchase history is test-mode only right now. Use a test key (fs_test_*) or enable test mode for the org." }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_unwatch
   server.tool(
     "firestarter_unwatch",
@@ -4454,7 +4590,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (orders.length === 0) {
           return { content: [{ type: "text" as const, text: "No orders yet. Once a buyer purchases one of your listings, orders will appear here." }] };
         }
-        const lines = [`**Your Orders** (${orders.length})\n`];
+        // This list has no test-mode filter, but seller analytics excludes
+        // test orders from revenue — so an unlabelled test sale reads exactly
+        // like a real one and the two surfaces appear to contradict each other
+        // (firestarter-commerce#726). Mark them here and in the header count.
+        const testCount = orders.filter((o: any) => o.test_mode === true).length;
+        const header = testCount > 0
+          ? `**Your Orders** (${orders.length}, ${testCount} in test mode)\n`
+          : `**Your Orders** (${orders.length})\n`;
+        const lines = [header];
         let anyPending = false;
         for (const o of orders) {
           const amount = o.amount_cents ? `$${(o.amount_cents / 100).toFixed(2)}` : "pending";
@@ -4465,7 +4609,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const tracking = o.tracking_number
             ? ` - Tracking: ${o.carrier || "Carrier"} ${o.tracking_number}${o.tracking_url ? ` (${o.tracking_url})` : ""}`
             : "";
-          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}${tracking} - order_id \`${o.id}\``);
+          const testTag = o.test_mode === true ? " - TEST MODE (no real money)" : "";
+          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}${tracking}${testTag} - order_id \`${o.id}\``);
         }
         if (anyPending) {
           lines.push(`\nAccept a pending order with firestarter_confirm_order (its order_id), then add tracking with firestarter_ship_order once it's on its way.`);
@@ -4540,18 +4685,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     async () => {
       try {
         const data = await apiRequest("GET", "/v1/sellers/analytics");
-        let text = "**Seller Analytics**\n";
-        text += `Total revenue: $${(data.revenue_cents / 100).toFixed(2)}\n`;
-        text += `Total orders: ${data.orders}\n`;
-        text += `Average order: $${(data.avg_order_cents / 100).toFixed(2)}\n`;
-        if (data.daily?.length > 0) {
-          text += `\n**Last 30 days:**\n`;
-          for (const d of data.daily.slice(-7)) {
-            text += `  ${d.date}: $${(d.revenue_cents / 100).toFixed(2)} (${d.orders} order${d.orders !== 1 ? "s" : ""})\n`;
-          }
-          if (data.daily.length > 7) text += `  ... and ${data.daily.length - 7} more days\n`;
-        }
-        return { content: [{ type: "text" as const, text }] };
+        return { content: [{ type: "text" as const, text: formatSellerAnalytics(data) }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error fetching analytics: ${toErrorMessage(err)}` }], isError: true };
       }
@@ -5810,4 +5944,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     );
   }
+
+  // Last, once every tool is registered: re-stamp the advertised schemas with
+  // MCP's 2020-12 dialect. The SDK hardcodes draft-07 and exposes no way to ask
+  // for anything else, and a host that validates against the spec dialect
+  // rejects the tool outright (#736).
+  enforceSchemaDialect(server);
 }
