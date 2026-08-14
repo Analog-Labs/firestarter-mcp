@@ -11,6 +11,7 @@ import { SHARE_LINK_BASE, listingShareUrl } from "../lib/share-link.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
+import { sanitizeUntrusted } from "./untrusted.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
@@ -141,11 +142,14 @@ function formatCommunityShelf(community: any): string | null {
   const name =
     typeof community?.name === "string" && community.name.trim() ? community.name.trim() : "this community";
 
-  const lines: string[] = [`**What ${name} recommends:**`];
+  const lines: string[] = [`**What ${sanitizeUntrusted(name, 120) || "this community"} recommends:**`];
   for (const p of picks.slice(0, SHELF_RENDER_LIMIT)) {
-    const nm = typeof p?.product_name === "string" && p.product_name.trim() ? p.product_name.trim() : "Untitled";
+    // Same two fields toCatalogStructured sanitises, reaching the buyer through
+    // market_preview / join_market / my_market instead of catalog_search.
+    const nm = sanitizeUntrusted(p?.product_name) || "Untitled";
     const price = Number.isFinite(Number(p?.price)) ? `$${Number(p.price).toFixed(2)}` : "price at checkout";
-    const note = typeof p?.note === "string" && p.note.trim() ? ` — "${p.note.trim()}"` : "";
+    const noteText = sanitizeUntrusted(p?.note);
+    const note = noteText ? ` — "${noteText}"` : "";
     const id = typeof p?.listing_id === "string" && p.listing_id ? ` (listing_id: \`${p.listing_id}\`)` : "";
     lines.push(`• ${nm} — ${price}${note}${id}`);
     const drops: any[] = Array.isArray(p?.drops) ? p.drops : [];
@@ -1024,7 +1028,13 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       const optLines: string[] = [];
       // #256: lead with the product name AND condition (new/used/refurbished —
       // often the deciding factor), then what's included/missing, from metadata.
-      const condition = typeof opt.metadata?.condition === "string" && opt.metadata.condition.trim() ? ` (${opt.metadata.condition.trim()})` : "";
+      // Sanitise the VALUE, then format. Sanitising the pre-formatted string
+      // both ate the leading space and let two individually-clean fields
+      // compose into a marker across the join: a title ending "<|im_start"
+      // plus a condition of "|>" produced output this module would itself
+      // reject (#599, round 3).
+      const conditionText = sanitizeUntrusted(opt.metadata?.condition, 78);
+      const condition = conditionText ? ` (${conditionText})` : "";
       const browseLabel = isOwnListing
         ? " - your listing"
         : unconnectedStore
@@ -1032,9 +1042,14 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
           : externalResult
             ? " - browse-only (external)"
             : "";
-      optLines.push(`\n**${i + 1}. ${opt.product_title}${condition}** from ${opt.supplier || opt.store || "Unknown"}${browseLabel}`);
-      const included = typeof opt.metadata?.included === "string" ? opt.metadata.included.trim() : "";
-      const missing = typeof opt.metadata?.missing === "string" ? opt.metadata.missing.trim() : "";
+      // Seller-supplied, on the money path. formatExecution backs execute,
+      // status, approve and message, so these land in the calling agent's
+      // context right beside a real price and a real approval instruction — a
+      // newline here forges a row inside a genuine approval block (#599).
+      optLines.push(`\n**${i + 1}. ${sanitizeUntrusted(opt.product_title)}${condition}** from ${sanitizeUntrusted(opt.supplier || opt.store) || "Unknown"}${browseLabel}`);
+      // .trim() alone left newlines intact, which is the whole attack.
+      const included = sanitizeUntrusted(opt.metadata?.included);
+      const missing = sanitizeUntrusted(opt.metadata?.missing);
       if (included) optLines.push(`  Includes: ${included}`);
       if (missing) optLines.push(`  Not included: ${missing}`);
       // Surface the product image URL so the agent can relay it and chat
@@ -1085,6 +1100,22 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
         const voucherDiscountCents = Number((opt.metadata as any)?.voucher_discount_cents) || 0;
         if (voucherCode && voucherDiscountCents > 0) {
           optLines.push(`  Voucher ${voucherCode} applied: -$${(voucherDiscountCents / 100).toFixed(2)}`);
+        }
+      }
+      // An unclaimed community drop on this listing. The quote does NOT include
+      // it — claiming is the buyer's call, because it consumes a limited slot —
+      // so say so plainly and name the tool that takes it (#599 F8). Without
+      // this line a member paid full price and only found the discount by
+      // calling firestarter_drops on a hunch.
+      {
+        const availCents = Number((opt.metadata as any)?.drop_available_cents) || 0;
+        const availId = (opt.metadata as any)?.drop_available_id;
+        if (availCents > 0 && typeof availId === "string") {
+          const who = sanitizeUntrusted((opt.metadata as any)?.drop_available_community, 120);
+          optLines.push(
+            `  🎁 $${(availCents / 100).toFixed(2)} community discount available${who ? ` from ${who}` : ""} — NOT included above. ` +
+            `Claim it before approving: firestarter_drops action "claim", drop_id "${availId}".`,
+          );
         }
       }
       // #256: tell the buyer when it arrives (delivery_estimate is a DATE).
@@ -1523,8 +1554,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const ship = o.shipping?.known
             ? (o.shipping.amount_usd === 0 ? " + free shipping" : ` + $${Number(o.shipping.amount_usd).toFixed(2)} shipping`)
             : " (shipping at checkout)";
-          text += `\n${i + 1}. **${o.title}** — ${price}${ship}`;
-          if (o.seller) text += ` · ${o.seller}`;
+          // Seller-supplied. Sanitised because this line lands verbatim in the
+          // CALLING agent's context, which we neither own nor instruct (#599).
+          text += `\n${i + 1}. **${sanitizeUntrusted(o.title)}** — ${price}${ship}`;
+          if (o.seller) text += ` · ${sanitizeUntrusted(o.seller, 120)}`;
           text += `\n   ${o.purchasable ? "✓ buyable through Firestarter" : `browse-only${o.url ? ` — view: ${tidyProductUrl(o.url)}` : ""}`}`;
           if (o.purchasable) {
             if (o.eligible) {
@@ -1727,7 +1760,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // mis-resolution visible in the same message as the total.
         const boughtTitle =
           typeof exec.selected_option?.product_title === "string" ? exec.selected_option.product_title : null;
-        const itemLine = boughtTitle ? [`Item: ${boughtTitle}`] : [];
+        const itemLine = boughtTitle ? [`Item: ${sanitizeUntrusted(boughtTitle)}`] : [];
 
         // #272: when approval transitions to awaiting_payment_method, return a
         // concise one-shot message instead of the full execution dump (which
@@ -1829,7 +1862,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const fmt = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
         const lines: string[] = [];
-        lines.push(`Delivery options${data.product_title ? ` for ${data.product_title}` : ""} — pick a speed, or approve to use the cheapest:`);
+        lines.push(`Delivery options${data.product_title ? ` for ${sanitizeUntrusted(data.product_title)}` : ""} — pick a speed, or approve to use the cheapest:`);
         // From → to route (coarse localities from the structured origin/destination
         // objects), so the delivery provider's origin and the buyer's destination
         // are visible before any speed is chosen.
@@ -2084,7 +2117,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const lines = drops.map((d) => {
           const dollars = (Number(d.discount_cents) / 100).toFixed(2);
           const gate = d.in_priority_window && Number(d.min_tier) > 0 ? ` · early access for tier ${d.min_tier}+ until ${d.priority_until}` : "";
-          return `- \`${d.id}\` — $${dollars} off · ${d.remaining} left${gate}`;
+          // Name the funder. Two identical live drops on one listing are legal
+          // only across DIFFERENT communities (#529), so without this neither
+          // the buyer nor the agent can tell an eligible drop from an
+          // ineligible one, or two communities from a dedupe regression (#599
+          // F19). Creator-supplied, so it goes through the same sanitiser as
+          // every other piece of third-party text this file emits.
+          const who = sanitizeUntrusted(d.community_name, 120);
+          return `- \`${d.id}\` — $${dollars} off${who ? ` · from ${who}` : ""} · ${d.remaining} left${gate}`;
         });
         return { content: [{ type: "text" as const, text: `**Live drops on this listing**\n${lines.join("\n")}\n\nClaim one with action 'claim' and its drop_id.` }] };
       } catch (err: any) {
@@ -2187,7 +2227,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (data.ship_from) {
           text += `Ships from: ${[data.ship_from.city, data.ship_from.state, data.ship_from.country].filter(Boolean).join(", ")}\n`;
         }
-        text += `Carrier: ${data.carrier || "Unknown"}\n`;
+        text += `Carrier: ${sanitizeUntrusted(data.carrier, 80) || "Unknown"}\n`;
         // Post-ship the label is BOUGHT: `provider` is the logistics service the
         // label was purchased through (EasyPost/DHL/Shippo/Sendcloud) — distinct
         // from the carrier moving the parcel. Say it in those terms.
@@ -2196,7 +2236,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (bookedVia) text += `Label booked via: ${bookedVia}\n`;
         }
         if (data.shipping_method?.service) text += `Service: ${data.shipping_method.service}\n`;
-        text += `Tracking: ${data.tracking_number}\n`;
+        text += `Tracking: ${sanitizeUntrusted(data.tracking_number, 80)}\n`;
         if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
         // Carrier ETA when the shipment has one; else fall back to the date
         // promised at quote time so "when will it arrive?" always has an answer.
@@ -2396,7 +2436,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const data = await apiRequest("GET", `/v1/executions/${execution_id}/receipt`);
         let text = `**Receipt — Order ${execution_id}**\n`;
         text += `Date: ${data.paid_at || data.created_at || "N/A"}\n`;
-        if (data.product_title) text += `Item: ${data.product_title}\n`;
+        if (data.product_title) text += `Item: ${sanitizeUntrusted(data.product_title)}\n`;
         if (data.subtotal_cents != null) text += `Subtotal: $${(data.subtotal_cents / 100).toFixed(2)}\n`;
         // subtotal is GROSS — state the discount so it doesn't look silently
         // dropped between the subtotal and the (already-net) total below.
@@ -3876,7 +3916,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (applied) lines.push(`Price phrase moved out of the search text and applied as a filter (${applied}).`);
         }
         if (communityName && pickCount > 0) {
-          lines.push(`★ = picked by **${communityName}**, the community you're in (${pickCount} here).`);
+          lines.push(`★ = picked by **${sanitizeUntrusted(communityName, 120)}**, the community you're in (${pickCount} here).`);
         }
         lines.push("");
         for (const l of listings) {
@@ -3898,8 +3938,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // sandbox-only wording.
           const shareText = l.share_url ? l.share_url : "sandbox-only, no public link yet";
           lines.push(
-            `- ${picked ? "★ " : ""}**${l.product_name}** — ${price} [${tag}]${l.category ? ` · ${l.category}` : ""}` +
-            `${note ? `\n  _"${note}"_${communityName ? ` — ${communityName}` : ""}` : ""}` +
+            `- ${picked ? "★ " : ""}**${sanitizeUntrusted(l.product_name)}** — ${price} [${tag}]${l.category ? ` · ${sanitizeUntrusted(l.category, 80)}` : ""}` +
+            `${note ? `\n  _"${sanitizeUntrusted(note)}"_${communityName ? ` — ${sanitizeUntrusted(communityName, 120)}` : ""}` : ""}` +
             `\n  id: \`${l.id}\` · ${shareText}${img0 ? `\n  ${img0}` : ""}`,
           );
         }
@@ -4751,7 +4791,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         const lines = [`**Disputes** (${disputes.length})\n`];
         for (const d of disputes) {
-          lines.push(`- **${d.product || "Order"}** (${d.id}) - Reason: ${d.reason || "Not specified"} - Status: ${d.status}${d.resolution ? ` - Resolution: ${d.resolution}` : ""}`);
+          lines.push(`- **${sanitizeUntrusted(d.product) || "Order"}** (${d.id}) - Reason: ${sanitizeUntrusted(d.reason, 300) || "Not specified"} - Status: ${d.status}${d.resolution ? ` - Resolution: ${sanitizeUntrusted(d.resolution, 300)}` : ""}`);
         }
         lines.push(`\nTo act on one, call again with its dispute_id and an action (refund / contest / split).`);
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
@@ -4914,7 +4954,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             const lines: string[] = [];
             lines.push(`**Dispute ${d.id}** — status: ${statusLabel(d.status)}`);
             if (d.execution_id) lines.push(`Order: ${d.execution_id}`);
-            if (d.reason) lines.push(`Reason: ${d.reason}${d.dispute_type ? ` (${statusLabel(d.dispute_type)})` : ""}`);
+            // Counterparty free text in the detail view, same as the thread below.
+            if (d.reason) lines.push(`Reason: ${sanitizeUntrusted(d.reason, 600)}${d.dispute_type ? ` (${statusLabel(d.dispute_type)})` : ""}`);
             if (OPEN_STATES.has(d.status) && d.seller_deadline_at) lines.push(`Seller must respond by ${new Date(d.seller_deadline_at).toUTCString()}.`);
             if (!OPEN_STATES.has(d.status)) {
               const pct = typeof d.buyer_refund_pct === "number" ? ` — you were refunded ${d.buyer_refund_pct}%` : "";
@@ -4927,7 +4968,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               for (const o of offers) {
                 const state = o.accepted_at ? "accepted" : o.rejected_at ? "rejected" : "pending";
                 const who = o.offered_by === "seller" ? "Seller" : "You";
-                lines.push(`- ${who}: **${o.buyer_pct}% refund to you / ${o.seller_pct}% to seller** — ${state}${o.reasoning ? ` — "${o.reasoning}"` : ""}`);
+                lines.push(`- ${who}: **${o.buyer_pct}% refund to you / ${o.seller_pct}% to seller** — ${state}${o.reasoning ? ` — "${sanitizeUntrusted(o.reasoning, 400)}"` : ""}`);
               }
             }
 
@@ -4937,7 +4978,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               for (const m of messages) {
                 const who = m.sender_role === "buyer" ? "You" : m.sender_role === "seller" ? "Seller" : "Firestarter";
                 const nAtt = Array.isArray(m.attachment_urls) ? m.attachment_urls.length : 0;
-                lines.push(`- **${who}:** ${m.message}${nAtt ? ` _(${nAtt} photo${nAtt > 1 ? "s" : ""})_` : ""}`);
+                // The counterparty types this straight into the reader's
+                // context during a refund negotiation. Cross-principal, so the
+                // "sellers read back their own text" exemption does not apply.
+                lines.push(`- **${who}:** ${sanitizeUntrusted(m.message, 600)}${nAtt ? ` _(${nAtt} photo${nAtt > 1 ? "s" : ""})_` : ""}`);
               }
             }
 
