@@ -1106,6 +1106,22 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
           optLines.push(`  Voucher ${voucherCode} applied: -$${(voucherDiscountCents / 100).toFixed(2)}`);
         }
       }
+      // An unclaimed community drop on this listing. The quote does NOT include
+      // it — claiming is the buyer's call, because it consumes a limited slot —
+      // so say so plainly and name the tool that takes it (#599 F8). Without
+      // this line a member paid full price and only found the discount by
+      // calling firestarter_drops on a hunch.
+      {
+        const availCents = Number((opt.metadata as any)?.drop_available_cents) || 0;
+        const availId = (opt.metadata as any)?.drop_available_id;
+        if (availCents > 0 && typeof availId === "string") {
+          const who = sanitizeUntrusted((opt.metadata as any)?.drop_available_community, 120);
+          optLines.push(
+            `  🎁 $${(availCents / 100).toFixed(2)} community discount available${who ? ` from ${who}` : ""} — NOT included above. ` +
+            `Claim it before approving: firestarter_drops action "claim", drop_id "${availId}".`,
+          );
+        }
+      }
       // #256: tell the buyer when it arrives (delivery_estimate is a DATE).
       if (opt.delivery_estimate) {
         const d = new Date(opt.delivery_estimate);
