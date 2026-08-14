@@ -39,7 +39,7 @@ today's hand-written URL-bump PRs.
 | Decision | Choice |
 |---|---|
 | npm organisation | `analog-labs` — an org's name IS its scope, so the package must be `@analog-labs/…`. `analog` is **not** ours (verified 2026-08-14, see Bootstrap 1). |
-| Update mechanism | Release-triggered `repository_dispatch` → bot PR in commerce |
+| Update mechanism | **Dependabot** in commerce, `allow`-scoped to this package, daily poll → bot PR → CI Gate → human merge. (Revised 2026-08-14: was a release-triggered `repository_dispatch` → hand-rolled `bump-mcp.yml`. That needed two cross-repo tokens neither of which could be scoped properly, to buy minutes over a poll. Part 3 below is superseded.) |
 | Publish auth | npm OIDC trusted publishing (no long-lived npm write token) |
 | Merge gating | PR-gated — a human merges every bump PR; no auto-merge |
 | GitHub release assets | Kept unchanged (`.mcpb` + tarball; Claude Desktop path) |
