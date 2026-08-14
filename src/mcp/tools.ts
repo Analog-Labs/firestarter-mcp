@@ -11,7 +11,7 @@ import { SHARE_LINK_BASE, listingShareUrl } from "../lib/share-link.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
-import { sanitizeUntrusted } from "./untrusted.js";
+import { sanitizeUntrusted, neutralizeAuthority } from "./untrusted.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
@@ -364,7 +364,13 @@ export function makeApiRequest(apiKey: string, apiBase: string) {
       signal: AbortSignal.timeout(timeoutMs),
     });
 
-    const data = await res.json();
+    // THE trust boundary. Every string in every API response is third-party
+    // text on its way to a foreign agent's context, so authority is stripped
+    // once, here, rather than at the ~1100 interpolation sites in this file.
+    // Four rounds of per-call-site sanitising still left ~45 counterparty
+    // surfaces raw; this covers all 83 tools, every helper, every error relay,
+    // every resource in resources.ts, and every tool added later (#599).
+    const data = neutralizeAuthority(await res.json());
     if (!res.ok) {
       throw new ApiError(data.error || `API request failed: ${res.status}`, res.status, data);
     }
