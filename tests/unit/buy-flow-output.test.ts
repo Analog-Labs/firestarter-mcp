@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { vi, afterEach } from "vitest";
-import { renderDeliveryOptions, arrivalDateFromDays } from "../../src/mcp/tools.js";
+import { renderDeliveryOptions, arrivalDateFromDays, registerTools } from "../../src/mcp/tools.js";
 
 const TWO_METHODS = {
   purchasable: true,
@@ -48,20 +48,38 @@ describe("arrival date formatting (F15)", () => {
   });
 
   /**
-   * Review finding: the assertion above tests arrivalDateFromDays, which this
-   * change never touched — the actual edit formats `delivery_estimate` inline
-   * in formatExecution. That gap is why an off-by-one-day bug shipped green:
-   * delivery_estimate is a DATE at UTC midnight, and toLocaleDateString with
-   * no timeZone renders in the HOST's zone. This package runs on the buyer's
-   * own machine (bin + .mcpb), so anywhere west of UTC showed the day before.
+   * Second review: the replacement STILL did not test the change — it asserted
+   * Date.prototype.toLocaleDateString in two zones, i.e. the ECMAScript library
+   * and the tz database, not product code. Reverting the fix and running the
+   * whole suite under TZ=America/Los_Angeles produced zero failures.
+   *
+   * This drives formatExecution through firestarter_status and asserts the
+   * rendered line, which is the only form that can fail when the fix is absent.
    */
-  it("renders the promised date, not the day before, west of UTC", () => {
-    const d = new Date("2026-08-16T00:00:00.000Z");
-    const utc = d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
-    const la = d.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles", weekday: "short", month: "short", day: "numeric" });
-    // The bug: without an explicit zone these disagree by a day.
-    expect(la).not.toBe(utc);
-    expect(utc).toBe("Sun, Aug 16");
+  it("renders the promised date and an agreeing countdown, west of UTC", async () => {
+    const realTz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+        id: "exec_1", status: "awaiting_approval", request_text: "mug",
+        options: [{ id: "opt_1", product_title: "Mug", total: 10, currency: "usd",
+                    delivery_estimate: "2026-08-16T00:00:00.000Z" }],
+        steps: [],
+      }), { status: 200, headers: { "content-type": "application/json" } })));
+
+      let handler: ((a: any) => Promise<any>) | null = null;
+      const stub = { tool: (n: string, ...rest: any[]) => {
+        if (n === "firestarter_status") handler = rest.filter((a) => typeof a === "function").pop() ?? null;
+      } } as any;
+      registerTools(stub, "fs_test_tz", "http://127.0.0.1:1");
+      const out = await handler!({ execution_id: "exec_1" });
+      const text = out.content.map((c: any) => c.text).join("\n");
+
+      expect(text, "rendered the day before the promised date").toContain("Aug 16");
+      expect(text).not.toContain("Aug 15");
+    } finally {
+      process.env.TZ = realTz;
+    }
   });
 });
 
@@ -76,7 +94,6 @@ describe("arrival date formatting (F15)", () => {
  * firestarter_set_auto_approve_limit) were simply never called. Saying so
  * costs one line and prevents the whole misdiagnosis.
  */
-import { registerTools } from "../../src/mcp/tools.js";
 
 function captureTool(name: string): (args: any) => Promise<any> {
   let handler: ((args: any) => Promise<any>) | null = null;

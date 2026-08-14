@@ -1128,7 +1128,12 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       if (opt.delivery_estimate) {
         const d = new Date(opt.delivery_estimate);
         if (!isNaN(d.getTime())) {
-          const days = Math.ceil((d.getTime() - Date.now()) / 86400000);
+          // Anchor the countdown to the same UTC calendar the date is rendered
+          // in. Diffing against Date.now() gives the UTC day-gap, which only
+          // agrees with `when` for a reader already in UTC: a Los Angeles buyer
+          // at 19:00 saw "in ~1 day (Sun, Aug 16)" when Aug 16 was two days out.
+          const todayUtc = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+          const days = Math.round((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - todayUtc) / 86400000);
           // A DATE, not a timestamp. This printed the raw ISO string —
           // "Arrives in ~2 days (2026-08-16T00:00:00.000Z)" — while the
           // delivery-options rows two lines below already rendered the friendly
@@ -2397,7 +2402,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       // exactly the case this notice exists to catch.
       spend_cap_dollars: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
       alert_threshold_pct: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
-      remove: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
+      disable: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
     },
     { title: "Check Spending Cap", readOnlyHint: true, destructiveHint: false },
     async (args: any = {}) => {

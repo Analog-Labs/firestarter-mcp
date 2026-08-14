@@ -1771,7 +1771,7 @@
           "alert_threshold_pct": {
             "description": "IGNORED here - this tool only reads. Use firestarter_set_spend_cap."
           },
-          "remove": {
+          "disable": {
             "description": "IGNORED here - this tool only reads. Use firestarter_set_spend_cap."
           }
         }
