@@ -9,6 +9,7 @@ import { isRelevantMatch } from "../lib/relevance.js";
 import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalogOutputShape, toCatalogStructured } from "./schemas.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
+import { enforceSchemaDialect } from "./schema-dialect.js";
 import { sanitizeUntrusted } from "./untrusted.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
@@ -5890,4 +5891,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     );
   }
+
+  // Last, once every tool is registered: re-stamp the advertised schemas with
+  // MCP's 2020-12 dialect. The SDK hardcodes draft-07 and exposes no way to ask
+  // for anything else, and a host that validates against the spec dialect
+  // rejects the tool outright (#736).
+  enforceSchemaDialect(server);
 }
