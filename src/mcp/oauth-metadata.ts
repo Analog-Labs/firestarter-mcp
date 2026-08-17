@@ -6,6 +6,7 @@
  * because this package is published to npm and auth policy must not ship to
  * third-party consumers.
  */
+import { Hono } from "hono";
 
 /**
  * Public origin that serves both the MCP resource and the authorization
@@ -42,3 +43,32 @@ export function resourceMetadataUrl(): string {
 export function wwwAuthenticateChallenge(): string {
   return `Bearer resource_metadata="${resourceMetadataUrl()}"`;
 }
+
+/**
+ * RFC 9728 protected-resource metadata.
+ *
+ * `scopes_supported` advertises the single fixed profile the design settled
+ * on: read plus buy-with-approval. Money-movement tools are denied to OAuth
+ * credentials at the API regardless of scope, so there is no scope to request
+ * for them and none is listed here.
+ */
+export function protectedResourceMetadata(): Record<string, unknown> {
+  return {
+    resource: resourceIdentifier(),
+    authorization_servers: [oauthResourceBase()],
+    bearer_methods_supported: ["header"],
+    scopes_supported: ["firestarter:commerce"],
+    resource_documentation: "https://firestarter.network/docs/mcp",
+  };
+}
+
+/**
+ * Mount at `/.well-known/oauth-protected-resource/mcp` in the API. Public by
+ * design — discovery precedes authentication, so requiring a credential here
+ * would make the document undiscoverable to the clients that need it.
+ */
+const metadataApp = new Hono();
+
+metadataApp.get("/", (c) => c.json(protectedResourceMetadata()));
+
+export default metadataApp;
