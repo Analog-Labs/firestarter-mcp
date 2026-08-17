@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { vi, afterEach } from "vitest";
-import { renderDeliveryOptions, arrivalDateFromDays, registerTools } from "../../src/mcp/tools.js";
+import { renderDeliveryOptions, arrivalDateFromDays, formatBuyerDate, capEnforcementLine, registerTools } from "../../src/mcp/tools.js";
 
 const TWO_METHODS = {
   purchasable: true,
@@ -142,5 +142,128 @@ describe("read-only tools given setter arguments (F20)", () => {
     const text = (await captureTool("firestarter_auto_approve_limit")({ set_limit_usd: 25 }))
       .content[0].text as string;
     expect(text).toContain("firestarter_set_auto_approve_limit");
+  });
+});
+
+
+/**
+ * Round two of the same audit, after QA re-ran the plan against the sandbox.
+ * Every item below is a line that was fixed in one place and left in another.
+ */
+
+describe("post-approval calls to action (F12, remainder)", () => {
+  /** Drive formatExecution through firestarter_status at a given order status. */
+  async function statusText(status: string): Promise<string> {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      id: "exec_1", status, request_text: "candle",
+      options: [{
+        id: "opt_t37_Ib", product_title: "Soy candle", total: 28.65, currency: "usd",
+        purchasable: true, subtotal: 22,
+        shipping_options: [
+          { label: "UPSDAP Ground", price_cents: 791, delivery_days: 3 },
+          { label: "USPS GroundAdvantage", price_cents: 665, delivery_days: 2 },
+        ],
+        metadata: {
+          drop_available_cents: 500,
+          drop_available_id: "drop_8370b786eed3",
+          drop_available_community: "Sunset District Makers Market",
+        },
+      }],
+      steps: [],
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+    let handler: ((a: any) => Promise<any>) | null = null;
+    const stub = { tool: (n: string, ...rest: any[]) => {
+      if (n === "firestarter_status") handler = rest.filter((a) => typeof a === "function").pop() ?? null;
+    } } as any;
+    registerTools(stub, "fs_test_status", "http://127.0.0.1:1");
+    const out = await handler!({ execution_id: "exec_1" });
+    return out.content.map((c: any) => c.text).join("\n");
+  }
+
+  it("offers the approve handle and the drop claim while approval is still open", async () => {
+    const text = await statusText("awaiting_approval");
+    expect(text).toContain("option_id: `opt_t37_Ib`");
+    expect(text).toContain("Claim it before approving");
+  });
+
+  it("withdraws both once the order is delivered", async () => {
+    // QA read all of this on a DELIVERED order: an approve handle for a paid
+    // purchase, and a drop banner telling them to claim "before approving".
+    const text = await statusText("delivered");
+    expect(text, "handed an agent an approve handle for a paid order").not.toContain("option_id:");
+    expect(text, "told the buyer to claim a discount on a delivered order").not.toContain("Claim it before approving");
+    // Still a record of what was bought.
+    expect(text).toContain("Soy candle");
+  });
+
+  it("withdraws them at charging too, not only at delivered", async () => {
+    const text = await statusText("charging");
+    expect(text).not.toContain("option_id:");
+    expect(text).not.toContain("Claim it before approving");
+  });
+});
+
+describe("formatBuyerDate (F15, remainder)", () => {
+  it("renders a receipt timestamp as a date a buyer can read", () => {
+    // Was: "Date: 2026-08-17T08:31:35.292Z"
+    const out = formatBuyerDate("2026-08-17T08:31:35.292Z")!;
+    expect(out).not.toMatch(/T\d{2}:\d{2}/);
+    expect(out).toContain("Aug 17, 2026");
+  });
+
+  it("keeps a date-only value date-only, without inventing midnight", () => {
+    expect(formatBuyerDate("2026-08-18")).toBe("Tue, Aug 18, 2026");
+    expect(formatBuyerDate("2026-08-18T00:00:00.000Z")).toBe("Tue, Aug 18, 2026");
+  });
+
+  it("holds the UTC date west of UTC, like the quote side already does", () => {
+    const realTz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      expect(formatBuyerDate("2026-08-18")).toContain("Aug 18");
+    } finally {
+      if (realTz === undefined) delete process.env.TZ; else process.env.TZ = realTz;
+    }
+  });
+
+  it("passes an unparseable value through rather than erasing a date", () => {
+    expect(formatBuyerDate("sometime next week")).toBe("sometime next week");
+    expect(formatBuyerDate(null)).toBeNull();
+    expect(formatBuyerDate("")).toBeNull();
+  });
+});
+
+describe("spend-cap enforcement copy (P0-1, re-scoped)", () => {
+  it("promises rejection on a live key", () => {
+    expect(capEnforcementLine(5000, false)).toBe(
+      "Purchases that would exceed $50.00 in a calendar month are automatically rejected.",
+    );
+  });
+
+  it("says plainly on a test key that the cap does not apply", () => {
+    // The gate skips test-mode purchases by design, so the unqualified promise
+    // was false in exactly the environment QA was testing in — which is how a
+    // sandbox purchase over a $1 cap got filed as a P0 enforcement failure.
+    const line = capEnforcementLine(100, true);
+    expect(line).toContain("TEST key");
+    expect(line.toLowerCase()).toContain("not applied");
+  });
+});
+
+describe("spend-cap read shows the buyer's position (P0-1, re-scoped)", () => {
+  it("states month-to-date spend against the cap", async () => {
+    stubBalance({ spend_cap_cents: 5000, alert_threshold_pct: 80, month_to_date_spend_cents: 2865 });
+    const text = (await captureTool("firestarter_spend_cap")({})).content[0].text as string;
+    expect(text).toContain("$28.65 of $50.00");
+    expect(text).toContain("57%");
+  });
+
+  it("omits the position rather than printing $0.00 when the API does not send it", async () => {
+    // An older API build has no such field; "used $0.00 of $50" would be a
+    // wrong number on a spend limit, which is worse than a missing one.
+    stubBalance({ spend_cap_cents: 5000, alert_threshold_pct: 80 });
+    const text = (await captureTool("firestarter_spend_cap")({})).content[0].text as string;
+    expect(text).not.toContain("Used this month");
+    expect(text).toContain("Monthly spend cap: $50.00");
   });
 });
