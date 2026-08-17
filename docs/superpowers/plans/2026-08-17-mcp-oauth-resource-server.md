@@ -19,7 +19,7 @@
 - Metadata URL (RFC 9728 path-insertion form): `https://api.firestarter.network/.well-known/oauth-protected-resource/mcp`.
 - Every new subpath must be added to `package.json` `exports`, following the existing `./route`, `./ws-transport`, `./platform` pattern.
 - Version is synced across `package.json`, `mcp.json`, `src/mcp/mcp.json`, `mcpb/manifest.json`, and `src/mcp/server.ts` by `npm run sync-version` — never hand-edit one of them.
-- CI (`.github/workflows/ci.yml`) runs on pull requests to `staging` and `main`, and on pushes to either. Still verify locally with `npm test && npx tsc --noEmit` before requesting review.
+- CI (`.github/workflows/ci.yml`) triggers on `main` only in THIS repo, so a `staging`-based PR reports "no checks reported" — nothing runs. Verify locally with `npm test && npx tsc --noEmit` and put the output in the PR body. (`firestarter-commerce`'s workflow does include `staging`; do not read one repo's triggers as the other's.)
 
 ---
 
@@ -347,8 +347,9 @@ git push origin HEAD:refs/heads/feat/mcp-oauth-resource-metadata
 gh pr create --base staging --title "feat(mcp): OAuth protected-resource discovery" --body "Implements the resource-server half of the MCP OAuth design. Metadata only — no token validation ships in this package."
 ```
 
-Base is `staging`. `.github/workflows/ci.yml` triggers on pull requests to both
-`staging` and `main`, so a staging-based PR does get checks.
+Base is `staging` per the standing rule. Nothing will run on it — this repo's
+`ci.yml` triggers on `main` only — so the local `npm test` / `tsc` output in the
+PR body IS the verification. A clean-looking PR page here means nothing ran.
 
 - [ ] **Step 4: Publish (requires human approval)**
 
