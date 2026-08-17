@@ -41,6 +41,9 @@ const MARKET_LINK_BASE = process.env.MARKET_LINK_BASE || "https://firestarter.ne
 // can use the firestarter_upload_image tool directly. The dashboard URL is kept
 // as a fallback for clients that cannot encode the image into a tool argument.
 const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firestarter.network/seller";
+/** Buyer billing/settings tab — where a card is added or replaced. */
+const DASHBOARD_SETTINGS_URL =
+  process.env.DASHBOARD_SETTINGS_URL || "https://firestarter.network/dashboard?tab=settings";
 
 export function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -274,6 +277,49 @@ function formatCommunityOffers(community: any, memberTierIndex: number | null = 
   if (proof.length > 0) blocks.push(`★ ${proof.join(" · ")}`);
 
   return blocks.length > 0 ? blocks.join("\n\n") : null;
+}
+
+/**
+ * Render a URL as a MARKDOWN HYPERLINK, or return null when it isn't one we
+ * will make clickable.
+ *
+ * Tool results are markdown, but a bare URL is only auto-linked by renderers
+ * that implement the GFM autolink extension — several MCP clients do not, so
+ * every link we emitted was dead text the user had to select and copy. The
+ * fix is an explicit `[label](url)`, applied where a human actually wants to
+ * CLICK something.
+ *
+ * Deliberately NOT applied to product image URLs: those are on their own line
+ * so chat clients auto-unfurl a preview and agents can fetch the bytes (#611).
+ * Wrapping them in link syntax breaks the unfurl and gains nothing — nobody
+ * wants to click a JPEG. Keeping them bare is also what keeps link density
+ * sane on a 50-row catalogue.
+ *
+ * SECURITY: labels are frequently seller-controlled (product names, community
+ * names). An unescaped `]` lets a listing called `Mug](https://evil.example)`
+ * close the link text and retarget it, so brackets are stripped from labels
+ * and `)` is percent-encoded in targets. https only — never javascript:/data:.
+ */
+function mdLink(label: string, url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  const target = url.trim();
+  if (!/^https:\/\/[^\s<>]+$/i.test(target)) return null;
+  const safeLabel = label.replace(/[[\]]/g, "").trim();
+  if (!safeLabel) return null;
+  return `[${safeLabel}](${target.replace(/\)/g, "%29")})`;
+}
+
+/**
+ * Hyperlink whose LABEL is the URL itself, minus the scheme
+ * (`firestarter.network/l/lst_x`). Used for share/community links, where the
+ * agent is often told to relay the address itself (a bare share URL unfurls
+ * into a product card) — this keeps the address legible and copyable while
+ * still being one click for a human. Returns null for a non-https/absent URL,
+ * so callers can fall back to their own "no link yet" wording.
+ */
+function mdUrlLink(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  return mdLink(url.trim().replace(/^https:\/\//i, "").replace(/\/+$/, ""), url);
 }
 
 /**
@@ -1011,7 +1057,9 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       lines.push("Order approved.");
       if (payReady.length) lines.push(...payReady);
       lines.push("");
-      lines.push("**Last step:** this order is waiting on a payment method. Ask the buyer to add a card from their dashboard billing settings; the order resumes automatically once added.");
+      // A blocked order is the one status line where the fix is a click away —
+      // previously it named the settings page without linking to it.
+      lines.push(`**Last step:** this order is waiting on a payment method. The buyer can add a card in ${mdLink("their dashboard settings", DASHBOARD_SETTINGS_URL)} (or call \`firestarter_payment_method\` for a no-login link); the order resumes automatically once added.`);
     }
     blocks.push({ type: "text", text: lines.join("\n") });
     return blocks;
@@ -1626,7 +1674,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // CALLING agent's context, which we neither own nor instruct (#599).
           text += `\n${i + 1}. **${sanitizeUntrusted(o.title)}** — ${price}${ship}`;
           if (o.seller) text += ` · ${sanitizeUntrusted(o.seller, 120)}`;
-          text += `\n   ${o.purchasable ? "✓ buyable through Firestarter" : `browse-only${o.url ? ` — view: ${tidyProductUrl(o.url)}` : ""}`}`;
+          // A browse-only option's ONLY next action is opening the vendor page,
+          // so that gets the click; a buyable option needs no link (it is bought
+          // by id) and adding one per row would just dilute the real ones.
+          const viewLink = o.url ? mdLink("view on the vendor's site", tidyProductUrl(o.url)) : null;
+          text += `\n   ${o.purchasable ? "✓ buyable through Firestarter" : `browse-only${viewLink ? ` — ${viewLink}` : o.url ? ` — view: ${tidyProductUrl(o.url)}` : ""}`}`;
           if (o.purchasable) {
             if (o.eligible) {
               text += `\n   ✓ eligible to buy now`;
@@ -2216,15 +2268,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const detail = card.card ? `${card.card.brand} ending in ${card.card.last4} (expires ${card.card.exp_month}/${card.card.exp_year})` : "saved";
           let text = `**Payment method on file:** ${detail}\n\nOrders will charge this card automatically.\n\n`;
           const setup = await apiRequest("POST", "/v1/billing/setup-payment");
-          text += `To update or add a different card:\n${setup.short_url || setup.url}\n\n`;
-          text += `Or go to your dashboard settings: https://firestarter.network/dashboard?tab=settings`;
+          const updateLink = mdLink("Update or add a card", setup.short_url || setup.url);
+          text += updateLink ? `${updateLink} (no login needed)\n\n` : `To update or add a different card:\n${setup.short_url || setup.url}\n\n`;
+          text += `Or open ${mdLink("your dashboard settings", DASHBOARD_SETTINGS_URL)}.`;
           return { content: [{ type: "text" as const, text }] };
         }
         // No payment method - get a setup link
         const setup = await apiRequest("POST", "/v1/billing/setup-payment");
         let text = "**No payment method on file.** A card is only needed at the FINAL payment step — after the buyer has run firestarter_execute, seen the shipping estimate, and picked a delivery speed. Browsing, quoting, and comparing shipping never require one.\n\n";
-        text += `If an order is already approved and waiting on payment, add a card here to finish it (no login needed, works from any device):\n${setup.short_url || setup.url}\n\n`;
-        text += `Or add one from your dashboard settings: https://firestarter.network/dashboard?tab=settings\n\n`;
+        const addLink = mdLink("Add a card to finish this order", setup.short_url || setup.url);
+        text += addLink
+          ? `${addLink} — no login needed, works from any device.\n\n`
+          : `If an order is already approved and waiting on payment, add a card here to finish it (no login needed, works from any device):\n${setup.short_url || setup.url}\n\n`;
+        text += `Or add one from ${mdLink("your dashboard settings", DASHBOARD_SETTINGS_URL)}.\n\n`;
         text += `Once added, any pending orders resume automatically. If the buyer is not mid-purchase, start with firestarter_execute instead — no card required.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
@@ -2305,7 +2361,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         if (data.shipping_method?.service) text += `Service: ${data.shipping_method.service}\n`;
         text += `Tracking: ${sanitizeUntrusted(data.tracking_number, 80)}\n`;
-        if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
+        // The one link a "where's my order?" answer needs.
+        const trackLink = mdLink(
+          `Track with ${sanitizeUntrusted(data.carrier, 40) || "the carrier"}`,
+          data.tracking_url,
+        );
+        if (trackLink) text += `${trackLink}\n`;
+        else if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
         // Carrier ETA when the shipment has one; else fall back to the date
         // promised at quote time so "when will it arrive?" always has an answer.
         if (data.estimated_delivery) text += `Estimated delivery: ${data.estimated_delivery}\n`;
@@ -3070,7 +3132,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }
           text += `\nOnce resolved, activate with \`firestarter_update_listing\` (status "active").`;
         } else if (listingShareUrl(listing)) {
-          text += `Share link: ${listingShareUrl(listing)}\n`;
+          text += `Share link: ${mdUrlLink(listingShareUrl(listing)) ?? listingShareUrl(listing)}\n`;
           text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
         } else {
           text += `\n**Sandbox-only listing.** No public share link is created in test mode. It remains available through test-mode catalog and listing tools.`;
@@ -3084,7 +3146,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // path still yields a valid, encoded link (never `...?a=b?edit=`).
           const uploaderUrl = new URL(SELLER_DASHBOARD_URL);
           uploaderUrl.searchParams.set("edit", String(listing.id));
-          text += `\n\n📷 **Add a photo.** Send a photo in this chat and I'll upload it with \`firestarter_upload_image\`, then attach the URL to your listing. Or open ${uploaderUrl.toString()} to drag-and-drop directly in the dashboard.`;
+          text += `\n\n📷 **Add a photo.** Send a photo in this chat and I'll upload it with \`firestarter_upload_image\`, then attach the URL to your listing. Or ${mdLink("drag-and-drop it in the dashboard", uploaderUrl.toString()) ?? `open ${uploaderUrl.toString()}`}.`;
         }
         // Surface payout warnings — listing is active but seller should
         // connect Stripe to actually receive earnings.
@@ -3259,7 +3321,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (r.already_listed) {
           let text = `**Good news - this item is already live on Firestarter.**\n`;
           if (r.title) text += `Item: ${r.title}\n`;
-          text += `Share link: ${r.share_url}\n\nNo invite needed - the buyer can pay through escrow right now from that link.`;
+          text += `Share link: ${mdUrlLink(r.share_url) ?? r.share_url}\n\nNo invite needed - the buyer can pay through escrow right now from that link.`;
           return { content: [{ type: "text" as const, text }] };
         }
 
@@ -3380,7 +3442,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           ...(a.fee_cents !== undefined ? { fee_cents: a.fee_cents } : {}),
         }, IMPORT_TIMEOUT_MS);
         let text = `**Courier booked.** Booking ${r.id} (${r.provider}, ref ${r.provider_ref})\n`;
-        if (r.tracking_url) text += `Tracking: ${r.tracking_url}\n`;
+        if (r.tracking_url) text += `${mdLink("Track this shipment", r.tracking_url) ?? `Tracking: ${r.tracking_url}`}\n`;
         text += r.next_step;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
@@ -3455,7 +3517,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             // literal string "null".
             text = `**Stripe Connect setup (test mode)**\n\n${link.message || "Test mode: Stripe Connect account auto-approved — no onboarding needed."}\n\nListings are now purchasable by buyers.`;
           } else {
-            text = `**Stripe Connect setup**\n\nSend the seller this onboarding link (a secure Stripe-hosted page):\n${link.onboarding_url}\n`;
+            text = `**Stripe Connect setup**\n\n${mdLink("Complete Stripe onboarding", link.onboarding_url) ?? `Send the seller this onboarding link (a secure Stripe-hosted page):\n${link.onboarding_url}`} — a secure Stripe-hosted page; send it to the seller.\n`;
             text += `\nAfter they finish, run \`firestarter_payouts\` again to verify.`;
           }
           return { content: [{ type: "text" as const, text }] };
@@ -4019,11 +4081,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // catalog_search result rendered "· null" in sandbox instead of a
           // link or an explanation. Mirrors firestarter_listings' own
           // sandbox-only wording.
-          const shareText = l.share_url ? l.share_url : "sandbox-only, no public link yet";
+          // ONE clickable thing per row, on the product name itself, instead of
+          // a bare share URL on the id line: a 50-row result with a link per row
+          // plus a separate URL per row is a wall of blue. The address stays in
+          // the link target, so an agent relaying it still has the bare URL.
+          const name = sanitizeUntrusted(l.product_name);
+          const nameCell = mdLink(name, l.share_url) ?? name;
+          const shareText = l.share_url ? null : "sandbox-only, no public link yet";
           lines.push(
-            `- ${picked ? "★ " : ""}**${sanitizeUntrusted(l.product_name)}** — ${price} [${tag}]${l.category ? ` · ${sanitizeUntrusted(l.category, 80)}` : ""}` +
+            `- ${picked ? "★ " : ""}**${nameCell}** — ${price} [${tag}]${l.category ? ` · ${sanitizeUntrusted(l.category, 80)}` : ""}` +
             `${note ? `\n  _"${sanitizeUntrusted(note)}"_${communityName ? ` — ${sanitizeUntrusted(communityName, 120)}` : ""}` : ""}` +
-            `\n  id: \`${l.id}\` · ${shareText}${img0 ? `\n  ${img0}` : ""}`,
+            `\n  id: \`${l.id}\`${shareText ? ` · ${shareText}` : ""}${img0 ? `\n  ${img0}` : ""}`,
           );
         }
         lines.push(
@@ -5136,7 +5204,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           let text = `**Market created.**${p.display_name ? ` ${p.display_name}.` : ""} Program id: \`${p.id}\`. Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee`;
           if (res.override_bps_capped) text += ` (capped from your request to the platform max of ${(Number(res.max_self_serve_bps ?? 0) / 100).toFixed(2)}%)`;
           text += ".";
-          if (p.slug) text += `\n\nYour community URL: ${MARKET_LINK_BASE}/${p.slug}`;
+          if (p.slug) text += `\n\nYour community URL: ${mdUrlLink(`${MARKET_LINK_BASE}/${p.slug}`) ?? `${MARKET_LINK_BASE}/${p.slug}`}`;
           text += `\n\nNext: firestarter_market_link with program_id \`${p.id}\` to get a share code your community joins through. Then curate what your community recommends with firestarter_set_market_picks — those picks are the first thing buyers see. Track earnings with firestarter_market_earnings; connect payouts (to withdraw) with firestarter_connect_payouts.`;
           return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
@@ -5165,7 +5233,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const res = await apiRequest("POST", "/v1/attribution/links", { program_id, channel, campaign });
           const code = res.link?.code;
           if (!code) return { content: [{ type: "text" as const, text: "Link created but no code was returned." }], isError: true };
-          return { content: [{ type: "text" as const, text: `**Share link:** ${MARKET_LINK_BASE}/${code}\n(share code: \`${code}\`)\n\nGive this to your community. Each member who redeems it — by opening the link, or pasting the code to their Firestarter agent (firestarter_join_market) — joins your market. Prefer a memorable URL? Claim a handle with firestarter_set_market_handle and ${MARKET_LINK_BASE}/<handle> resolves to the same market.` }] };
+          return { content: [{ type: "text" as const, text: `**Share link:** ${mdUrlLink(`${MARKET_LINK_BASE}/${code}`) ?? `${MARKET_LINK_BASE}/${code}`}\n(share code: \`${code}\`)\n\nGive this to your community. Each member who redeems it — by opening the link, or pasting the code to their Firestarter agent (firestarter_join_market) — joins your market. Prefer a memorable URL? Claim a handle with firestarter_set_market_handle and ${MARKET_LINK_BASE}/<handle> resolves to the same market.` }] };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Error creating share link: ${toErrorMessage(err)}` }], isError: true };
         }
@@ -5184,7 +5252,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         try {
           const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, { slug: handle.toLowerCase() });
           const slug = res.program?.slug ?? handle.toLowerCase();
-          return { content: [{ type: "text" as const, text: `**Handle set.** Your community URL is now ${MARKET_LINK_BASE}/${slug}\n\nShare it anywhere — it resolves to the same market as your share code and stays stable if you rotate the code.` }] };
+          return { content: [{ type: "text" as const, text: `**Handle set.** Your community URL is now ${mdUrlLink(`${MARKET_LINK_BASE}/${slug}`) ?? `${MARKET_LINK_BASE}/${slug}`}\n\nShare it anywhere — it resolves to the same market as your share code and stays stable if you rotate the code.` }] };
         } catch (err: any) {
           if (err instanceof ApiError && err.code === "SLUG_TAKEN") {
             return { content: [{ type: "text" as const, text: `That handle (\`${handle}\`) is already taken. Pick a different one and try again.` }], isError: true };
@@ -5283,7 +5351,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return [
               `**${name}**${p.type && p.type !== "community" ? ` (${p.type})` : ""}`,
               `Program id: \`${p.id}\` · Status: ${p.status}`,
-              `URL: ${url}${code ? ` · Share code: \`${code}\`` : ""}`,
+              `URL: ${mdUrlLink(url) ?? url}${code ? ` · Share code: \`${code}\`` : ""}`,
               `Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee · Members: ${Number(p.member_count ?? 0)}`,
             ].join("\n");
           });
@@ -5910,7 +5978,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               c.order_count_bucket && c.order_count_bucket !== "0" ? `${c.order_count_bucket} orders driven` : null,
             ].filter(Boolean).join(" · ");
             const lines = [`**${name}**${c.tagline ? ` — ${c.tagline}` : ""}`];
-            if (url) lines.push(url);
+            if (url) lines.push(mdUrlLink(url) ?? url);
             if (c.code) lines.push(`Join code: \`${c.code}\``);
             if (proof) lines.push(proof);
             return lines.join("\n");
