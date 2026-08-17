@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { registerTools, makeApiRequest } from "./tools.js";
+import { wwwAuthenticateChallenge } from "./oauth-metadata.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
 import { readFile } from "node:fs/promises";
@@ -160,7 +161,11 @@ function extractApiKey(c: any): string | null {
 app.all("/", async (c) => {
   const apiKey = extractApiKey(c);
   if (!apiKey) {
-    return c.json({ error: "Authorization header with Bearer token required" }, 401);
+    // RFC 6750 §3 — without this header a client cannot discover that OAuth is
+    // available, which is the only way ChatGPT can ever connect.
+    return c.json({ error: "Authorization header with Bearer token required" }, 401, {
+      "WWW-Authenticate": wwwAuthenticateChallenge(),
+    });
   }
 
   const apiBase = process.env.FIRESTARTER_API_URL || "https://api.firestarter.network";
