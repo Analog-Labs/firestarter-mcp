@@ -63,6 +63,10 @@
       "types": "./dist/mcp/route.d.ts",
       "default": "./dist/mcp/route.js"
     },
+    "./oauth-metadata": {
+      "types": "./dist/mcp/oauth-metadata.d.ts",
+      "default": "./dist/mcp/oauth-metadata.js"
+    },
     "./ws-transport": {
       "types": "./dist/mcp/ws-transport.d.ts",
       "default": "./dist/mcp/ws-transport.js"
