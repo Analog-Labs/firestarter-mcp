@@ -2155,7 +2155,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
         const lines = rows.map((a) => {
-          const label = a.label || a.name || "Address";
+          // A label of "Default" on a NON-default address renders identically
+          // to the (default) marker beside it, so QA read a list with one
+          // default as having two. The marker is the state; a label repeating
+          // the word is noise on the row that is not it.
+          const rawLabel = a.label || a.name || "Address";
+          const label = !a.is_default && String(rawLabel).trim().toLowerCase() === "default"
+            ? "Address"
+            : rawLabel;
           const place = [a.city, a.country].filter(Boolean).join(", ");
           const street = a.street1 ? `${String(a.street1).slice(0, 6)}\u2026` : "";
           const parts = [label, place, street].filter(Boolean).join(" \u00b7 ");

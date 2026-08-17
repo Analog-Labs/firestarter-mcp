@@ -267,3 +267,25 @@ describe("spend-cap read shows the buyer's position (P0-1, re-scoped)", () => {
     expect(text).toContain("Monthly spend cap: $50.00");
   });
 });
+
+
+describe("saved addresses (F9b)", () => {
+  it("does not render a second row that reads as default", async () => {
+    // QA saw two rows both showing "Default": one is the actual default, the
+    // other simply has "Default" as its user-set label.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      addresses: [
+        { id: "addr_fdStRWHe", label: "Default", city: "Lahore", country: "PK", street1: "1 Mall Rd", is_default: true },
+        { id: "addr_XhjrqUp8", label: "Default", city: "San Francisco", country: "US", street1: "417 Montgomery", is_default: false },
+      ],
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+    const text = (await captureTool("firestarter_addresses")({})).content[0].text as string;
+
+    const defaultish = text.split("\n").filter((l) => l.toLowerCase().includes("default"));
+    expect(defaultish, `two rows read as default:\n${text}`).toHaveLength(1);
+    expect(defaultish[0]).toContain("addr_fdStRWHe");
+    // The other address is still listed, and still usable.
+    expect(text).toContain("addr_XhjrqUp8");
+    expect(text).toContain("San Francisco");
+  });
+});
