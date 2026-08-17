@@ -1342,7 +1342,7 @@
     },
     {
       "name": "firestarter_reprice",
-      "description": "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules. Shipping is always estimated live from a delivery service provider and can no longer be set per-listing.",
+      "description": "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules. Shipping is always estimated live from a delivery service provider and can no longer be set per-listing. Raising a LIVE listing to >= $500 (or into a luxury category) re-fires the possession-verification gate: the new price is saved but the listing goes back to draft and stops being buyer-visible until the seller submits a photo via firestarter_verify. The tool output says so when that happens - relay it, don't report a bare success.",
       "inputSchema": {
         "type": "object",
         "properties": {
