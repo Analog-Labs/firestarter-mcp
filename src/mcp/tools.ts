@@ -4998,13 +4998,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_disputes",
       "For BUYERS: open, check, and resolve disputes on orders the user BOUGHT. Use this whenever a buyer asks 'is there a dispute on my order?', wants to open a dispute (item never arrived, arrived damaged / wrong / not as described), or needs to respond to one — post a note or photo, accept / reject / counter the seller's partial-refund offer, withdraw, or escalate to Firestarter. Call with NO arguments to list the buyer's disputes; pass an order's execution_id (exec_…) to check whether THAT order has a dispute; pass a dispute_id (disp_…) to see the full thread. This is the BUYER side — for disputes on orders the user is SELLING, use firestarter_seller_disputes instead.",
       {
-        action: z.enum(["open", "message", "accept", "reject", "counter", "withdraw", "escalate"]).optional().describe("What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."),
+        action: z.enum(["open", "message", "accept", "reject", "counter", "withdraw", "escalate"]).optional().describe("What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_urls — pass a photo's URL, never rebuild it as base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."),
         execution_id: z.string().optional().describe("Order / execution id (exec_…). Required for 'open'. With no action, pass this to check whether a specific order has a dispute. May also stand in for dispute_id on actions — the dispute on that order is looked up."),
         dispute_id: z.string().optional().describe("Dispute id (disp_…). Identifies which dispute to view or act on for message / accept / reject / counter / withdraw / escalate."),
         reason: z.string().optional().describe("For 'open': what went wrong, in the buyer's words (e.g. 'Package never arrived, tracking stuck for two weeks'). Also used as the optional note on a 'counter' or 'escalate'."),
         type: z.enum(["not_received", "not_as_described", "damaged", "missing_item", "wrong_item", "other"]).optional().describe("For 'open': the category of problem. Use 'not_received' when the order never arrived. Defaults to 'not_as_described'."),
         message: z.string().optional().describe("For 'message': the text to post to the dispute thread."),
-        image_base64: z.string().optional().describe("For 'message': an optional evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). It is uploaded and attached to the message."),
+        image_urls: z.array(z.string()).optional().describe("For 'message': evidence photos the buyer already has, as public https URLs. THIS IS THE ONE TO USE when a photo is attached in the conversation — pass its URL straight through. Never fetch an image and rebuild it as a base64 data-URI to fill image_base64: a photo is far too large to survive being printed into a tool call, which is why attaching used to fail. Up to 5."),
+        image_base64: z.string().optional().describe("For 'message': an evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). Only for an image you genuinely hold as raw bytes and small enough to inline — if you have a URL for it, use image_urls instead."),
         offer_id: z.string().optional().describe("For 'accept' / 'reject': the specific offer id to respond to. Omit to act on the latest pending seller offer."),
         buyer_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent YOU (the buyer) would be refunded. buyer_pct + seller_pct must equal 100."),
         seller_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent the seller keeps. buyer_pct + seller_pct must equal 100."),
@@ -5017,7 +5018,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       // worst it can do. The cost is a host confirmation on the read path too;
       // that is the right trade against an unprompted refund/payout change.
       { title: "Buyer Disputes", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
-      async ({ action, execution_id, dispute_id, reason, type, message, image_base64, offer_id, buyer_pct, seller_pct }) => {
+      async ({ action, execution_id, dispute_id, reason, type, message, image_urls, image_base64, offer_id, buyer_pct, seller_pct }) => {
         try {
           // ── OPEN a new dispute ─────────────────────────────────────────────
           if (action === "open") {
@@ -5042,18 +5043,38 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (action === "message") {
             const did = await resolveDisputeId(dispute_id, execution_id);
             if (!did) return textBlock("I need the dispute id (disp_…) or the order id to post to. List your disputes by calling firestarter_disputes with no arguments.", true);
-            if ((!message || !message.trim()) && !image_base64) return textBlock("Add a note (message) or a photo (image_base64) to post to the dispute.", true);
-            let attachmentUrls: string[] = [];
+            const photoUrls = (image_urls || []).filter((u) => typeof u === "string" && u.trim()).slice(0, 5);
+            if ((!message || !message.trim()) && !photoUrls.length && !image_base64) return textBlock("Add a note (message) or a photo (image_urls) to post to the dispute.", true);
+            // commerce#749: the API ingests a hosted URL into its own blob store
+            // and hands back a URL the message endpoint will accept. Passing the
+            // URL through is the whole fix — the old base64-only parameter forced
+            // an agent to print a whole photo into a tool call, which silently
+            // failed and left the evidence off the dispute.
+            const attachmentUrls: string[] = [];
+            const failed: string[] = [];
+            for (const image_url of photoUrls) {
+              const up = await apiRequest("POST", `/buyer/disputes/${did}/attachments`, { image_url }, VERIFY_TIMEOUT_MS)
+                .catch(() => null);
+              if (up?.url) attachmentUrls.push(up.url);
+              else failed.push(image_url);
+            }
             if (image_base64) {
-              const up = await apiRequest("POST", `/buyer/disputes/${did}/attachments`, { image_base64 }, VERIFY_TIMEOUT_MS);
-              if (up?.url) attachmentUrls = [up.url];
-              else if (!message || !message.trim()) return textBlock("I couldn't attach that photo (it may be an unsupported format or too large). Try another image, or send a text note instead.", true);
+              const up = await apiRequest("POST", `/buyer/disputes/${did}/attachments`, { image_base64 }, VERIFY_TIMEOUT_MS)
+                .catch(() => null);
+              if (up?.url) attachmentUrls.push(up.url);
+              else failed.push("the inline image");
+            }
+            // Never report a clean success when evidence didn't land.
+            if (failed.length && !attachmentUrls.length) {
+              return textBlock(`I couldn't attach ${failed.length === 1 ? "that photo" : "those photos"} — the image must be a public JPEG, PNG, WebP or GIF under 6MB. Nothing was posted; try another image or send a text note instead.`, true);
             }
             await apiRequest("POST", `/buyer/disputes/${did}/messages`, {
               message: (message && message.trim()) || "",
               attachment_urls: attachmentUrls,
             });
-            return textBlock(`Posted to dispute ${did}.${attachmentUrls.length ? " Photo attached." : ""} The seller will see it.`);
+            const attached = attachmentUrls.length === 1 ? " Photo attached." : attachmentUrls.length > 1 ? ` ${attachmentUrls.length} photos attached.` : "";
+            const partial = failed.length ? ` ${failed.length} image(s) couldn't be attached (must be a public JPEG, PNG, WebP or GIF under 6MB).` : "";
+            return textBlock(`Posted to dispute ${did}.${attached}${partial} The seller will see it.`);
           }
 
           // ── ACCEPT / REJECT a seller's split offer ─────────────────────────
