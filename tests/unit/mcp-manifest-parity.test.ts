@@ -297,12 +297,16 @@ describe("manifest tool descriptions match the registered ones", () => {
 });
 
 /**
- * commerce#749 follow-up: the description check above compares only tool-level
- * prose, and sync-manifest-descriptions.ts skips any parameter the manifest
- * does not already declare (`if (!props[param]) continue`). So a NEW parameter
- * could be added to the server, described in the tool prose, synced, and still
- * be absent from both manifests — which is exactly what happened to
- * firestarter_disputes' `image_urls`.
+ * commerce#749 follow-up, closed by #788: the description check above compares
+ * only tool-level prose, and sync-manifest-descriptions.ts used to SKIP any
+ * parameter the manifest did not already declare. So a new parameter could be
+ * added to the server, described in the tool prose, synced, and still be
+ * absent from both manifests — which is exactly what happened to
+ * firestarter_disputes' `image_urls`, and to 39 others.
+ *
+ * The sync script now DECLARES a missing parameter from the SDK's own
+ * advertised schema, so this assertion is the backstop rather than the fix:
+ * anything it reports is one `npm run sync-manifests` away from clean.
  *
  * That matters because the manifests are what agents actually read:
  * src/mcp/mcp.json is served at /.well-known/mcp.json and commerce's /discovery
@@ -323,58 +327,6 @@ function registeredToolParams(): Map<string, Set<string>> {
 }
 
 
-/**
- * Parameters the server accepts that neither manifest declares TODAY. This is a
- * frozen baseline, not an approval: every entry is a parameter an agent reading
- * the published manifest cannot use, which is the same defect class as
- * commerce#749 (`firestarter_disputes.image_urls`, fixed in this change and
- * deliberately NOT listed here).
- *
- * The list only shrinks. Adding a new parameter without declaring it fails the
- * test below; clearing the backlog is tracked separately.
- */
-const KNOWN_UNDECLARED = new Set<string>([
-  "firestarter_execute.location",
-  "firestarter_execute.requested_by",
-  "firestarter_approve.delivery_address",
-  "firestarter_approve.shipping_option_index",
-  "firestarter_approve.consent_nonce",
-  "firestarter_list.source_url",
-  "firestarter_list.ship_from",
-  "firestarter_list.shipping_policy",
-  "firestarter_list.fulfillment_mode",
-  "firestarter_list.allow_imageless",
-  "firestarter_list.allow_duplicate",
-  "firestarter_list.brand",
-  "firestarter_list.sku",
-  "firestarter_list.condition",
-  "firestarter_list.return_policy",
-  "firestarter_list.ship_time_days",
-  "firestarter_list.country_of_origin",
-  "firestarter_list.length_in",
-  "firestarter_list.width_in",
-  "firestarter_list.height_in",
-  "firestarter_list.weight_oz",
-  "firestarter_list.materials",
-  "firestarter_list.tags",
-  "firestarter_list.variants",
-  "firestarter_update_listing.fulfillment_mode",
-  "firestarter_update_listing.allow_imageless",
-  "firestarter_update_listing.brand",
-  "firestarter_update_listing.sku",
-  "firestarter_update_listing.condition",
-  "firestarter_update_listing.return_policy",
-  "firestarter_update_listing.ship_time_days",
-  "firestarter_update_listing.country_of_origin",
-  "firestarter_update_listing.length_in",
-  "firestarter_update_listing.width_in",
-  "firestarter_update_listing.height_in",
-  "firestarter_update_listing.weight_oz",
-  "firestarter_update_listing.materials",
-  "firestarter_update_listing.tags",
-  "firestarter_update_listing.variants",
-]);
-
 describe("manifest input schemas declare every registered parameter", () => {
   const cases: Array<[string, any]> = [
     ["src/mcp/mcp.json", manifest],
@@ -392,7 +344,7 @@ describe("manifest input schemas declare every registered parameter", () => {
       const declared = new Set(Object.keys(tool.inputSchema?.properties || {}));
       for (const p of params) {
         const key = `${tool.name}.${p}`;
-        if (!declared.has(p) && !KNOWN_UNDECLARED.has(key)) missing.push(key);
+        if (!declared.has(p)) missing.push(key);
       }
     }
     expect(
