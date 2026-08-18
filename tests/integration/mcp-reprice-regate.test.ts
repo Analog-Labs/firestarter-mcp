@@ -129,3 +129,37 @@ describe("firestarter_update_listing — a re-gated category change is not repor
     expect(text).not.toMatch(/verification/i);
   });
 });
+
+/**
+ * Review follow-ups on this PR: the notice degraded to silence without a code,
+ * and it explained a price edit using whatever verification_reason the listing
+ * happened to carry — including causes that cannot be produced by a reprice.
+ */
+describe("regate notice — robustness (commerce#768 review)", () => {
+  it("still warns when the API omits the verification code", async () => {
+    installFetch(regatedListing({
+      verification: { status: "required", reason: "high_value", message: "moved back to draft" },
+    }));
+    const tools = captureTools();
+
+    const text = textOf(await tools.firestarter_reprice({ listing_id: LISTING_ID, base_price: 305000 }));
+
+    // Requiring the code meant a response without one printed a clean success —
+    // the exact bug this notice exists to prevent.
+    expect(text).toMatch(/no longer buyer-visible/i);
+    expect(text).toContain("firestarter_verify");
+  });
+
+  it("does not explain a reprice with a cause a reprice cannot create", async () => {
+    // A listing flagged at import keeps verification_reason 'source_conflict'.
+    installFetch(regatedListing({
+      verification: { status: "required", reason: "source_conflict", code: "FS-T99X" },
+    }));
+    const tools = captureTools();
+
+    const text = textOf(await tools.firestarter_reprice({ listing_id: LISTING_ID, base_price: 305000 }));
+
+    expect(text).toMatch(/no longer buyer-visible/i);
+    expect(text).not.toMatch(/already imported by another seller/i);
+  });
+});
