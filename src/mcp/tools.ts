@@ -462,6 +462,160 @@ function regateNoticeText(listing: unknown): string {
   );
 }
 
+
+/**
+ * commerce#749/#786: attach evidence to a dispute and post the message.
+ *
+ * Shared by firestarter_disputes (buyer, /buyer/disputes) and
+ * firestarter_seller_disputes (seller, /v1/sellers/disputes). Both sides get
+ * the same hosted-URL ingest, the same combined 5-attachment cap, and the same
+ * refusal to report a clean success when evidence did not land — a second copy
+ * would drift, and every one of these behaviours was a bug the first time.
+ */
+async function postDisputeMessage(
+  apiRequest: ReturnType<typeof makeApiRequest>,
+  basePath: string,
+  did: string,
+  input: { message?: string; image_urls?: string[]; image_base64?: string },
+  audience: string,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  const { message, image_urls, image_base64 } = input;
+  // Dedup: the same URL sent twice would be fetched, stored and shown to the
+  // counterparty twice, and would burn two of the five slots.
+  const rawUrls = [...new Set((image_urls || []).filter((u): u is string => typeof u === "string" && u.trim() !== ""))];
+  // A data: URI in image_urls is the exact mistake the description warns
+  // against — name it rather than forwarding it to be rejected as "not a
+  // public image", which tells the model nothing about what it did wrong.
+  if (rawUrls.some((u) => !/^https?:\/\//i.test(u))) {
+    return textBlockOf("image_urls takes public http(s) links only. If you have the raw bytes of an image (a data: URI), pass it as image_base64 instead — one image per call.", true);
+  }
+  if ((!message || !message.trim()) && !rawUrls.length && !image_base64) {
+    return textBlockOf("Add a note (message) or a photo (image_urls) to post to the dispute.", true);
+  }
+
+  // ONE list, capped once: the message endpoint keeps 5 attachments, so capping
+  // image_urls and image_base64 separately let 6 through and the 6th was
+  // dropped server-side while the tool reported it attached.
+  // image_base64 FIRST: if the cap has to drop something, drop a URL, which can
+  // be re-fetched. Raw bytes the agent is holding cannot be recovered.
+  const payloads: Array<Record<string, string>> = [
+    ...(image_base64 ? [{ image_base64 }] : []),
+    ...rawUrls.map((image_url) => ({ image_url })),
+  ];
+  const dropped = Math.max(0, payloads.length - MAX_DISPUTE_ATTACHMENTS);
+  const capped = payloads.slice(0, MAX_DISPUTE_ATTACHMENTS);
+
+  // Concurrent: each ingest can take tens of seconds (the API fetches the
+  // remote image itself), and five in series blew past typical MCP client
+  // timeouts before the message was even posted.
+  const results = await Promise.all(capped.map(async (payload) => {
+    try {
+      const up = await apiRequest("POST", `${basePath}/${did}/attachments`, payload, ATTACHMENT_TIMEOUT_MS);
+      return up?.url ? { ok: true as const, url: up.url as string } : { ok: false as const, why: "no URL returned" };
+    } catch (err) {
+      // Keep the API's own words. Swallowing these reported an expired key or a
+      // 500 as "that image must be a JPEG under 6MB", so an agent would retry
+      // with different photos forever.
+      return { ok: false as const, why: toErrorMessage(err) };
+    }
+  }));
+  const attachmentUrls = results.flatMap((r) => (r.ok ? [r.url] : []));
+  const failures = results.flatMap((r) => (r.ok ? [] : [r.why]));
+
+  // Every photo failed AND there is no note to salvage — post nothing. With a
+  // note, the note still goes: a dispute has a response deadline and losing it
+  // to a blob-store blip is worse than losing the photo.
+  if (failures.length && !attachmentUrls.length && !(message && message.trim())) {
+    const overNote = dropped ? ` (${dropped} further image(s) were over the ${MAX_DISPUTE_ATTACHMENTS}-attachment limit and never attempted)` : "";
+    return textBlockOf(`I couldn't attach ${failures.length === 1 ? "that photo" : "those photos"}: ${[...new Set(failures)].join("; ")}${overNote}. Nothing was posted — fix the image or send a text note instead.`, true);
+  }
+  await apiRequest("POST", `${basePath}/${did}/messages`, {
+    message: (message && message.trim()) || "",
+    attachment_urls: attachmentUrls,
+  });
+  const attached = attachmentUrls.length === 1 ? " Photo attached." : attachmentUrls.length > 1 ? ` ${attachmentUrls.length} photos attached.` : "";
+  const partial = failures.length ? ` ${failures.length} image(s) could NOT be attached: ${[...new Set(failures)].join("; ")}.` : "";
+  const over = dropped ? ` ${dropped} more image(s) were not sent — a dispute message takes at most ${MAX_DISPUTE_ATTACHMENTS}.` : "";
+  return textBlockOf(`Posted to dispute ${did}.${attached}${partial}${over} ${audience}`);
+}
+
+/** Standard tool result shape. */
+function textBlockOf(text: string, isError = false) {
+  return { content: [{ type: "text" as const, text }], ...(isError ? { isError: true } : {}) };
+}
+
+/** Human-readable form of a snake_case status/type. */
+function statusLabelOf(v: unknown): string {
+  return String(v ?? "").replace(/_/g, " ");
+}
+
+/** Dispute statuses where a resolution action is still meaningful. */
+const OPEN_DISPUTE_STATES = new Set(["open", "seller_responded", "negotiating", "escalated"]);
+
+/**
+ * commerce#786: render a dispute thread from the SIDE that is reading it.
+ *
+ * The seller view was hand-copied from the buyer view and lost five things in
+ * the copy: the three-way sender label (so Firestarter's own arbitration text
+ * was attributed to the buyer), the pending offer, the response deadline,
+ * status-aware next steps (a closed dispute was advertised as resolvable), and
+ * the inline photos the tool description promised. One renderer, told which
+ * side is looking, keeps both views honest.
+ */
+function renderDisputeThread(d: any, viewer: "buyer" | "seller"): string[] {
+  const other = viewer === "buyer" ? "Seller" : "Buyer";
+  const lines: string[] = [];
+  lines.push(`**Dispute ${d.id}** — status: ${statusLabelOf(d.status)}`);
+  if (d.execution_id) lines.push(`Order: ${d.execution_id}`);
+  // Counterparty free text: cross-principal, so it crosses the trust boundary.
+  if (d.reason) lines.push(`${viewer === "seller" ? "Buyer's claim" : "Reason"}: ${sanitizeUntrusted(d.reason, 600)}${d.dispute_type ? ` (${statusLabelOf(d.dispute_type)})` : ""}`);
+  if (OPEN_DISPUTE_STATES.has(d.status) && d.seller_deadline_at) {
+    lines.push(viewer === "seller"
+      ? `**You must respond by ${new Date(d.seller_deadline_at).toUTCString()}.**`
+      : `Seller must respond by ${new Date(d.seller_deadline_at).toUTCString()}.`);
+  }
+  if (!OPEN_DISPUTE_STATES.has(d.status)) {
+    const pct = typeof d.buyer_refund_pct === "number"
+      ? ` — ${viewer === "buyer" ? `you were refunded ${d.buyer_refund_pct}%` : `buyer refunded ${d.buyer_refund_pct}%`}`
+      : "";
+    lines.push(`Resolved${d.resolution_type ? ` (${statusLabelOf(d.resolution_type)})` : ""}${pct}.`);
+  }
+
+  const offers = Array.isArray(d.offers) ? d.offers : [];
+  if (offers.length > 0) {
+    lines.push("", "**Offers:**");
+    for (const o of offers) {
+      const state = o.accepted_at ? "accepted" : o.rejected_at ? "rejected" : "pending";
+      const who = o.offered_by === viewer ? "You" : other;
+      lines.push(`- ${who}: **${o.buyer_pct}% refund to buyer / ${o.seller_pct}% to seller** — ${state}${o.reasoning ? ` — "${sanitizeUntrusted(o.reasoning, 400)}"` : ""}`);
+    }
+  }
+
+  const messages = Array.isArray(d.messages) ? d.messages : [];
+  if (messages.length > 0) {
+    lines.push("", "**Messages:**");
+    for (const m of messages) {
+      // Three roles, not two: 'admin' is Firestarter's arbiter. Collapsing it
+      // into the counterparty made platform instructions read as the
+      // adversary's claim.
+      const who = m.sender_role === viewer ? "You" : m.sender_role === "admin" ? "Firestarter" : other;
+      const nAtt = Array.isArray(m.attachment_urls) ? m.attachment_urls.length : 0;
+      lines.push(`- **${who}:** ${sanitizeUntrusted(m.message, 600)}${nAtt ? ` _(${nAtt} photo${nAtt > 1 ? "s" : ""})_` : ""}`);
+    }
+  }
+  return lines;
+}
+
+/** Every image on a dispute, for inlining alongside the rendered thread. */
+function disputeImageUrls(d: any): string[] {
+  const messages = Array.isArray(d?.messages) ? d.messages : [];
+  return [
+    ...(Array.isArray(d?.evidence_urls) ? d.evidence_urls : []),
+    ...(Array.isArray(d?.seller_evidence_urls) ? d.seller_evidence_urls : []),
+    ...messages.flatMap((m: any) => (Array.isArray(m.attachment_urls) ? m.attachment_urls : [])),
+  ];
+}
+
 /**
  * Statuses at which an execution has stopped moving on its own. Anything else
  * (finding, quoting, …) means work is still in flight — which is NOT the same
@@ -4972,10 +5126,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // an explicit action), so the tool must translate the seller's intent here.
   server.tool(
     "firestarter_seller_disputes",
-    "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
+    "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). Pass dispute_id ALONE to read the full thread - what the buyer actually claimed, and any photos they attached - before deciding anything. To act, add an action: 'message' (reply with a note and/or evidence photos, e.g. the packing shot taken before dispatch - use image_urls), 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Prefer reading the thread and replying with evidence before refunding or contesting. Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
     {
-      dispute_id: z.string().optional().describe("Dispute ID to act on (disp_...). Omit to list all disputes."),
-      action: z.enum(["refund", "contest", "split"]).optional().describe("What to do with the dispute: 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."),
+      dispute_id: z.string().optional().describe("Dispute ID to act on (disp_...). Omit to list all disputes. Pass it with NO action to read the full thread first."),
+      action: z.enum(["message", "refund", "contest", "split"]).optional().describe("What to do with the dispute: 'message' = reply to the buyer with a note and/or evidence photos (no money moves); 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."),
+      message: z.string().optional().describe("For 'message': the text to post to the dispute thread, in the seller's words."),
+      image_urls: z.array(z.string()).optional().describe("For 'message': evidence photos as public https URLs — a packing shot, the item before dispatch, proof of postage. THIS IS THE ONE TO USE when a photo is attached in the conversation: pass its URL straight through. Never fetch an image and rebuild it as a base64 data-URI, which is far too large to survive being printed into a tool call. Up to 5."),
+      image_base64: z.string().optional().describe("For 'message': an evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). Only for an image you genuinely hold as raw bytes — if you have a URL for it, use image_urls instead."),
       buyer_pct: z.number().min(0).max(100).optional().describe("For action 'split': percent refunded to the buyer. buyer_pct + seller_pct must equal 100."),
       seller_pct: z.number().min(0).max(100).optional().describe("For action 'split': percent the seller keeps. buyer_pct + seller_pct must equal 100."),
       reasoning: z.string().optional().describe("Optional note explaining the decision, recorded on the dispute and shown to the buyer."),
@@ -4987,26 +5144,69 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // worst it can do. The cost is a host confirmation on the read path too;
     // that is the right trade against an unprompted refund/payout change.
     { title: "Seller Disputes", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
-    async ({ dispute_id, action, buyer_pct, seller_pct, reasoning }) => {
+    async ({ dispute_id, action, message, image_urls, image_base64, buyer_pct, seller_pct, reasoning }) => {
       try {
         if (dispute_id) {
+          const did = cleanListingId(dispute_id);
+          // #786: dispute_id with no action READS the thread. A seller was
+          // previously told to pick a resolution without being able to see what
+          // the buyer had claimed or attached — deciding blind on a money call.
           if (!action) {
-            return { content: [{ type: "text" as const, text: `To act on dispute ${dispute_id}, choose an action: **refund** (full refund to the buyer), **contest** (reject the claim), or **split** (partial refund - give buyer_pct and seller_pct summing to 100).` }] };
+            const detail = await apiRequest("GET", `/v1/sellers/disputes/${did}`);
+            const d = detail?.dispute;
+            if (!d) {
+              return { content: [{ type: "text" as const, text: `Couldn't load dispute ${dispute_id}. Call firestarter_seller_disputes with no arguments to list the ones on your sales.` }], isError: true };
+            }
+            const lines = renderDisputeThread(d, "seller");
+            lines.push("");
+            // Status-aware: a resolved dispute must not be advertised as
+            // refundable — /resolve answers 409 INVALID_STATUS for those.
+            const pendingBuyerOffer = (Array.isArray(d.offers) ? d.offers : [])
+              .find((o: any) => o.offered_by === "buyer" && !o.accepted_at && !o.rejected_at);
+            if (!OPEN_DISPUTE_STATES.has(d.status)) {
+              lines.push(`This dispute is closed — no further action is possible.`);
+            } else if (pendingBuyerOffer) {
+              lines.push(`The buyer is proposing **${pendingBuyerOffer.buyer_pct}% refund to them / ${pendingBuyerOffer.seller_pct}% to you**. Reply with action "message", or resolve with "refund", "contest", or "split" (a counter-proposal).`);
+            } else {
+              lines.push(`Reply with action "message" (add image_urls to attach evidence such as a packing photo), or resolve with "refund", "contest", or "split".`);
+            }
+            // The description promises the seller can see the buyer's photos;
+            // a count is not seeing them.
+            const imageBlocks = await inlineImageBlocks(disputeImageUrls(d));
+            return { content: [{ type: "text" as const, text: lines.join("\n") }, ...imageBlocks] };
+          }
+          // #786: reply with a note and/or evidence photos. No money moves —
+          // this is the step that was missing entirely, so a seller's only
+          // agent-side options were to accept, reject, or propose a number.
+          if (action === "message") {
+            // `reasoning` is this tool's note field for the resolve actions; an
+            // agent reaching for it here would otherwise have its text dropped.
+            return await postDisputeMessage(apiRequest, "/v1/sellers/disputes", did, { message: message ?? reasoning, image_urls, image_base64 }, "The buyer will see it.");
           }
           const ENGINE_ACTION = { refund: "voluntary_refund", contest: "contest", split: "propose_split" } as const;
           const engineAction = ENGINE_ACTION[action];
           const payload: Record<string, unknown> = { action: engineAction };
-          if (reasoning) payload.reasoning = reasoning;
+          // Accept either field: `message` is the natural word for a note and
+          // was previously discarded on these actions without a word.
+          const note = reasoning ?? message;
+          if (note) payload.reasoning = note;
           if (engineAction === "propose_split") {
             payload.buyer_pct = buyer_pct ?? 50;
             payload.seller_pct = seller_pct ?? 50;
           }
-          await apiRequest("PUT", `/v1/sellers/disputes/${dispute_id}/resolve`, payload);
+          await apiRequest("PUT", `/v1/sellers/disputes/${did}/resolve`, payload);
           const summary =
             engineAction === "voluntary_refund" ? "Full refund issued to the buyer. The escrow freeze is lifted and the order is closed."
               : engineAction === "contest" ? "Claim contested. The buyer has been notified and can respond, counter, or escalate."
                 : `Split proposed to the buyer: ${payload.buyer_pct}% refund / ${payload.seller_pct}% to you. It applies once the buyer accepts.`;
-          return { content: [{ type: "text" as const, text: `**Dispute ${dispute_id} updated.** ${summary}` }] };
+          return { content: [{ type: "text" as const, text: `**Dispute ${did} updated.** ${summary}` }] };
+        }
+        // #786 review: without a dispute_id this used to fall through to the
+        // list, silently discarding a note and its evidence photos while
+        // returning a non-error — the same silent-discard the message path
+        // exists to remove.
+        if (action) {
+          return { content: [{ type: "text" as const, text: `I need the dispute_id (disp_…) to ${action === "message" ? "post that" : `${action} a dispute`}. Nothing was sent. Call firestarter_seller_disputes with no arguments to list the disputes on your sales.` }], isError: true };
         }
         const data = await apiRequest("GET", "/v1/sellers/disputes");
         const disputes = data.disputes || [];
@@ -5025,7 +5225,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         for (const d of disputes) {
           lines.push(`- **${sanitizeUntrusted(d.product) || "Order"}** (${d.id}) - Reason: ${sanitizeUntrusted(d.reason, 300) || "Not specified"} - Status: ${d.status}${d.resolution ? ` - Resolution: ${sanitizeUntrusted(d.resolution, 300)}` : ""}`);
         }
-        lines.push(`\nTo act on one, call again with its dispute_id and an action (refund / contest / split).`);
+        lines.push(`\nCall again with a dispute_id and NO action to read the full thread first — what the buyer claimed and any photos. Then reply with action "message" (attach evidence via image_urls), or resolve with refund / contest / split.`);
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error with disputes: ${toErrorMessage(err)}` }], isError: true };
@@ -5058,8 +5258,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     const statusLabel = (s: unknown) => String(s ?? "").replace(/_/g, " ");
     const OPEN_STATES = new Set(["open", "seller_responded", "negotiating", "escalated"]);
-    const textBlock = (text: string, isError = false) =>
-      ({ content: [{ type: "text" as const, text }], ...(isError ? { isError: true } : {}) });
+    // One implementation; the module-level helper is identical.
+    const textBlock = textBlockOf;
 
     server.tool(
       "firestarter_disputes",
@@ -5110,66 +5310,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (action === "message") {
             const did = await resolveDisputeId(dispute_id, execution_id);
             if (!did) return textBlock("I need the dispute id (disp_…) or the order id to post to. List your disputes by calling firestarter_disputes with no arguments.", true);
-            // Dedup: the same URL sent twice would be fetched, stored and shown
-            // to the seller twice, and would burn two of the five slots.
-            const rawUrls = [...new Set((image_urls || []).filter((u): u is string => typeof u === "string" && u.trim() !== ""))];
-            // A data: URI in image_urls is the exact mistake the description
-            // warns against — name it rather than forwarding it to be rejected
-            // as "not a public image".
-            const inlineInUrls = rawUrls.filter((u) => !/^https?:\/\//i.test(u));
-            if (inlineInUrls.length) {
-              return textBlock("image_urls takes public http(s) links only. If you have the raw bytes of an image (a data: URI), pass it as image_base64 instead — one image per call.", true);
-            }
-            if ((!message || !message.trim()) && !rawUrls.length && !image_base64) return textBlock("Add a note (message) or a photo (image_urls) to post to the dispute.", true);
-
-            // commerce#749: the API ingests a hosted URL into its own blob store
-            // and hands back a URL the message endpoint will accept. Passing the
-            // URL through is the whole fix — the old base64-only parameter forced
-            // an agent to print a whole photo into a tool call, which silently
-            // failed and left the evidence off the dispute.
-            //
-            // ONE list, capped once: the message endpoint keeps 5 attachments, so
-            // capping image_urls and image_base64 separately let 6 through and the
-            // 6th was dropped server-side while this tool reported it attached.
-            const payloads: Array<Record<string, string>> = [
-              ...rawUrls.map((image_url) => ({ image_url })),
-              ...(image_base64 ? [{ image_base64 }] : []),
-            ];
-            const dropped = Math.max(0, payloads.length - MAX_DISPUTE_ATTACHMENTS);
-            const capped = payloads.slice(0, MAX_DISPUTE_ATTACHMENTS);
-
-            // Concurrent: each ingest can take tens of seconds (the API fetches
-            // the remote image itself), and five in series blew past typical MCP
-            // client timeouts before the message was even posted.
-            const results = await Promise.all(capped.map(async (payload) => {
-              try {
-                const up = await apiRequest("POST", `/buyer/disputes/${did}/attachments`, payload, ATTACHMENT_TIMEOUT_MS);
-                return up?.url ? { ok: true as const, url: up.url as string } : { ok: false as const, why: "no URL returned" };
-              } catch (err) {
-                // Keep the API's own words. Swallowing these reported an expired
-                // key or a 500 as "that image must be a JPEG under 6MB", so an
-                // agent would retry with different photos forever.
-                return { ok: false as const, why: toErrorMessage(err) };
-              }
-            }));
-            const attachmentUrls = results.flatMap((r) => (r.ok ? [r.url] : []));
-            const failures = results.flatMap((r) => (r.ok ? [] : [r.why]));
-
-            // Every photo failed AND there is no note to salvage — post nothing.
-            // With a note, the note still goes: a dispute has a response deadline
-            // and losing the seller's answer to a blob-store blip is worse than
-            // losing the photo.
-            if (failures.length && !attachmentUrls.length && !(message && message.trim())) {
-              return textBlock(`I couldn't attach ${failures.length === 1 ? "that photo" : "those photos"}: ${[...new Set(failures)].join("; ")}. Nothing was posted — fix the image or send a text note instead.`, true);
-            }
-            await apiRequest("POST", `/buyer/disputes/${did}/messages`, {
-              message: (message && message.trim()) || "",
-              attachment_urls: attachmentUrls,
-            });
-            const attached = attachmentUrls.length === 1 ? " Photo attached." : attachmentUrls.length > 1 ? ` ${attachmentUrls.length} photos attached.` : "";
-            const partial = failures.length ? ` ${failures.length} image(s) could NOT be attached: ${[...new Set(failures)].join("; ")}.` : "";
-            const over = dropped ? ` ${dropped} more image(s) were not sent — a dispute message takes at most ${MAX_DISPUTE_ATTACHMENTS}.` : "";
-            return textBlock(`Posted to dispute ${did}.${attached}${partial}${over} The seller will see it.`);
+            return await postDisputeMessage(apiRequest, "/buyer/disputes", did, { message, image_urls, image_base64 }, "The seller will see it.");
           }
 
           // ── ACCEPT / REJECT a seller's split offer ─────────────────────────

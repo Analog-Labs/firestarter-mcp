@@ -133,16 +133,34 @@ describe("firestarter_seller_disputes", () => {
     expect(calls[0].body.seller_pct).toBe(40);
   });
 
-  it("a dispute_id with no action asks for one WITHOUT calling the API", async () => {
+  it("a dispute_id with no action READS the thread and moves no money (#786)", async () => {
     const tools = captureTools();
-    const calls = installFetch(() => ({ status: 200, json: {} }));
+    const calls = installFetch(() => ({
+      status: 200,
+      json: {
+        dispute: {
+          id: DISPUTE_ID, status: "open", reason: "arrived damaged",
+          messages: [{ sender_role: "buyer", message: "The box was crushed.", attachment_urls: ["u"] }],
+        },
+      },
+    }));
 
     const res = await tools.firestarter_seller_disputes({ dispute_id: DISPUTE_ID });
 
-    expect(calls).toHaveLength(0); // never hit the API with an ambiguous request
-    expect(textOf(res)).toMatch(/refund/);
-    expect(textOf(res)).toMatch(/contest/);
-    expect(textOf(res)).toMatch(/split/);
+    // Previously this asked the seller to pick refund/contest/split without
+    // showing them what the buyer had claimed — deciding blind on a money call.
+    const text = textOf(res);
+    expect(text).toContain("arrived damaged");
+    expect(text).toContain("The box was crushed");
+    expect(text).toMatch(/1 photo/);
+    // Reading is a GET; nothing that moves money is called.
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
+    expect(calls.some((c) => /\/resolve$/.test(c.url))).toBe(false);
+    // Still names the ways forward, now including the new reply path.
+    expect(text).toMatch(/message/);
+    expect(text).toMatch(/refund/);
+    expect(text).toMatch(/contest/);
+    expect(text).toMatch(/split/);
   });
 
   it("surfaces an API error (e.g. wrong seller) instead of claiming success", async () => {
@@ -179,5 +197,71 @@ describe("firestarter_seller_disputes", () => {
     expect(text).not.toMatch(/good standing/i);
     expect(text).toMatch(/your sales/i);
     expect(text).toMatch(/firestarter_disputes/);
+  });
+});
+
+/**
+ * #786 review: the seller read view was a hand-copy of the buyer renderer and
+ * had lost five behaviours in the copy. Both views now share one renderer.
+ */
+describe("firestarter_seller_disputes — the read view tells the whole truth (#786 review)", () => {
+  const THREAD = (over: Record<string, unknown> = {}) => ({
+    dispute: {
+      id: DISPUTE_ID, execution_id: "exec_1", status: "seller_responded", reason: "arrived damaged",
+      seller_deadline_at: "2026-08-20T00:00:00.000Z",
+      offers: [{ id: "off_1", offered_by: "buyer", buyer_pct: 80, seller_pct: 20, created_at: "x" }],
+      messages: [
+        { sender_role: "buyer", message: "The box was crushed.", attachment_urls: [] },
+        { sender_role: "admin", message: "Firestarter is reviewing this.", attachment_urls: [] },
+      ],
+      ...over,
+    },
+  });
+
+  it("labels Firestarter's own messages as Firestarter, not as the buyer", async () => {
+    installFetch(() => ({ status: 200, json: THREAD() }));
+    const text = textOf(await captureTools().firestarter_seller_disputes({ dispute_id: DISPUTE_ID }));
+
+    // A two-way ternary attributed platform arbitration to the adversary.
+    expect(text).toMatch(/\*\*Firestarter:\*\* Firestarter is reviewing this/);
+    expect(text).toMatch(/\*\*Buyer:\*\* The box was crushed/);
+  });
+
+  it("shows the pending buyer offer and the response deadline", async () => {
+    installFetch(() => ({ status: 200, json: THREAD() }));
+    const text = textOf(await captureTools().firestarter_seller_disputes({ dispute_id: DISPUTE_ID }));
+
+    // These are the two facts the seller's decision actually turns on; the
+    // hand-copied view dropped both while claiming to prevent deciding blind.
+    expect(text).toMatch(/80% refund to buyer/);
+    expect(text).toMatch(/You must respond by/);
+  });
+
+  it("does not advertise refund/contest/split on a closed dispute", async () => {
+    installFetch(() => ({ status: 200, json: THREAD({ status: "resolved_agreed", offers: [], seller_deadline_at: null }) }));
+    const text = textOf(await captureTools().firestarter_seller_disputes({ dispute_id: DISPUTE_ID }));
+
+    // /resolve answers 409 INVALID_STATUS for these, so offering it sends the
+    // agent into a guaranteed error.
+    expect(text).toMatch(/closed/i);
+    expect(text).not.toMatch(/resolve with "refund"/);
+  });
+
+  it("an action with no dispute_id reports the miss instead of listing", async () => {
+    const calls = installFetch(() => ({ status: 200, json: { disputes: [] } }));
+    const res = await captureTools().firestarter_seller_disputes({ action: "message", message: "packing photo note" });
+
+    // This used to fall through to the list and discard the note silently.
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/Nothing was sent/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("uses the cleaned id for the money move, not the raw one", async () => {
+    const calls = installFetch(() => ({ status: 200, json: { ok: true } }));
+    await captureTools().firestarter_seller_disputes({ dispute_id: "disp\\_abc", action: "refund" });
+
+    // Reading accepted a markdown-escaped id while resolving 404'd on it.
+    expect(calls[0].url).toContain("/disputes/disp_abc/resolve");
   });
 });
