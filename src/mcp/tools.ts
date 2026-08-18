@@ -378,6 +378,27 @@ export function makeApiRequest(apiKey: string, apiBase: string) {
   };
 }
 
+/** Plain-language cause for a possession-verification requirement. */
+function verificationWhy(reason: unknown): string {
+  return reason === "source_conflict"
+    ? "its source URL was already imported by another seller"
+    : reason === "luxury_category"
+      ? "it is a luxury-category item"
+      : reason === "buyer_invite"
+        ? "a buyer requested an escrow-protected purchase of this exact item, so possession must be proven before it goes live"
+        : "it is a high-value item";
+}
+
+/** The three things the seller physically does, shared by both renderers. */
+function verificationSteps(code: string): string {
+  return (
+    `Ask the seller to:\n` +
+    `1. Write ${code} by hand on a piece of paper\n` +
+    `2. Photograph the paper next to the item - both clearly visible in one shot\n` +
+    `3. Send that photo here in chat\n\n`
+  );
+}
+
 /**
  * Render the possession-verification ask (409 VERIFICATION_REQUIRED) as chat
  * instructions the agent can relay verbatim. Returns null for other errors.
@@ -386,22 +407,51 @@ function verificationAskText(err: unknown): string | null {
   if (!(err instanceof ApiError) || err.code !== "VERIFICATION_REQUIRED") return null;
   const v = err.body?.verification;
   if (!v?.code) return null;
-  const why =
-    v.reason === "source_conflict"
-      ? "its source URL was already imported by another seller"
-      : v.reason === "luxury_category"
-        ? "it is a luxury-category item"
-        : v.reason === "buyer_invite"
-          ? "a buyer requested an escrow-protected purchase of this exact item, so possession must be proven before it goes live"
-          : "it is a high-value item";
   return (
-    `**Possession verification needed before this listing can go live** (${why}).\n\n` +
+    `**Possession verification needed before this listing can go live** (${verificationWhy(v.reason)}).\n\n` +
     `Verification code: **${v.code}**\n\n` +
-    `Ask the seller to:\n` +
-    `1. Write ${v.code} by hand on a piece of paper\n` +
-    `2. Photograph the paper next to the item - both clearly visible in one shot\n` +
-    `3. Send that photo here in chat\n\n` +
+    verificationSteps(v.code) +
     `Then submit it with firestarter_verify (listing_id + the photo URL). A match auto-approves in seconds - no human review on the happy path.`
+  );
+}
+
+/**
+ * commerce#768: the possession gate is now re-evaluated on any price or
+ * category change to an already-live listing, not only at activation. When it
+ * trips, the API SAVES the seller's new values but pushes the listing back to
+ * draft — arriving as a 200 carrying a `verification` block, not the 409 the
+ * activation path returns (that one is verificationAskText's job).
+ *
+ * Without this seam the tool would print "Listing updated. Base price:
+ * $305000" and the seller would never learn their listing had gone dark.
+ * Returns "" when the gate did not trip, so callers can append unconditionally.
+ */
+function regateNoticeText(listing: unknown): string {
+  const v = (listing as any)?.verification;
+  if (v?.status !== "required") return "";
+
+  // Only 'high_value' and 'luxury_category' can be CAUSED by a price/category
+  // edit. The API carries a listing's pre-existing reason forward, so one once
+  // flagged 'source_conflict' would otherwise be explained to its seller as
+  // "its source URL was already imported by another seller" — a cause with
+  // nothing to do with the edit they just made. Say nothing rather than that.
+  const why = v.reason === "high_value" || v.reason === "luxury_category"
+    ? ` (${verificationWhy(v.reason)})`
+    : "";
+
+  // The code is only needed for the handwritten note. Degrading to silence when
+  // it is absent would reinstate the bare-success bug this function exists to
+  // prevent, so the "your listing went dark" half must survive without it.
+  const steps = v.code
+    ? `\n\nVerification code: **${v.code}**\n\n` + verificationSteps(v.code) +
+      `Submit it with firestarter_verify (listing_id + the photo URL), then put the listing back live with ` +
+      `firestarter_update_listing (status 'active').`
+    : `\n\nCall firestarter_verify with this listing_id to get the code and submit the seller's photo, then put ` +
+      `the listing back live with firestarter_update_listing (status 'active').`;
+
+  return (
+    `\n**This listing is no longer buyer-visible.** The new price/category needs possession verification${why}, ` +
+    `so it has been moved back to draft.${steps}`
   );
 }
 
@@ -4442,7 +4492,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_reprice
   server.tool(
     "firestarter_reprice",
-    "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules. Shipping is always estimated live from a delivery service provider and can no longer be set per-listing.",
+    "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules. Shipping is always estimated live from a delivery service provider and can no longer be set per-listing. Repricing re-fires the possession-verification gate whenever the listing would END UP at or above $500, or is in a luxury category at ANY price - so it can trip on a price CUT too (e.g. a watch dropped from $40 to $30), and it applies to paused and out-of-stock listings, not just live ones. When it trips the new price is saved but the listing is moved back to draft and stops being buyable until the seller submits a photo via firestarter_verify. Warn the seller BEFORE calling if the listing looks luxury or lands near $500. The tool output says so when it happens - relay it, never report a bare success.",
     {
       listing_id: z.string().describe("The listing ID to reprice"),
       base_price: z.number().optional().describe("New base price in USD"),
@@ -4451,7 +4501,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       dynamic_pricing: z.boolean().optional().describe("Enable/disable dynamic pricing"),
       shipping: z.number().optional().describe("Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination. Accepted for backward compatibility only."),
     },
-    { title: "Change Listing Price", readOnlyHint: false, destructiveHint: false },
+    // destructiveHint: a reprice can now take a live listing OFF the market
+      // (the possession re-gate demotes it to draft), which is exactly what this
+      // flag is for — a client that auto-approves non-destructive tools must not
+      // run this unattended.
+      { title: "Change Listing Price", readOnlyHint: false, destructiveHint: true },
     async ({ listing_id: rawListingId, base_price, floor_price, ceiling_price, dynamic_pricing, shipping }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
@@ -4485,6 +4539,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }
         }
         text += `Shipping: estimated at checkout by the delivery provider, based on the buyer's destination\n`;
+        // commerce#768: a reprice past the possession-verification bar succeeds
+        // AND takes the listing offline. Never report only the first half.
+        text += regateNoticeText(listing);
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error repricing: ${toErrorMessage(err)}` }], isError: true };
@@ -4534,6 +4591,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.category) text += `Category: ${listing.category}\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
         if (listing.status) text += `Status: ${listing.status}\n`;
+        // commerce#768: a category change can trip the possession gate on a
+        // live listing, which succeeds AND takes the listing offline.
+        text += regateNoticeText(listing);
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         // Activation can trip the possession-verification gate - surface the

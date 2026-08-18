@@ -1342,7 +1342,7 @@
     },
     {
       "name": "firestarter_reprice",
-      "description": "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules. Shipping is always estimated live from a delivery service provider and can no longer be set per-listing.",
+      "description": "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules. Shipping is always estimated live from a delivery service provider and can no longer be set per-listing. Repricing re-fires the possession-verification gate whenever the listing would END UP at or above $500, or is in a luxury category at ANY price - so it can trip on a price CUT too (e.g. a watch dropped from $40 to $30), and it applies to paused and out-of-stock listings, not just live ones. When it trips the new price is saved but the listing is moved back to draft and stops being buyable until the seller submits a photo via firestarter_verify. Warn the seller BEFORE calling if the listing looks luxury or lands near $500. The tool output says so when it happens - relay it, never report a bare success.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -212,7 +212,7 @@
   },
   "firestarter_reprice": {
     "readOnlyHint": false,
-    "destructiveHint": false
+    "destructiveHint": true
   },
   "firestarter_request_escrow": {
     "readOnlyHint": false,
