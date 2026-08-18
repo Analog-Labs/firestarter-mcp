@@ -20,7 +20,30 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTools } from "../src/mcp/tools.js";
+
+/**
+ * #788: the JSON Schema the SERVER advertises, per tool.
+ *
+ * Taken from a real McpServer's `tools/list` response rather than converted
+ * from the Zod shape here, so what lands in the manifests is byte-for-byte
+ * what a client sees over the wire — including the 2020-12 dialect
+ * enforceSchemaDialect re-stamps. A local reimplementation of the Zod ->
+ * JSON Schema conversion would be a second source of truth, and drifting from
+ * the wire is the whole bug this closes.
+ */
+async function advertisedSchemas(): Promise<Map<string, any>> {
+  const server = new McpServer({ name: "firestarter", version: "sync" });
+  registerTools(server as any, "fs_test_sync", "http://local");
+  const inner = (server as any).server;
+  const listTools = inner?._requestHandlers?.get("tools/list");
+  if (!listTools) throw new Error("could not reach the SDK's tools/list handler");
+  const result = await listTools({ method: "tools/list", params: {} }, {});
+  const out = new Map<string, any>();
+  for (const t of result?.tools ?? []) out.set(t.name, t.inputSchema);
+  return out;
+}
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -73,12 +96,16 @@ if (runtime.size < 50) {
   process.exit(1);
 }
 
+const schemas = await advertisedSchemas();
+
 let total = 0;
+let totalAdded = 0;
 for (const rel of ["mcp.json", "src/mcp/mcp.json"]) {
   const path = join(root, rel);
   const before = readFileSync(path, "utf8");
   const json = JSON.parse(before);
   const changed: string[] = [];
+  const added: string[] = [];
 
   for (const tool of json.tools ?? []) {
     const live = runtime.get(tool.name);
@@ -104,20 +131,39 @@ for (const rel of ["mcp.json", "src/mcp/mcp.json"]) {
     const props = tool.inputSchema?.properties;
     if (liveParams && props) {
       for (const [param, desc] of liveParams) {
-        if (!props[param]) continue; // a param the manifest omits is parity's job
-        if (props[param].description !== desc) {
+        if (props[param] && props[param].description !== desc) {
           props[param].description = desc;
           changed.push(`${tool.name}.${param}`);
         }
       }
     }
+
+    // #788: a param the manifest OMITS used to be skipped here — "parity's
+    // job" — so `npm run sync-manifests` reported success and changed nothing,
+    // which read as "in sync". It was not: 39 parameters the server accepts
+    // were absent from both manifests, and a manifest-driven agent cannot use
+    // a parameter it cannot see. That is what caused #749.
+    //
+    // The property is copied from the SDK's own advertised schema, so the
+    // manifest says exactly what the wire says.
+    const advertised = schemas.get(tool.name)?.properties;
+    if (advertised && props) {
+      for (const [param, schema] of Object.entries(advertised)) {
+        if (props[param]) continue;
+        props[param] = JSON.parse(JSON.stringify(schema));
+        added.push(`${tool.name}.${param}`);
+      }
+    }
   }
 
-  if (changed.length) {
+  if (changed.length || added.length) {
     writeFileSync(path, `${JSON.stringify(json, null, 2)}\n`);
     total += changed.length;
+    totalAdded += added.length;
   }
-  console.log(`${rel}: ${changed.length} description(s) synced`);
+  console.log(`${rel}: ${changed.length} description(s) synced, ${added.length} param(s) declared${added.length ? ` (${added.join(", ")})` : ""}`);
 }
 
-console.log(total ? `synced ${total} description(s) from runtime` : "already in sync with runtime");
+console.log(total || totalAdded
+  ? `synced ${total} description(s) and declared ${totalAdded} missing param(s) from runtime`
+  : "already in sync with runtime");

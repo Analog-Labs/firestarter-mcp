@@ -102,6 +102,38 @@
           },
           "channel": {
             "type": "string"
+          },
+          "location": {
+            "description": "Where the buyer is. Pass this whenever you know it (from the conversation, profile, or a prior message) even without a full delivery address — it makes search location-aware so local marketplaces are shown first.",
+            "type": "object",
+            "properties": {
+              "country": {
+                "description": "Buyer's country — full name or ISO code (e.g. 'Kenya' or 'KE'). Drives localized, deliverable-first results.",
+                "type": "string"
+              },
+              "city": {
+                "description": "Buyer's city (e.g. 'Kitale'), when known — sharpens local ranking and delivery estimates.",
+                "type": "string"
+              }
+            }
+          },
+          "requested_by": {
+            "description": "Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester.",
+            "type": "object",
+            "properties": {
+              "name": {
+                "description": "Requester's display name, e.g. 'Durga'",
+                "type": "string"
+              },
+              "id": {
+                "description": "Requester's platform user id, e.g. a Slack U... id",
+                "type": "string"
+              },
+              "channel": {
+                "description": "Platform the request came from, e.g. 'slack', 'whatsapp'",
+                "type": "string"
+              }
+            }
           }
         },
         "required": [
@@ -222,6 +254,31 @@
             "type": "number",
             "minimum": 0,
             "description": "Exact updated total in USD from a prior PRICE_CHANGED response. Pass only after showing that total to the buyer and receiving a new explicit confirmation; never guess or pre-fill it on the first approval."
+          },
+          "delivery_address": {
+            "description": "Optional — pass EITHER a single-line string (e.g. \"123 Main St, Austin, TX 78701, US\") OR an object { name?, street1, street2?, city, state?, zip?, country? }. The buyer's saved default address is used automatically; only pass a NEW address here to ship this order elsewhere, or when the buyer has no saved address. A partial or odd-shaped address is accepted (never rejected for shape); a complete one (ZIP + state for US/CA/AU) is required only at the pay boundary. On a first order with no saved address, the address you pass is saved as their default for next time.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              }
+            ]
+          },
+          "shipping_option_index": {
+            "description": "0-based index of the delivery speed to use, taken from the numbered 'Delivery options' menu shown for the option (in firestarter_execute / firestarter_status output, or firestarter_shipping_options). Omit to use the cheapest rate; the order total is recalculated server-side for the chosen speed and included in what the buyer approves.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "consent_nonce": {
+            "description": "The single-use consent_nonce string from a prior PRICE_CHANGED response. Pass it VERBATIM together with confirm_total when re-approving a price change. It is one-time-use and cannot be guessed — never fabricate it; only echo the exact value the last PRICE_CHANGED returned.",
+            "type": "string"
           }
         },
         "required": []
@@ -296,10 +353,10 @@
         "type": "object",
         "properties": {
           "set_limit_usd": {
-            "description": "IGNORED here - this tool only reads. Use firestarter_set_auto_approve_limit."
+            "description": "IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."
           },
           "disable": {
-            "description": "IGNORED here - this tool only reads. Use firestarter_set_auto_approve_limit."
+            "description": "IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."
           }
         }
       }
@@ -797,6 +854,246 @@
           },
           "country": {
             "type": "string"
+          },
+          "source_url": {
+            "description": "Optional. If the seller mentions or pastes a link to their OWN existing listing for this product elsewhere (their Etsy/eBay/Shopify page, etc.), pass it here. Firestarter will fetch it once and fill in whatever descriptive details (description, category, brand, materials, tags, condition) the seller didn't already give you — it never overwrites anything you explicitly set. Best-effort: if the fetch fails or finds nothing, the listing is still created normally.",
+            "type": "string",
+            "format": "uri"
+          },
+          "ship_from": {
+            "description": "Ship-from (origin) address — where this item ships FROM. Used to compute real shipping rates (#332). Omit to use your account's default fulfillment address.",
+            "type": "object",
+            "properties": {
+              "street1": {
+                "type": "string"
+              },
+              "street2": {
+                "type": "string"
+              },
+              "city": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "zip": {
+                "type": "string"
+              },
+              "country": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "street1",
+              "city",
+              "state",
+              "zip"
+            ]
+          },
+          "shipping_policy": {
+            "description": "Where the seller is willing to ship this item. Omit to default to WORLDWIDE (ships anywhere the platform hard rules allow; cross-border buyers are shown a duties disclosure). mode 'domestic' = home country only; mode 'list' with countries:['CA','GB',...] = home country plus those ISO alpha-2 destinations; mode 'worldwide' (optionally exclude:['BR',...]) = everywhere except excluded codes. Sanctioned/embargoed destinations are always blocked regardless of this setting.",
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "domestic",
+                  "list",
+                  "worldwide"
+                ]
+              },
+              "countries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "exclude": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "fulfillment_mode": {
+            "description": "How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Omit for auto: platform label when a carrier-ratable ship-from exists, otherwise seller-managed. Pass 'seller_managed' when the seller says they ship orders themselves / with their own courier.",
+            "type": "string",
+            "enum": [
+              "platform",
+              "seller_managed"
+            ]
+          },
+          "allow_imageless": {
+            "description": "Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now.",
+            "type": "boolean"
+          },
+          "allow_duplicate": {
+            "description": "Create this listing even though the seller already has one with the same name. Only pass true if the seller confirms they genuinely want a second, separate listing.",
+            "type": "boolean"
+          },
+          "brand": {
+            "description": "Manufacturer or brand name, e.g. 'Logitech'.",
+            "type": "string",
+            "maxLength": 200
+          },
+          "sku": {
+            "description": "Seller's own inventory/stock-keeping code for this listing. Distinct from any barcode/UPC — seller-internal, never shown to buyers.",
+            "type": "string",
+            "maxLength": 100
+          },
+          "condition": {
+            "description": "Item condition. Omit for new/unspecified.",
+            "type": "string",
+            "enum": [
+              "new",
+              "used_like_new",
+              "used_good",
+              "used_fair",
+              "refurbished"
+            ]
+          },
+          "return_policy": {
+            "description": "Free-text return policy shown to buyers, e.g. '30-day returns, buyer pays return shipping.'",
+            "type": "string",
+            "maxLength": 2000
+          },
+          "ship_time_days": {
+            "description": "Typical number of days from order to dispatch (handling time), not transit time.",
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "country_of_origin": {
+            "description": "ISO 3166-1 alpha-2 country code where the item was made, e.g. 'US', 'VN'.",
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 2
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "length_in": {
+            "description": "Packaged length, in inches.",
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "width_in": {
+            "description": "Packaged width, in inches.",
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "height_in": {
+            "description": "Packaged height, in inches.",
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "weight_oz": {
+            "description": "Packaged weight, in ounces.",
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "materials": {
+            "description": "Materials the item is made of, e.g. ['cotton', 'polyester'].",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "description": "Freeform search/discovery tags, e.g. ['summer', 'unisex'].",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "variants": {
+            "description": "Size/color/option variants for display and inventory tracking (not a checkout-level construct — orders still resolve at the listing level).",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sku": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "price": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "compare_at_price": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "inventory_qty": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "attributes": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "external_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
           }
         },
         "required": [
@@ -1409,6 +1706,185 @@
           "image_urls": {
             "type": "array",
             "description": "Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."
+          },
+          "fulfillment_mode": {
+            "description": "How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Pass null to clear back to auto (platform label when a carrier-ratable ship-from exists, otherwise seller-managed).",
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "platform",
+                  "seller_managed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "allow_imageless": {
+            "description": "Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now.",
+            "type": "boolean"
+          },
+          "brand": {
+            "description": "Manufacturer or brand name, e.g. 'Logitech'.",
+            "type": "string",
+            "maxLength": 200
+          },
+          "sku": {
+            "description": "Seller's own inventory/stock-keeping code for this listing. Distinct from any barcode/UPC — seller-internal, never shown to buyers.",
+            "type": "string",
+            "maxLength": 100
+          },
+          "condition": {
+            "description": "Item condition. Omit for new/unspecified.",
+            "type": "string",
+            "enum": [
+              "new",
+              "used_like_new",
+              "used_good",
+              "used_fair",
+              "refurbished"
+            ]
+          },
+          "return_policy": {
+            "description": "Free-text return policy shown to buyers, e.g. '30-day returns, buyer pays return shipping.'",
+            "type": "string",
+            "maxLength": 2000
+          },
+          "ship_time_days": {
+            "description": "Typical number of days from order to dispatch (handling time), not transit time.",
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "country_of_origin": {
+            "description": "ISO 3166-1 alpha-2 country code where the item was made, e.g. 'US', 'VN'.",
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 2
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "length_in": {
+            "description": "Packaged length, in inches.",
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "width_in": {
+            "description": "Packaged width, in inches.",
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "height_in": {
+            "description": "Packaged height, in inches.",
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "weight_oz": {
+            "description": "Packaged weight, in ounces.",
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "materials": {
+            "description": "Materials the item is made of, e.g. ['cotton', 'polyester'].",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "description": "Freeform search/discovery tags, e.g. ['summer', 'unisex'].",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "variants": {
+            "description": "Size/color/option variants for display and inventory tracking (not a checkout-level construct — orders still resolve at the listing level).",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sku": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "price": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "compare_at_price": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "inventory_qty": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "attributes": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "external_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
           }
         },
         "required": [
@@ -1789,13 +2265,13 @@
         "type": "object",
         "properties": {
           "spend_cap_dollars": {
-            "description": "IGNORED here - this tool only reads. Use firestarter_set_spend_cap."
+            "description": "IGNORED here — this tool only reads. Use firestarter_set_spend_cap."
           },
           "alert_threshold_pct": {
-            "description": "IGNORED here - this tool only reads. Use firestarter_set_spend_cap."
+            "description": "IGNORED here — this tool only reads. Use firestarter_set_spend_cap."
           },
           "disable": {
-            "description": "IGNORED here - this tool only reads. Use firestarter_set_spend_cap."
+            "description": "IGNORED here — this tool only reads. Use firestarter_set_spend_cap."
           }
         }
       }
