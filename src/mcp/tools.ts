@@ -496,9 +496,11 @@ async function postDisputeMessage(
   // ONE list, capped once: the message endpoint keeps 5 attachments, so capping
   // image_urls and image_base64 separately let 6 through and the 6th was
   // dropped server-side while the tool reported it attached.
+  // image_base64 FIRST: if the cap has to drop something, drop a URL, which can
+  // be re-fetched. Raw bytes the agent is holding cannot be recovered.
   const payloads: Array<Record<string, string>> = [
-    ...rawUrls.map((image_url) => ({ image_url })),
     ...(image_base64 ? [{ image_base64 }] : []),
+    ...rawUrls.map((image_url) => ({ image_url })),
   ];
   const dropped = Math.max(0, payloads.length - MAX_DISPUTE_ATTACHMENTS);
   const capped = payloads.slice(0, MAX_DISPUTE_ATTACHMENTS);
@@ -524,7 +526,8 @@ async function postDisputeMessage(
   // note, the note still goes: a dispute has a response deadline and losing it
   // to a blob-store blip is worse than losing the photo.
   if (failures.length && !attachmentUrls.length && !(message && message.trim())) {
-    return textBlockOf(`I couldn't attach ${failures.length === 1 ? "that photo" : "those photos"}: ${[...new Set(failures)].join("; ")}. Nothing was posted — fix the image or send a text note instead.`, true);
+    const overNote = dropped ? ` (${dropped} further image(s) were over the ${MAX_DISPUTE_ATTACHMENTS}-attachment limit and never attempted)` : "";
+    return textBlockOf(`I couldn't attach ${failures.length === 1 ? "that photo" : "those photos"}: ${[...new Set(failures)].join("; ")}${overNote}. Nothing was posted — fix the image or send a text note instead.`, true);
   }
   await apiRequest("POST", `${basePath}/${did}/messages`, {
     message: (message && message.trim()) || "",
@@ -536,9 +539,81 @@ async function postDisputeMessage(
   return textBlockOf(`Posted to dispute ${did}.${attached}${partial}${over} ${audience}`);
 }
 
-/** Module-level twin of the tool-local textBlock helpers. */
+/** Standard tool result shape. */
 function textBlockOf(text: string, isError = false) {
   return { content: [{ type: "text" as const, text }], ...(isError ? { isError: true } : {}) };
+}
+
+/** Human-readable form of a snake_case status/type. */
+function statusLabelOf(v: unknown): string {
+  return String(v ?? "").replace(/_/g, " ");
+}
+
+/** Dispute statuses where a resolution action is still meaningful. */
+const OPEN_DISPUTE_STATES = new Set(["open", "seller_responded", "negotiating", "escalated"]);
+
+/**
+ * commerce#786: render a dispute thread from the SIDE that is reading it.
+ *
+ * The seller view was hand-copied from the buyer view and lost five things in
+ * the copy: the three-way sender label (so Firestarter's own arbitration text
+ * was attributed to the buyer), the pending offer, the response deadline,
+ * status-aware next steps (a closed dispute was advertised as resolvable), and
+ * the inline photos the tool description promised. One renderer, told which
+ * side is looking, keeps both views honest.
+ */
+function renderDisputeThread(d: any, viewer: "buyer" | "seller"): string[] {
+  const other = viewer === "buyer" ? "Seller" : "Buyer";
+  const lines: string[] = [];
+  lines.push(`**Dispute ${d.id}** — status: ${statusLabelOf(d.status)}`);
+  if (d.execution_id) lines.push(`Order: ${d.execution_id}`);
+  // Counterparty free text: cross-principal, so it crosses the trust boundary.
+  if (d.reason) lines.push(`${viewer === "seller" ? "Buyer's claim" : "Reason"}: ${sanitizeUntrusted(d.reason, 600)}${d.dispute_type ? ` (${statusLabelOf(d.dispute_type)})` : ""}`);
+  if (OPEN_DISPUTE_STATES.has(d.status) && d.seller_deadline_at) {
+    lines.push(viewer === "seller"
+      ? `**You must respond by ${new Date(d.seller_deadline_at).toUTCString()}.**`
+      : `Seller must respond by ${new Date(d.seller_deadline_at).toUTCString()}.`);
+  }
+  if (!OPEN_DISPUTE_STATES.has(d.status)) {
+    const pct = typeof d.buyer_refund_pct === "number"
+      ? ` — ${viewer === "buyer" ? `you were refunded ${d.buyer_refund_pct}%` : `buyer refunded ${d.buyer_refund_pct}%`}`
+      : "";
+    lines.push(`Resolved${d.resolution_type ? ` (${statusLabelOf(d.resolution_type)})` : ""}${pct}.`);
+  }
+
+  const offers = Array.isArray(d.offers) ? d.offers : [];
+  if (offers.length > 0) {
+    lines.push("", "**Offers:**");
+    for (const o of offers) {
+      const state = o.accepted_at ? "accepted" : o.rejected_at ? "rejected" : "pending";
+      const who = o.offered_by === viewer ? "You" : other;
+      lines.push(`- ${who}: **${o.buyer_pct}% refund to buyer / ${o.seller_pct}% to seller** — ${state}${o.reasoning ? ` — "${sanitizeUntrusted(o.reasoning, 400)}"` : ""}`);
+    }
+  }
+
+  const messages = Array.isArray(d.messages) ? d.messages : [];
+  if (messages.length > 0) {
+    lines.push("", "**Messages:**");
+    for (const m of messages) {
+      // Three roles, not two: 'admin' is Firestarter's arbiter. Collapsing it
+      // into the counterparty made platform instructions read as the
+      // adversary's claim.
+      const who = m.sender_role === viewer ? "You" : m.sender_role === "admin" ? "Firestarter" : other;
+      const nAtt = Array.isArray(m.attachment_urls) ? m.attachment_urls.length : 0;
+      lines.push(`- **${who}:** ${sanitizeUntrusted(m.message, 600)}${nAtt ? ` _(${nAtt} photo${nAtt > 1 ? "s" : ""})_` : ""}`);
+    }
+  }
+  return lines;
+}
+
+/** Every image on a dispute, for inlining alongside the rendered thread. */
+function disputeImageUrls(d: any): string[] {
+  const messages = Array.isArray(d?.messages) ? d.messages : [];
+  return [
+    ...(Array.isArray(d?.evidence_urls) ? d.evidence_urls : []),
+    ...(Array.isArray(d?.seller_evidence_urls) ? d.seller_evidence_urls : []),
+    ...messages.flatMap((m: any) => (Array.isArray(m.attachment_urls) ? m.attachment_urls : [])),
+  ];
 }
 
 /**
@@ -5082,44 +5157,56 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             if (!d) {
               return { content: [{ type: "text" as const, text: `Couldn't load dispute ${dispute_id}. Call firestarter_seller_disputes with no arguments to list the ones on your sales.` }], isError: true };
             }
-            const msgs: any[] = Array.isArray(d.messages) ? d.messages : [];
-            let text = `**Dispute ${did}** — ${String(d.status ?? "").replace(/_/g, " ")}\n`;
-            if (d.reason) text += `Buyer's claim: ${sanitizeUntrusted(d.reason, 500)}\n`;
-            text += `\n`;
-            if (msgs.length) {
-              text += `**Conversation**\n`;
-              for (const m of msgs) {
-                const who = m.sender_role === "seller" ? "You" : "Buyer";
-                const shots = Array.isArray(m.attachment_urls) ? m.attachment_urls.length : 0;
-                text += `- ${who}: ${sanitizeUntrusted(m.message, 500)}${shots ? ` _(${shots} photo${shots === 1 ? "" : "s"} attached)_` : ""}\n`;
-              }
-              text += `\n`;
+            const lines = renderDisputeThread(d, "seller");
+            lines.push("");
+            // Status-aware: a resolved dispute must not be advertised as
+            // refundable — /resolve answers 409 INVALID_STATUS for those.
+            const pendingBuyerOffer = (Array.isArray(d.offers) ? d.offers : [])
+              .find((o: any) => o.offered_by === "buyer" && !o.accepted_at && !o.rejected_at);
+            if (!OPEN_DISPUTE_STATES.has(d.status)) {
+              lines.push(`This dispute is closed — no further action is possible.`);
+            } else if (pendingBuyerOffer) {
+              lines.push(`The buyer is proposing **${pendingBuyerOffer.buyer_pct}% refund to them / ${pendingBuyerOffer.seller_pct}% to you**. Reply with action "message", or resolve with "refund", "contest", or "split" (a counter-proposal).`);
             } else {
-              text += `No messages yet.\n\n`;
+              lines.push(`Reply with action "message" (add image_urls to attach evidence such as a packing photo), or resolve with "refund", "contest", or "split".`);
             }
-            text += `Reply with action "message" (add image_urls to attach evidence such as a packing photo), or resolve with "refund", "contest", or "split".`;
-            return { content: [{ type: "text" as const, text }] };
+            // The description promises the seller can see the buyer's photos;
+            // a count is not seeing them.
+            const imageBlocks = await inlineImageBlocks(disputeImageUrls(d));
+            return { content: [{ type: "text" as const, text: lines.join("\n") }, ...imageBlocks] };
           }
           // #786: reply with a note and/or evidence photos. No money moves —
           // this is the step that was missing entirely, so a seller's only
           // agent-side options were to accept, reject, or propose a number.
           if (action === "message") {
-            return postDisputeMessage(apiRequest, "/v1/sellers/disputes", did, { message, image_urls, image_base64 }, "The buyer will see it.");
+            // `reasoning` is this tool's note field for the resolve actions; an
+            // agent reaching for it here would otherwise have its text dropped.
+            return await postDisputeMessage(apiRequest, "/v1/sellers/disputes", did, { message: message ?? reasoning, image_urls, image_base64 }, "The buyer will see it.");
           }
           const ENGINE_ACTION = { refund: "voluntary_refund", contest: "contest", split: "propose_split" } as const;
           const engineAction = ENGINE_ACTION[action];
           const payload: Record<string, unknown> = { action: engineAction };
-          if (reasoning) payload.reasoning = reasoning;
+          // Accept either field: `message` is the natural word for a note and
+          // was previously discarded on these actions without a word.
+          const note = reasoning ?? message;
+          if (note) payload.reasoning = note;
           if (engineAction === "propose_split") {
             payload.buyer_pct = buyer_pct ?? 50;
             payload.seller_pct = seller_pct ?? 50;
           }
-          await apiRequest("PUT", `/v1/sellers/disputes/${dispute_id}/resolve`, payload);
+          await apiRequest("PUT", `/v1/sellers/disputes/${did}/resolve`, payload);
           const summary =
             engineAction === "voluntary_refund" ? "Full refund issued to the buyer. The escrow freeze is lifted and the order is closed."
               : engineAction === "contest" ? "Claim contested. The buyer has been notified and can respond, counter, or escalate."
                 : `Split proposed to the buyer: ${payload.buyer_pct}% refund / ${payload.seller_pct}% to you. It applies once the buyer accepts.`;
-          return { content: [{ type: "text" as const, text: `**Dispute ${dispute_id} updated.** ${summary}` }] };
+          return { content: [{ type: "text" as const, text: `**Dispute ${did} updated.** ${summary}` }] };
+        }
+        // #786 review: without a dispute_id this used to fall through to the
+        // list, silently discarding a note and its evidence photos while
+        // returning a non-error — the same silent-discard the message path
+        // exists to remove.
+        if (action) {
+          return { content: [{ type: "text" as const, text: `I need the dispute_id (disp_…) to ${action === "message" ? "post that" : `${action} a dispute`}. Nothing was sent. Call firestarter_seller_disputes with no arguments to list the disputes on your sales.` }], isError: true };
         }
         const data = await apiRequest("GET", "/v1/sellers/disputes");
         const disputes = data.disputes || [];
@@ -5138,7 +5225,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         for (const d of disputes) {
           lines.push(`- **${sanitizeUntrusted(d.product) || "Order"}** (${d.id}) - Reason: ${sanitizeUntrusted(d.reason, 300) || "Not specified"} - Status: ${d.status}${d.resolution ? ` - Resolution: ${sanitizeUntrusted(d.resolution, 300)}` : ""}`);
         }
-        lines.push(`\nTo act on one, call again with its dispute_id and an action (refund / contest / split).`);
+        lines.push(`\nCall again with a dispute_id and NO action to read the full thread first — what the buyer claimed and any photos. Then reply with action "message" (attach evidence via image_urls), or resolve with refund / contest / split.`);
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error with disputes: ${toErrorMessage(err)}` }], isError: true };
@@ -5171,8 +5258,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     const statusLabel = (s: unknown) => String(s ?? "").replace(/_/g, " ");
     const OPEN_STATES = new Set(["open", "seller_responded", "negotiating", "escalated"]);
-    const textBlock = (text: string, isError = false) =>
-      ({ content: [{ type: "text" as const, text }], ...(isError ? { isError: true } : {}) });
+    // One implementation; the module-level helper is identical.
+    const textBlock = textBlockOf;
 
     server.tool(
       "firestarter_disputes",
@@ -5223,7 +5310,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (action === "message") {
             const did = await resolveDisputeId(dispute_id, execution_id);
             if (!did) return textBlock("I need the dispute id (disp_…) or the order id to post to. List your disputes by calling firestarter_disputes with no arguments.", true);
-            return postDisputeMessage(apiRequest, "/buyer/disputes", did, { message, image_urls, image_base64 }, "The seller will see it.");
+            return await postDisputeMessage(apiRequest, "/buyer/disputes", did, { message, image_urls, image_base64 }, "The seller will see it.");
           }
 
           // ── ACCEPT / REJECT a seller's split offer ─────────────────────────
