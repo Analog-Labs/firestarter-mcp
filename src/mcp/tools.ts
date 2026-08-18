@@ -277,6 +277,50 @@ function formatCommunityOffers(community: any, memberTierIndex: number | null = 
 }
 
 /**
+ * Format money for display. Currency-aware: only USD gets a bare `$`.
+ *
+ * Checkout can only charge USD (CHARGEABLE_CURRENCIES in the API), so a
+ * listing priced in anything else stays browse-only — but it is still SHOWN,
+ * and the option renderer used to print a hardcoded `$` in front of it. A
+ * THB 255 listing read as "$255.00": right number, wrong currency, ~7x wrong
+ * price. Also fixes the raw interpolation: `${opt.subtotal}` printed "13.6"
+ * for 13.6 where every other money line printed two decimals.
+ */
+function money(amount: unknown, currency?: unknown): string {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return String(amount ?? "");
+  const code = typeof currency === "string" && currency.trim() ? currency.trim().toUpperCase() : "USD";
+  return code === "USD" ? `$${n.toFixed(2)}` : `${code} ${n.toFixed(2)}`;
+}
+
+/** `2026-08-14` from an ISO timestamp; passes through anything else. */
+function shortDate(value: unknown): string {
+  const s = typeof value === "string" ? value : "";
+  return /^\d{4}-\d{2}-\d{2}T/.test(s) ? s.slice(0, 10) : s;
+}
+
+/**
+ * `2026-08-14 09:11 UTC` from an ISO timestamp. A receipt printed the raw
+ * `2026-08-14T09:11:14.123Z`, which is a machine string, not a date a buyer
+ * reads back to their bank.
+ */
+function dateTime(value: unknown): string {
+  const s = typeof value === "string" ? value : "";
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) return s;
+  return `${s.slice(0, 10)} ${s.slice(11, 16)} UTC`;
+}
+
+/**
+ * Google Shopping thumbnail URLs (encrypted-tbn*.gstatic.com) are ~150 chars
+ * of opaque token, EXPIRE, and are one per option — five of them turn an
+ * options list into a wall of dead links. They stay in structuredContent for
+ * the widget; they just don't belong in the prose.
+ */
+function isTransientThumbnail(url: string): boolean {
+  return /^https?:\/\/encrypted-tbn\d*\.gstatic\.com\//i.test(url);
+}
+
+/**
  * Keep external links readable in chat: suppress noisy query strings (notably
  * Google Shopping tracking params) while preserving a clickable URL.
  */
@@ -1063,7 +1107,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       const browseLabel = isOwnListing
         ? " - your listing"
         : unconnectedStore
-          ? " - Firestarter store (checkout not enabled yet)"
+          ? " - Firestarter listing (not buyable right now)"
           : externalResult
             ? " - browse-only (external)"
             : "";
@@ -1081,7 +1125,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // clients auto-unfurl a preview. Bare URL on its own line — Slack,
       // WhatsApp, and Telegram all auto-preview hosted image URLs.
       const imageUrl = opt.image_url || opt.metadata?.image;
-      if (imageUrl && /^https?:\/\//i.test(String(imageUrl))) {
+      if (imageUrl && /^https?:\/\//i.test(String(imageUrl)) && !isTransientThumbnail(String(imageUrl))) {
         optLines.push(`  ${imageUrl}`);
       }
       // #256: lead with the bold all-in total, then the line-item split, and
@@ -1090,24 +1134,35 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // line-item total as a price discrepancy (debug 2026-06-12: "$55.80" with
       // no context read as a mismatch against a $45.81 listing).
       if (opt.total != null) {
+        // Currency-aware + 2dp everywhere (see money()). Options can be
+        // non-USD: those stay browse-only because checkout can't charge them,
+        // but they are still displayed, and a bare `$` misprices them.
+        const cur = opt.currency ?? opt.metadata?.currency;
         const costParts: string[] = [];
         if (opt.subtotal != null) {
-          const itemPart = `$${opt.subtotal} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`;
+          const itemPart = `${money(opt.subtotal, cur)} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`;
           // `subtotal` is GROSS — a voucher/community-drop discount is subtracted
           // separately into `total`, so it must show here too or the joined parts
           // sum to more than the all-in total (looked like a checkout overcharge).
-          costParts.push(opt.discount != null && Number(opt.discount) > 0 ? `${itemPart} - $${opt.discount} discount` : itemPart);
+          costParts.push(opt.discount != null && Number(opt.discount) > 0 ? `${itemPart} - ${money(opt.discount, cur)} discount` : itemPart);
         }
         // Always state shipping — a silently-dropped shipping line makes shipping
         // look unresolved. >0 shows the amount, 0 shows "free shipping", and a
         // genuinely-unknown shipping (browse-only / not rated) shows "shipping
         // calculated at checkout" instead of nothing (mirrors firestarter_preview).
-        if (opt.shipping != null && Number(opt.shipping) > 0) costParts.push(`$${opt.shipping} shipping`);
+        if (opt.shipping != null && Number(opt.shipping) > 0) costParts.push(`${money(opt.shipping, cur)} shipping`);
         else if (opt.shipping != null && Number(opt.shipping) === 0) costParts.push("free shipping");
         else if (opt.shipping == null && (opt.metadata as any)?.shipping_known === false) costParts.push("shipping calculated at checkout");
-        const taxPhrase = opt.tax != null && Number(opt.tax) > 0 ? `$${opt.tax} tax` : "no tax";
+        const taxPhrase = opt.tax != null && Number(opt.tax) > 0 ? `${money(opt.tax, cur)} tax` : "no tax";
         const breakdown = costParts.length > 0 ? `${costParts.join(" + ")}, ${taxPhrase}` : taxPhrase;
-        optLines.push(`  **$${opt.total} all-in** - ${breakdown}`);
+        // "all-in" is a PROMISE. It was printed even when the same line said
+        // "shipping calculated at checkout" — self-contradictory, and it is why
+        // the step summary quoted a shipping-inclusive total against a
+        // shipping-exclusive row for the same item. Claim it only when every
+        // component is actually known.
+        const shippingKnown = opt.shipping != null;
+        const totalLabel = shippingKnown ? "all-in" : "item total — shipping calculated at checkout";
+        optLines.push(`  **${money(opt.total, cur)} ${totalLabel}** - ${breakdown}`);
       }
       // #discount-source: state WHICH voucher applied, or why an explicit
       // voucher_code didn't — firestarter_execute's voucher_code param promises
@@ -1240,7 +1295,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       if (isOwnListing) {
         optLines.push(`  This is your own listing - shown so you can see how it appears to buyers. It is not offered for purchase.`);
       } else if (unconnectedStore) {
-        optLines.push(`  This is a Firestarter store that hasn't enabled checkout yet, so it can't be purchased here yet. Share the link so the buyer can view it, or use \`firestarter_message\` to refine toward checkout-ready listings. Do not approve this option.`);
+        optLines.push(`  This Firestarter listing can't be checked out right now — its seller is not accepting new orders, or the store has not been claimed by its merchant yet. Share the link so the buyer can view it, or use \`firestarter_message\` to refine toward buyable listings. Do not approve this option.`);
       } else if (externalResult) {
         optLines.push(`  External marketplace result - Firestarter cannot purchase it. Do not approve this option; share the link so the buyer can purchase directly.`);
       }
@@ -1372,7 +1427,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external, or not buyable right now) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
@@ -1700,7 +1755,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         const lines = [`Environment: ${environment}${identity}\n`, `**Recent Executions** (${data.total || executions.length} total)\n`];
         for (const e of executions.slice(0, 10)) {
-          lines.push(`- **${e.id}** [${e.status}] ${e.request_text?.slice(0, 60) || ""}${e.request_text?.length > 60 ? "..." : ""}`);
+          // Date + amount so a buyer with several open orders can tell which
+          // row is theirs; the id alone forced a follow-up call per order.
+          const meta = [shortDate(e.created_at), e.total != null ? money(e.total, e.currency) : null].filter(Boolean).join(" · ");
+          lines.push(`- **${e.id}** [${e.status}] ${e.request_text?.slice(0, 60) || ""}${e.request_text?.length > 60 ? "..." : ""}${meta ? ` — ${meta}` : ""}`);
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
@@ -1712,7 +1770,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED — each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED — each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter listings that are not buyable right now) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based POSITIONAL index into the options list as displayed (the option shown as '1.' is index 0). Prefer option_id: this index is resolved against a fresh read of the execution, and the option order can change if the order was re-quoted or refined with firestarter_message since you displayed it. Omit both to approve the pre-selected best option."),
@@ -2513,8 +2571,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     async ({ execution_id }) => {
       try {
         const data = await apiRequest("GET", `/v1/executions/${execution_id}/receipt`);
+        // A sandbox purchase moves no money, contacts no seller, and mints a
+        // fake charge id — but the receipt printed exactly like a live one, so
+        // it could be screenshotted as proof of payment. Say so, first line.
+        // Environment comes from the key prefix, the same signal
+        // firestarter_status reports.
         let text = `**Receipt — Order ${execution_id}**\n`;
-        text += `Date: ${data.paid_at || data.created_at || "N/A"}\n`;
+        if (apiKey.startsWith("fs_test_")) {
+          text = `**TEST MODE — simulated order. No money moved, no seller was paid.**\n\n${text}`;
+        }
+        text += `Date: ${dateTime(data.paid_at || data.created_at) || "N/A"}\n`;
         if (data.product_title) text += `Item: ${sanitizeUntrusted(data.product_title)}\n`;
         if (data.subtotal_cents != null) text += `Subtotal: $${(data.subtotal_cents / 100).toFixed(2)}\n`;
         // subtotal is GROSS — state the discount so it doesn't look silently
@@ -3900,7 +3966,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     server,
     "firestarter_catalog_search",
     {
-      description: "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
+      description: "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means it cannot be checked out right now — the seller is not accepting new orders, or the store has not been claimed by its merchant (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
       inputSchema: {
         query: z.string().optional().describe("Free-text product search of product name, description, and category — use real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Do NOT put prices in the query ('under $50' belongs in max_price, not here) and omit filler words like 'cheap' or 'best'; price phrases that do slip in are auto-extracted into the price filters."),
         category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
@@ -4027,7 +4093,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           );
         }
         lines.push(
-          "\nTo buy a **buyable** item, call `firestarter_execute` with `listing_id` set to its id. **Browse-only** items can't be checked out here — share the link so the buyer can view them, and suggest the seller finish Stripe Connect to enable checkout.",
+          "\nTo buy a **buyable** item, call `firestarter_execute` with `listing_id` set to its id. **Browse-only** items can't be checked out here — share the link so the buyer can view them instead.",
         );
         // Inline each listing's first photo so MCP clients render them; the URLs
         // also remain in the text above for chat clients that unfurl links.
@@ -4105,7 +4171,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             }
           }
           if (l.demand_score != null) text += `Demand score: ${l.demand_score}\n`;
-          if (l.created_at) text += `Listed: ${l.created_at}\n`;
+          if (l.created_at) text += `Listed: ${shortDate(l.created_at)}\n`;
           const shareUrl = listingShareUrl(l);
           if (shareUrl) {
             text += `Share link: ${shareUrl}\n`;
