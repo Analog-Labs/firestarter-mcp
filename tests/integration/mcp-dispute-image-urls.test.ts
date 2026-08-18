@@ -52,6 +52,8 @@ const DID = "disp_749";
 const ATTACH = `http://api.test/buyer/disputes/${DID}/attachments`;
 const MESSAGES = `http://api.test/buyer/disputes/${DID}/messages`;
 const HOSTED = "https://cole.pocodot.ai/api/poco/uploads/public/560e2dbf.png";
+const HOSTED2 = "https://cole.pocodot.ai/api/poco/uploads/public/aaaa1111.png";
+const HOSTED3 = "https://cole.pocodot.ai/api/poco/uploads/public/bbbb2222.png";
 const BLOB = "https://api.firestarter.network/v1/img/" + "a".repeat(32);
 
 /** Happy path: attachments ingest fine, messages accepts. */
@@ -92,7 +94,7 @@ describe("firestarter_disputes message — a hosted photo URL is passed straight
 
     const res = await tools.firestarter_disputes({
       action: "message", dispute_id: DID, message: "damage from three angles",
-      image_urls: [HOSTED, HOSTED, HOSTED],
+      image_urls: [HOSTED, HOSTED2, HOSTED3],
     });
 
     expect(calls.filter((c) => c.url === ATTACH)).toHaveLength(3);
@@ -104,11 +106,83 @@ describe("firestarter_disputes message — a hosted photo URL is passed straight
     const calls = installFetch(okResponder());
     const tools = captureTools();
 
-    await tools.firestarter_disputes({
-      action: "message", dispute_id: DID, message: "lots", image_urls: Array(9).fill(HOSTED),
-    });
+    const nine = Array.from({ length: 9 }, (_, i) => `https://cdn.example.com/p${i}.png`);
+    const res = await tools.firestarter_disputes({ action: "message", dispute_id: DID, message: "lots", image_urls: nine });
 
     expect(calls.filter((c) => c.url === ATTACH)).toHaveLength(5);
+    // Dropping four evidence photos silently is the same class of bug as the
+    // one this tool was fixed for.
+    expect(textOf(res)).toMatch(/4 more image\(s\) were not sent/);
+  });
+
+  it("the five-attachment cap counts the inline image too", async () => {
+    const calls = installFetch(okResponder());
+    const tools = captureTools();
+
+    const res = await tools.firestarter_disputes({
+      action: "message", dispute_id: DID,
+      image_urls: Array.from({ length: 5 }, (_, i) => `https://cdn.example.com/p${i}.png`),
+      image_base64: "data:image/png;base64,iVBORw0KGgo=",
+    });
+
+    // Capping each source separately sent six; the endpoint keeps five, so the
+    // inline photo was dropped server-side while the tool claimed six attached.
+    expect(calls.filter((c) => c.url === ATTACH)).toHaveLength(5);
+    expect(textOf(res)).not.toMatch(/6 photos attached/);
+    expect(textOf(res)).toMatch(/1 more image\(s\) were not sent/);
+  });
+
+  it("uploads the same URL once, however many times it is passed", async () => {
+    const calls = installFetch(okResponder());
+    const tools = captureTools();
+
+    await tools.firestarter_disputes({ action: "message", dispute_id: DID, image_urls: [HOSTED, HOSTED, HOSTED] });
+
+    expect(calls.filter((c) => c.url === ATTACH)).toHaveLength(1);
+  });
+
+  it("surfaces the API's own error rather than blaming the image", async () => {
+    installFetch((method, url) => {
+      if (url === ATTACH) return { status: 401, json: { error: "API key expired", code: "UNAUTHORIZED" } };
+      return { status: 200, json: { ok: true } };
+    });
+    const tools = captureTools();
+
+    const res = await tools.firestarter_disputes({ action: "message", dispute_id: DID, image_urls: [HOSTED] });
+
+    // Reporting an expired key as "must be a JPEG under 6MB" sends the agent
+    // hunting for a different photo forever.
+    expect(textOf(res)).toMatch(/API key expired/i);
+  });
+
+  it("still posts the buyer's note when every photo fails", async () => {
+    const calls = installFetch((method, url) => {
+      if (url === ATTACH) return { status: 500, json: { error: "blob store down" } };
+      return { status: 200, json: { ok: true } };
+    });
+    const tools = captureTools();
+
+    const res = await tools.firestarter_disputes({
+      action: "message", dispute_id: DID, message: "seller never replied, deadline is tomorrow", image_urls: [HOSTED],
+    });
+
+    // A dispute has a response deadline — losing the note to a transient blob
+    // failure costs more than losing the photo.
+    expect(calls.find((c) => c.url === MESSAGES)?.body.message).toContain("deadline is tomorrow");
+    expect(textOf(res)).toMatch(/could NOT be attached/i);
+  });
+
+  it("names a data: URI passed into image_urls instead of forwarding it", async () => {
+    const calls = installFetch(okResponder());
+    const tools = captureTools();
+
+    const res = await tools.firestarter_disputes({
+      action: "message", dispute_id: DID, image_urls: ["data:image/png;base64,iVBORw0KGgo="],
+    });
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/image_base64/);
+    expect(calls.filter((c) => c.url === ATTACH)).toHaveLength(0);
   });
 
   it("reports a failed attach instead of claiming the evidence landed", async () => {
@@ -135,10 +209,10 @@ describe("firestarter_disputes message — a hosted photo URL is passed straight
     });
     const tools = captureTools();
 
-    const res = await tools.firestarter_disputes({ action: "message", dispute_id: DID, image_urls: [HOSTED, HOSTED] });
+    const res = await tools.firestarter_disputes({ action: "message", dispute_id: DID, image_urls: [HOSTED, HOSTED2] });
 
     expect(res.isError).toBeFalsy();
-    expect(textOf(res)).toMatch(/couldn't be attached/i);
+    expect(textOf(res)).toMatch(/could NOT be attached/i);
   });
 
   it("still accepts a genuine inline data URI", async () => {

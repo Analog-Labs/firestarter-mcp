@@ -23,6 +23,13 @@ const API_REQUEST_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_API_TIMEOUT_MS
 const IMPORT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMPORT_TIMEOUT_MS || 25_000);
 // Evidence submission runs a vision soft-check server-side - same headroom.
 const VERIFY_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_VERIFY_TIMEOUT_MS || 25_000);
+// Dispute attachments: the API INGESTS a remote image (commerce#749), so its
+// own worst case is a redirect chain at ~10s a hop. A 25s client timeout gave
+// up while the server was still succeeding — reported as a failed attach while
+// the blob was stored and referenced by nothing.
+const ATTACHMENT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_ATTACHMENT_TIMEOUT_MS || 60_000);
+/** The dispute message endpoint stores at most this many attachments. */
+const MAX_DISPUTE_ATTACHMENTS = 5;
 // Keyless preview runs a live multi-source product search (Google Shopping +
 // Shopify + catalog). A cold cache can take ~25-30s - well past the 12s default -
 // so it needs its own budget, or every cold "what can you get me?" fails with a
@@ -5043,38 +5050,66 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (action === "message") {
             const did = await resolveDisputeId(dispute_id, execution_id);
             if (!did) return textBlock("I need the dispute id (disp_…) or the order id to post to. List your disputes by calling firestarter_disputes with no arguments.", true);
-            const photoUrls = (image_urls || []).filter((u) => typeof u === "string" && u.trim()).slice(0, 5);
-            if ((!message || !message.trim()) && !photoUrls.length && !image_base64) return textBlock("Add a note (message) or a photo (image_urls) to post to the dispute.", true);
+            // Dedup: the same URL sent twice would be fetched, stored and shown
+            // to the seller twice, and would burn two of the five slots.
+            const rawUrls = [...new Set((image_urls || []).filter((u): u is string => typeof u === "string" && u.trim() !== ""))];
+            // A data: URI in image_urls is the exact mistake the description
+            // warns against — name it rather than forwarding it to be rejected
+            // as "not a public image".
+            const inlineInUrls = rawUrls.filter((u) => !/^https?:\/\//i.test(u));
+            if (inlineInUrls.length) {
+              return textBlock("image_urls takes public http(s) links only. If you have the raw bytes of an image (a data: URI), pass it as image_base64 instead — one image per call.", true);
+            }
+            if ((!message || !message.trim()) && !rawUrls.length && !image_base64) return textBlock("Add a note (message) or a photo (image_urls) to post to the dispute.", true);
+
             // commerce#749: the API ingests a hosted URL into its own blob store
             // and hands back a URL the message endpoint will accept. Passing the
             // URL through is the whole fix — the old base64-only parameter forced
             // an agent to print a whole photo into a tool call, which silently
             // failed and left the evidence off the dispute.
-            const attachmentUrls: string[] = [];
-            const failed: string[] = [];
-            for (const image_url of photoUrls) {
-              const up = await apiRequest("POST", `/buyer/disputes/${did}/attachments`, { image_url }, VERIFY_TIMEOUT_MS)
-                .catch(() => null);
-              if (up?.url) attachmentUrls.push(up.url);
-              else failed.push(image_url);
-            }
-            if (image_base64) {
-              const up = await apiRequest("POST", `/buyer/disputes/${did}/attachments`, { image_base64 }, VERIFY_TIMEOUT_MS)
-                .catch(() => null);
-              if (up?.url) attachmentUrls.push(up.url);
-              else failed.push("the inline image");
-            }
-            // Never report a clean success when evidence didn't land.
-            if (failed.length && !attachmentUrls.length) {
-              return textBlock(`I couldn't attach ${failed.length === 1 ? "that photo" : "those photos"} — the image must be a public JPEG, PNG, WebP or GIF under 6MB. Nothing was posted; try another image or send a text note instead.`, true);
+            //
+            // ONE list, capped once: the message endpoint keeps 5 attachments, so
+            // capping image_urls and image_base64 separately let 6 through and the
+            // 6th was dropped server-side while this tool reported it attached.
+            const payloads: Array<Record<string, string>> = [
+              ...rawUrls.map((image_url) => ({ image_url })),
+              ...(image_base64 ? [{ image_base64 }] : []),
+            ];
+            const dropped = Math.max(0, payloads.length - MAX_DISPUTE_ATTACHMENTS);
+            const capped = payloads.slice(0, MAX_DISPUTE_ATTACHMENTS);
+
+            // Concurrent: each ingest can take tens of seconds (the API fetches
+            // the remote image itself), and five in series blew past typical MCP
+            // client timeouts before the message was even posted.
+            const results = await Promise.all(capped.map(async (payload) => {
+              try {
+                const up = await apiRequest("POST", `/buyer/disputes/${did}/attachments`, payload, ATTACHMENT_TIMEOUT_MS);
+                return up?.url ? { ok: true as const, url: up.url as string } : { ok: false as const, why: "no URL returned" };
+              } catch (err) {
+                // Keep the API's own words. Swallowing these reported an expired
+                // key or a 500 as "that image must be a JPEG under 6MB", so an
+                // agent would retry with different photos forever.
+                return { ok: false as const, why: toErrorMessage(err) };
+              }
+            }));
+            const attachmentUrls = results.flatMap((r) => (r.ok ? [r.url] : []));
+            const failures = results.flatMap((r) => (r.ok ? [] : [r.why]));
+
+            // Every photo failed AND there is no note to salvage — post nothing.
+            // With a note, the note still goes: a dispute has a response deadline
+            // and losing the seller's answer to a blob-store blip is worse than
+            // losing the photo.
+            if (failures.length && !attachmentUrls.length && !(message && message.trim())) {
+              return textBlock(`I couldn't attach ${failures.length === 1 ? "that photo" : "those photos"}: ${[...new Set(failures)].join("; ")}. Nothing was posted — fix the image or send a text note instead.`, true);
             }
             await apiRequest("POST", `/buyer/disputes/${did}/messages`, {
               message: (message && message.trim()) || "",
               attachment_urls: attachmentUrls,
             });
             const attached = attachmentUrls.length === 1 ? " Photo attached." : attachmentUrls.length > 1 ? ` ${attachmentUrls.length} photos attached.` : "";
-            const partial = failed.length ? ` ${failed.length} image(s) couldn't be attached (must be a public JPEG, PNG, WebP or GIF under 6MB).` : "";
-            return textBlock(`Posted to dispute ${did}.${attached}${partial} The seller will see it.`);
+            const partial = failures.length ? ` ${failures.length} image(s) could NOT be attached: ${[...new Set(failures)].join("; ")}.` : "";
+            const over = dropped ? ` ${dropped} more image(s) were not sent — a dispute message takes at most ${MAX_DISPUTE_ATTACHMENTS}.` : "";
+            return textBlock(`Posted to dispute ${did}.${attached}${partial}${over} The seller will see it.`);
           }
 
           // ── ACCEPT / REJECT a seller's split offer ─────────────────────────

@@ -1696,6 +1696,13 @@
             "type": "string",
             "description": "For 'message': the text to post to the dispute thread."
           },
+          "image_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For 'message': evidence photos the buyer already has, as public https URLs. THIS IS THE ONE TO USE when a photo is attached in the conversation — pass its URL straight through. Never fetch an image and rebuild it as a base64 data-URI to fill image_base64: a photo is far too large to survive being printed into a tool call, which is why attaching used to fail. Up to 5."
+          },
           "image_base64": {
             "type": "string",
             "description": "For 'message': an evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). Only for an image you genuinely hold as raw bytes and small enough to inline — if you have a URL for it, use image_urls instead."
