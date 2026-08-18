@@ -133,16 +133,34 @@ describe("firestarter_seller_disputes", () => {
     expect(calls[0].body.seller_pct).toBe(40);
   });
 
-  it("a dispute_id with no action asks for one WITHOUT calling the API", async () => {
+  it("a dispute_id with no action READS the thread and moves no money (#786)", async () => {
     const tools = captureTools();
-    const calls = installFetch(() => ({ status: 200, json: {} }));
+    const calls = installFetch(() => ({
+      status: 200,
+      json: {
+        dispute: {
+          id: DISPUTE_ID, status: "open", reason: "arrived damaged",
+          messages: [{ sender_role: "buyer", message: "The box was crushed.", attachment_urls: ["u"] }],
+        },
+      },
+    }));
 
     const res = await tools.firestarter_seller_disputes({ dispute_id: DISPUTE_ID });
 
-    expect(calls).toHaveLength(0); // never hit the API with an ambiguous request
-    expect(textOf(res)).toMatch(/refund/);
-    expect(textOf(res)).toMatch(/contest/);
-    expect(textOf(res)).toMatch(/split/);
+    // Previously this asked the seller to pick refund/contest/split without
+    // showing them what the buyer had claimed — deciding blind on a money call.
+    const text = textOf(res);
+    expect(text).toContain("arrived damaged");
+    expect(text).toContain("The box was crushed");
+    expect(text).toMatch(/1 photo attached/);
+    // Reading is a GET; nothing that moves money is called.
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
+    expect(calls.some((c) => /\/resolve$/.test(c.url))).toBe(false);
+    // Still names the ways forward, now including the new reply path.
+    expect(text).toMatch(/message/);
+    expect(text).toMatch(/refund/);
+    expect(text).toMatch(/contest/);
+    expect(text).toMatch(/split/);
   });
 
   it("surfaces an API error (e.g. wrong seller) instead of claiming success", async () => {

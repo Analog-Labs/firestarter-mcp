@@ -1616,22 +1616,38 @@
     },
     {
       "name": "firestarter_seller_disputes",
-      "description": "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). To act on one, pass dispute_id plus an action: 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
+      "description": "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). Pass dispute_id ALONE to read the full thread - what the buyer actually claimed, and any photos they attached - before deciding anything. To act, add an action: 'message' (reply with a note and/or evidence photos, e.g. the packing shot taken before dispatch - use image_urls), 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Prefer reading the thread and replying with evidence before refunding or contesting. Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "dispute_id": {
             "type": "string",
-            "description": "Dispute ID to act on (disp_...). Omit to list all disputes."
+            "description": "Dispute ID to act on (disp_...). Omit to list all disputes. Pass it with NO action to read the full thread first."
           },
           "action": {
             "type": "string",
             "enum": [
+              "message",
               "refund",
               "contest",
               "split"
             ],
-            "description": "What to do with the dispute: 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."
+            "description": "What to do with the dispute: 'message' = reply to the buyer with a note and/or evidence photos (no money moves); 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."
+          },
+          "message": {
+            "type": "string",
+            "description": "For 'message': the text to post to the dispute thread, in the seller's words."
+          },
+          "image_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For 'message': evidence photos as public https URLs — a packing shot, the item before dispatch, proof of postage. THIS IS THE ONE TO USE when a photo is attached in the conversation: pass its URL straight through. Never fetch an image and rebuild it as a base64 data-URI, which is far too large to survive being printed into a tool call. Up to 5."
+          },
+          "image_base64": {
+            "type": "string",
+            "description": "For 'message': an evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). Only for an image you genuinely hold as raw bytes — if you have a URL for it, use image_urls instead."
           },
           "buyer_pct": {
             "type": "number",

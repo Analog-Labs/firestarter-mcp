@@ -246,3 +246,90 @@ describe("firestarter_disputes message — a hosted photo URL is passed straight
     expect(textOf(res)).toMatch(/image_urls/);
   });
 });
+
+/**
+ * #786 — the seller side of the same conversation. A buyer could file evidence
+ * agent-side; a seller could only accept, reject, or propose a number. Both
+ * tools now run the same postDisputeMessage helper, so the hosted-URL ingest,
+ * the combined 5-attachment cap and the honest failure reporting cannot drift
+ * between them.
+ */
+const S_ATTACH = `http://api.test/v1/sellers/disputes/${DID}/attachments`;
+const S_MESSAGES = `http://api.test/v1/sellers/disputes/${DID}/messages`;
+
+function sellerOkResponder(minted = BLOB) {
+  return (method: string, url: string) => {
+    if (url === S_ATTACH) return { status: 200, json: { url: minted } };
+    if (url === S_MESSAGES) return { status: 200, json: { ok: true } };
+    return { status: 200, json: {} };
+  };
+}
+
+describe("firestarter_seller_disputes message — the seller can answer with evidence (#786)", () => {
+  it("posts a note and attaches the packing photo by URL", async () => {
+    const calls = installFetch(sellerOkResponder());
+    const tools = captureTools();
+
+    const res = await tools.firestarter_seller_disputes({
+      dispute_id: DID, action: "message",
+      message: "Packing photo taken before dispatch.", image_urls: [HOSTED],
+    });
+
+    // Hits the SELLER surface, not the buyer one.
+    expect(calls.find((c) => c.url === S_ATTACH)?.body).toEqual({ image_url: HOSTED });
+    expect(calls.find((c) => c.url === S_MESSAGES)?.body.attachment_urls).toEqual([BLOB]);
+    expect(textOf(res)).toContain("Photo attached");
+    expect(textOf(res)).toContain("The buyer will see it");
+  });
+
+  it("moves no money — replying is not resolving", async () => {
+    const calls = installFetch(sellerOkResponder());
+    const tools = captureTools();
+
+    await tools.firestarter_seller_disputes({ dispute_id: DID, action: "message", message: "Looking into it." });
+
+    expect(calls.some((c) => /\/resolve$/.test(c.url))).toBe(false);
+  });
+
+  it("inherits the combined five-attachment cap", async () => {
+    const calls = installFetch(sellerOkResponder());
+    const tools = captureTools();
+
+    const res = await tools.firestarter_seller_disputes({
+      dispute_id: DID, action: "message",
+      image_urls: Array.from({ length: 5 }, (_, i) => `https://cdn.example.com/s${i}.png`),
+      image_base64: "data:image/png;base64,iVBORw0KGgo=",
+    });
+
+    expect(calls.filter((c) => c.url === S_ATTACH)).toHaveLength(5);
+    expect(textOf(res)).toMatch(/1 more image\(s\) were not sent/);
+  });
+
+  it("keeps the seller's note when the photo fails", async () => {
+    const calls = installFetch((method, url) => {
+      if (url === S_ATTACH) return { status: 500, json: { error: "blob store down" } };
+      return { status: 200, json: { ok: true } };
+    });
+    const tools = captureTools();
+
+    const res = await tools.firestarter_seller_disputes({
+      dispute_id: DID, action: "message", message: "Deadline is tomorrow — responding now.", image_urls: [HOSTED],
+    });
+
+    expect(calls.find((c) => c.url === S_MESSAGES)?.body.message).toContain("Deadline is tomorrow");
+    expect(textOf(res)).toMatch(/could NOT be attached/i);
+  });
+
+  it("names a data: URI passed into image_urls", async () => {
+    const calls = installFetch(sellerOkResponder());
+    const tools = captureTools();
+
+    const res = await tools.firestarter_seller_disputes({
+      dispute_id: DID, action: "message", image_urls: ["data:image/png;base64,iVBOR"],
+    });
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/image_base64/);
+    expect(calls.filter((c) => c.url === S_ATTACH)).toHaveLength(0);
+  });
+});
