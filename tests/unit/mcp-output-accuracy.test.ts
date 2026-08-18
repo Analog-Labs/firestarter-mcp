@@ -105,11 +105,14 @@ describe("test-mode receipts are labelled", () => {
     expect(out).not.toContain("TEST MODE");
   });
 
-  it("renders the paid date as a date, not an ISO machine string", async () => {
+  // Dates were fixed concurrently on main (#599 QA pass, formatBuyerDate).
+  // Kept as a regression guard, asserting THAT formatter rather than a second
+  // one: this PR deleted its own date helpers in favour of it.
+  it("renders the paid date through the shared buyer-date formatter", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(receipt)));
     const out = textOf(await captureTools().firestarter_receipt({ execution_id: "exec_1" }));
 
-    expect(out).toContain("Date: 2026-08-14 09:11 UTC");
+    expect(out).toContain("Date: Fri, Aug 14, 2026, 9:11 AM UTC");
     expect(out).not.toContain("2026-08-14T09:11:14.123Z");
   });
 });

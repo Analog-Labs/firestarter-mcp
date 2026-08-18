@@ -293,22 +293,6 @@ function money(amount: unknown, currency?: unknown): string {
   return code === "USD" ? `$${n.toFixed(2)}` : `${code} ${n.toFixed(2)}`;
 }
 
-/** `2026-08-14` from an ISO timestamp; passes through anything else. */
-function shortDate(value: unknown): string {
-  const s = typeof value === "string" ? value : "";
-  return /^\d{4}-\d{2}-\d{2}T/.test(s) ? s.slice(0, 10) : s;
-}
-
-/**
- * `2026-08-14 09:11 UTC` from an ISO timestamp. A receipt printed the raw
- * `2026-08-14T09:11:14.123Z`, which is a machine string, not a date a buyer
- * reads back to their bank.
- */
-function dateTime(value: unknown): string {
-  const s = typeof value === "string" ? value : "";
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) return s;
-  return `${s.slice(0, 10)} ${s.slice(11, 16)} UTC`;
-}
 
 /**
  * Google Shopping thumbnail URLs (encrypted-tbn*.gstatic.com) are ~150 chars
@@ -695,6 +679,56 @@ export function arrivalDateFromDays(days: unknown, now: Date = new Date()): stri
 }
 
 /**
+ * What the spend cap actually does, told truthfully for the key in hand.
+ *
+ * Both cap tools promised "purchases that would exceed this cap are
+ * automatically rejected" with no qualification. The gate skips test-mode
+ * purchases by design (apps/api jobs/worker.ts G6: "Test-mode purchases are
+ * simulated (no real money), so a real-money spend cap must not apply to
+ * them"), so on a test key that sentence is false — and a QA pass reasonably
+ * read a sandbox purchase sailing past a $1 cap as a P0 enforcement failure.
+ * A safety control has to be described accurately in the environment the
+ * caller is actually in. Exported for unit tests.
+ */
+export function capEnforcementLine(capCents: number, testKey: boolean): string {
+  const cap = `$${(capCents / 100).toFixed(2)}`;
+  return testKey
+    ? `Purchases that would exceed ${cap} in a calendar month are automatically rejected on a LIVE key. This is a TEST key: sandbox purchases are simulated, so the cap is not applied to them and one going through is not a failure.`
+    : `Purchases that would exceed ${cap} in a calendar month are automatically rejected.`;
+}
+
+/**
+ * A date or timestamp as a buyer should read it (#599 F15).
+ *
+ * QA found the quote side clean ("Arrives in ~2 days (Wed, Aug 19)") and
+ * everything downstream raw: `Date: 2026-08-17T08:31:35.292Z` on the receipt,
+ * `Estimated delivery: 2026-08-18` on tracking, and every tracking event
+ * stamped with a full ISO timestamp. Same order, two registers.
+ *
+ * timeZone: "UTC" for the same reason arrivalDateFromDays pins it — this
+ * package renders on the BUYER's machine, and a date serialised at UTC midnight
+ * would otherwise show as the previous day anywhere west of UTC.
+ *
+ * An unparseable value is returned as-is rather than dropped: whatever the API
+ * sent is more useful to a buyer than nothing, and this must never be able to
+ * erase a date. Exported for unit tests.
+ */
+export function formatBuyerDate(value: unknown): string | null {
+  if (typeof value !== "string" && !(value instanceof Date)) return null;
+  const raw = typeof value === "string" ? value.trim() : value.toISOString();
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  const date = d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  // A date-only value (YYYY-MM-DD) carries no time to show, and a midnight
+  // timestamp is a DATE serialised, not something that happened at 00:00.
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw) || raw.includes("T00:00:00");
+  if (dateOnly) return date;
+  const time = d.toLocaleTimeString("en-US", { timeZone: "UTC", hour: "numeric", minute: "2-digit" });
+  return `${date}, ${time} UTC`;
+}
+
+/**
  * One human line for a shipping_provenance value — makes "is this number a real
  * carrier rate or a placeholder?" explicit to the buyer instead of an internal
  * enum. Null for unknown/absent values (nothing worth saying). Exported for
@@ -1077,6 +1111,15 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
     blocks.push({ type: "text", text: lines.join("\n") });
     lines.length = 0;
 
+    /**
+     * Can the buyer still act on any of this? Everything below that asks the
+     * caller to DO something — pick a speed, claim a drop, approve an
+     * option_id — is gated on it. Past approval those lines are instructions to
+     * re-approve a purchase that is already paid for, on a money path (#599).
+     * Facts stay visible either way; only the calls to action go.
+     */
+    const canStillApprove = exec.status === "awaiting_approval";
+
     for (let i = 0; i < exec.options.length; i++) {
       const opt = exec.options[i];
       // #107: browse-only options can't be checked out — label them so no agent
@@ -1190,7 +1233,10 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       {
         const availCents = Number((opt.metadata as any)?.drop_available_cents) || 0;
         const availId = (opt.metadata as any)?.drop_available_id;
-        if (availCents > 0 && typeof availId === "string") {
+        // Only while claiming can still change the price. QA read this line on a
+        // DELIVERED order, where "claim it before approving" is an instruction
+        // to act on a purchase that is over — the same defect as the menu above.
+        if (canStillApprove && availCents > 0 && typeof availId === "string") {
           const who = sanitizeUntrusted((opt.metadata as any)?.drop_available_community, 120);
           optLines.push(
             `  🎁 $${(availCents / 100).toFixed(2)} community discount available${who ? ` from ${who}` : ""} — NOT included above. ` +
@@ -1256,7 +1302,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // shipping stops being an invisible auto-pick. Non-blocking — approving
       // without a choice still uses the cheapest rate.
       if (!browseOnly) {                                                                                    
-        for (const shipLine of renderDeliveryOptions(opt, dm, exec.status === "awaiting_approval")) optLines.push(shipLine);
+        for (const shipLine of renderDeliveryOptions(opt, dm, canStillApprove)) optLines.push(shipLine);
         // Cross-border DAP disclosure (stamped on the option at quote time, #332):
         // import duties change what the buyer actually pays — they must hear it
         // WITH the price, before approving, not at the border.
@@ -1289,7 +1335,11 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // a text-only agent had no way to obtain one and was forced onto the
       // fragile index path. Rendered only for purchasable options: a browse-only
       // id is not approvable, and showing one only invites an attempt.
-      if (!browseOnly && typeof opt.id === "string" && opt.id) {
+      // Gated on the same "can the buyer still act?" test as the delivery menu.
+      // It survived the first pass because it is not a shipping line, so on a
+      // charging/delivered order the output still handed an agent an approve
+      // handle for a purchase that had already been paid for.
+      if (!browseOnly && canStillApprove && typeof opt.id === "string" && opt.id) {
         optLines.push(`  option_id: \`${opt.id}\` — pass this to firestarter_approve to buy exactly this one`);
       }
       if (isOwnListing) {
@@ -1418,6 +1468,8 @@ async function fetchAccountLine(apiRequest: ReturnType<typeof makeApiRequest>): 
 
 export function registerTools(server: McpServer, apiKey: string, apiBase: string) {
   const apiRequest = makeApiRequest(apiKey, apiBase);
+  /** Sandbox key: several real-money guarantees do not apply — say so where we make them. */
+  const isTestKey = typeof apiKey === "string" && apiKey.startsWith("fs_test");
 
   // MCP App resource backing the buyer-facing shopping tools' inline product
   // grid (firestarter_preview advertises it via _meta.ui.resourceUri). No-op on
@@ -1757,7 +1809,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         for (const e of executions.slice(0, 10)) {
           // Date + amount so a buyer with several open orders can tell which
           // row is theirs; the id alone forced a follow-up call per order.
-          const meta = [shortDate(e.created_at), e.total != null ? money(e.total, e.currency) : null].filter(Boolean).join(" · ");
+          const meta = [formatBuyerDate(e.created_at), e.total != null ? money(e.total, e.currency) : null].filter(Boolean).join(" · ");
           lines.push(`- **${e.id}** [${e.status}] ${e.request_text?.slice(0, 60) || ""}${e.request_text?.length > 60 ? "..." : ""}${meta ? ` — ${meta}` : ""}`);
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
@@ -2145,7 +2197,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
         const lines = rows.map((a) => {
-          const label = a.label || a.name || "Address";
+          // A label of "Default" on a NON-default address renders identically
+          // to the (default) marker beside it, so QA read a list with one
+          // default as having two. The marker is the state; a label repeating
+          // the word is noise on the row that is not it.
+          const rawLabel = a.label || a.name || "Address";
+          const label = !a.is_default && String(rawLabel).trim().toLowerCase() === "default"
+            ? "Address"
+            : rawLabel;
           const place = [a.city, a.country].filter(Boolean).join(", ");
           const street = a.street1 ? `${String(a.street1).slice(0, 6)}\u2026` : "";
           const parts = [label, place, street].filter(Boolean).join(" \u00b7 ");
@@ -2366,8 +2425,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
         // Carrier ETA when the shipment has one; else fall back to the date
         // promised at quote time so "when will it arrive?" always has an answer.
-        if (data.estimated_delivery) text += `Estimated delivery: ${data.estimated_delivery}\n`;
-        else if (data.promised_delivery_date) text += `Estimated delivery: ~${data.promised_delivery_date} (quoted at approval)\n`;
+        if (data.estimated_delivery) text += `Estimated delivery: ${formatBuyerDate(data.estimated_delivery)}\n`;
+        else if (data.promised_delivery_date) text += `Estimated delivery: ~${formatBuyerDate(data.promised_delivery_date)} (quoted at approval)\n`;
         text += `Status: ${data.status || "in_transit"}\n`;
         if (data.fee_breakdown) {
           const f = data.fee_breakdown;
@@ -2382,7 +2441,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (data.events?.length > 0) {
           text += `\n**Recent events:**\n`;
           for (const e of data.events.slice(-5)) {
-            const eventDate = e.datetime || e.date || "Update";
+            const eventDate = formatBuyerDate(e.datetime || e.date) || "Update";
             const eventDetail = e.description || e.message || e.detail || e.status || "Shipping update";
             text += `  ${eventDate}: ${eventDetail}\n`;
           }
@@ -2513,7 +2572,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (!cap) {
           return { content: [{ type: "text" as const, text: `**No spend cap set.** There is currently no monthly spending limit. Use \`firestarter_set_spend_cap\` with \`spend_cap_dollars\` to set one.${readOnlyArgsNotice(args, "firestarter_set_spend_cap")}` }] };
         }
-        return { content: [{ type: "text" as const, text: `**Monthly spend cap: $${(cap / 100).toFixed(2)}**\nAlert threshold: ${threshold}%\n\nPurchases that would exceed $${(cap / 100).toFixed(2)} in a calendar month are automatically rejected.${readOnlyArgsNotice(args, "firestarter_set_spend_cap")}` }] };
+        // Where they stand against it, not just what it is. Absent on an older
+        // API build, so this stays optional rather than printing "$0.00 used"
+        // — a wrong number is worse than a missing one on a spend limit.
+        const spent = Number(balance.month_to_date_spend_cents);
+        const position = Number.isFinite(spent)
+          ? `\nUsed this month: $${(spent / 100).toFixed(2)} of $${(cap / 100).toFixed(2)} (${Math.min(999, Math.round((spent / cap) * 100))}%)`
+          : "";
+        return { content: [{ type: "text" as const, text: `**Monthly spend cap: $${(cap / 100).toFixed(2)}**${position}\nAlert threshold: ${threshold}%\n\n${capEnforcementLine(cap, isTestKey)}${readOnlyArgsNotice(args, "firestarter_set_spend_cap")}` }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error reading spend cap: ${toErrorMessage(err)}` }], isError: true };
       }
@@ -2552,7 +2618,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         let text = `**Spend cap updated.**\n`;
         if (spend_cap_dollars !== undefined) text += `Monthly limit: $${spend_cap_dollars}\n`;
         if (alert_threshold_pct !== undefined) text += `Alert at: ${alert_threshold_pct}% of cap\n`;
-        text += `\nPurchases that would exceed this cap are automatically rejected.`;
+        if (spend_cap_dollars !== undefined) text += `\n${capEnforcementLine(Math.round(spend_cap_dollars * 100), isTestKey)}`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error updating spend cap: ${toErrorMessage(err)}` }], isError: true };
@@ -2580,7 +2646,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (apiKey.startsWith("fs_test_")) {
           text = `**TEST MODE — simulated order. No money moved, no seller was paid.**\n\n${text}`;
         }
-        text += `Date: ${dateTime(data.paid_at || data.created_at) || "N/A"}\n`;
+        text += `Date: ${formatBuyerDate(data.paid_at || data.created_at) || "N/A"}\n`;
         if (data.product_title) text += `Item: ${sanitizeUntrusted(data.product_title)}\n`;
         if (data.subtotal_cents != null) text += `Subtotal: $${(data.subtotal_cents / 100).toFixed(2)}\n`;
         // subtotal is GROSS — state the discount so it doesn't look silently
@@ -4171,7 +4237,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             }
           }
           if (l.demand_score != null) text += `Demand score: ${l.demand_score}\n`;
-          if (l.created_at) text += `Listed: ${shortDate(l.created_at)}\n`;
+          if (l.created_at) text += `Listed: ${formatBuyerDate(l.created_at) || l.created_at}\n`;
           const shareUrl = listingShareUrl(l);
           if (shareUrl) {
             text += `Share link: ${shareUrl}\n`;
