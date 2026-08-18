@@ -1666,7 +1666,7 @@
               "withdraw",
               "escalate"
             ],
-            "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
+            "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_urls — pass a photo's URL, never rebuild it as base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
           },
           "execution_id": {
             "type": "string",
@@ -1696,9 +1696,16 @@
             "type": "string",
             "description": "For 'message': the text to post to the dispute thread."
           },
+          "image_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For 'message': evidence photos the buyer already has, as public https URLs. THIS IS THE ONE TO USE when a photo is attached in the conversation — pass its URL straight through. Never fetch an image and rebuild it as a base64 data-URI to fill image_base64: a photo is far too large to survive being printed into a tool call, which is why attaching used to fail. Up to 5."
+          },
           "image_base64": {
             "type": "string",
-            "description": "For 'message': an optional evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). It is uploaded and attached to the message."
+            "description": "For 'message': an evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). Only for an image you genuinely hold as raw bytes and small enough to inline — if you have a URL for it, use image_urls instead."
           },
           "offer_id": {
             "type": "string",
