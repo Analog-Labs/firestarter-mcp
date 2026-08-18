@@ -9,6 +9,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { registerTools, makeApiRequest } from "./tools.js";
 import { wwwAuthenticateChallenge } from "./oauth-metadata.js";
+import { SERVER_IDENTITY } from "./identity.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
 import { readFile } from "node:fs/promises";
@@ -111,6 +112,9 @@ export function buildMcpServer(apiKey: string, apiBase: string): McpServer {
     // while the extension reported 2.1.0, because only server.ts was synced.
     version: "2.4.0",
     name: "firestarter",
+    // Icons, website and description: a client can only render what the
+    // handshake declares, which is why the ChatGPT connector showed no icon.
+    ...SERVER_IDENTITY,
   });
 
   registerTools(server, apiKey, apiBase);
