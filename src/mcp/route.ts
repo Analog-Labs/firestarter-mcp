@@ -40,6 +40,13 @@ interface SessionEntry {
   /** SHA-256 of the API key this session was created with. */
   keyHash: Buffer;
   lastSeen: number;
+  /**
+   * commerce#824: set when an upstream call 401'd this session's fs_oauth_
+   * grant (expired or revoked). The next request on the session answers with
+   * a transport-level 401 + WWW-Authenticate so the client runs its refresh
+   * flow — instead of retrying a dead token against tool results forever.
+   */
+  auth: { failed: boolean };
 }
 
 // Map of session ID → session. The transport is bound to the API key it was
@@ -103,7 +110,7 @@ export function mcpApiBase(): string {
  * bound to a caller's API key. Shared by every transport (Streamable HTTP,
  * stdio, WebSocket) so they expose an identical toolset.
  */
-export function buildMcpServer(apiKey: string, apiBase: string): McpServer {
+export function buildMcpServer(apiKey: string, apiBase: string, onAuthError?: () => void): McpServer {
   const server = new McpServer({
     // Kept in lockstep with server.ts and mcpb/manifest.json by
     // scripts/sync-version.mjs. This is the version every REMOTE client sees in
@@ -113,9 +120,9 @@ export function buildMcpServer(apiKey: string, apiBase: string): McpServer {
     name: "firestarter",
   });
 
-  registerTools(server, apiKey, apiBase);
+  registerTools(server, apiKey, apiBase, onAuthError);
 
-  const apiReq = makeApiRequest(apiKey, apiBase);
+  const apiReq = makeApiRequest(apiKey, apiBase, onAuthError);
   registerResources(server, apiReq);
   registerPrompts(server);
 
@@ -123,14 +130,18 @@ export function buildMcpServer(apiKey: string, apiBase: string): McpServer {
 }
 
 function createTransport(apiKey: string, apiBase: string): WebStandardStreamableHTTPServerTransport {
-  const server = buildMcpServer(apiKey, apiBase);
+  // Shared mutable box: buildMcpServer needs the callback before the transport
+  // (and its session entry) exists, so the flag lives here and the entry
+  // carries a reference to it.
+  const auth = { failed: false };
+  const server = buildMcpServer(apiKey, apiBase, () => { auth.failed = true; });
   const keyHash = hashKey(apiKey);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     onsessioninitialized: (sessionId: string) => {
       const now = Date.now();
-      sessions.set(sessionId, { transport, keyHash, lastSeen: now });
+      sessions.set(sessionId, { transport, keyHash, lastSeen: now, auth });
       // Re-sweep AFTER inserting, so the cap holds including this session. The
       // request-path sweep runs before creation and would otherwise leave the
       // map sitting one over.
@@ -184,6 +195,19 @@ app.all("/", async (c) => {
     // attacker probing leaked ids wants to learn.
     if (!entry || !sameKey(entry.keyHash, hashKey(apiKey))) {
       return c.json({ error: "Session not found" }, 404);
+    }
+    // commerce#824: a prior call on this session hit an upstream credential
+    // 401 for its fs_oauth_ grant — most likely simple expiry (grants live
+    // one hour). Answer with the RFC 6750 challenge so the client refreshes
+    // and reinitializes; the session is unsalvageable either way, because a
+    // refreshed token hashes to a different key and could never ride it.
+    if (entry.auth.failed) {
+      dropSession(sessionId, entry);
+      return c.json(
+        { error: "OAuth authorization expired. Refresh the access token and reinitialize." },
+        401,
+        { "WWW-Authenticate": wwwAuthenticateChallenge() },
+      );
     }
     entry.lastSeen = now;
     return entry.transport.handleRequest(c.req.raw);

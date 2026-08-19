@@ -66,6 +66,13 @@ export function toErrorMessage(err: unknown): string {
     const isAuthCode =
       err.code === "INVALID_KEY" || err.code === "INVALID_KEY_FORMAT" || err.code === "MISSING_AUTH";
     if (err.status === 401 || isAuthCode) {
+      // commerce#824: an expired OAuth grant is NOT a revoked key. Saying
+      // "re-provision" here sent operators after a credential that only
+      // needed a refresh — and agents relayed "your key is revoked" to
+      // sellers whose connector was fine an hour earlier.
+      if (err.code === "EXPIRED_KEY") {
+        return "Authentication failed: the Firestarter OAuth authorization has EXPIRED (access tokens last about an hour). This is normal token aging, not a dead credential — do not tell anyone to replace their API key. The client must re-authorize: its next request receives a refresh challenge automatically, or the user can reconnect the Firestarter connector. No search was performed.";
+      }
       if (err.code === "INVALID_KEY" || err.code === "INVALID_KEY_FORMAT") {
         return "Authentication failed: the Firestarter API key is invalid or revoked. This is a credential/configuration problem, not a product-search outage — no search was performed. Do not retry; the integration's API key must be re-provisioned.";
       }
@@ -348,7 +355,16 @@ export class ApiError extends Error {
   }
 }
 
-export function makeApiRequest(apiKey: string, apiBase: string) {
+export function makeApiRequest(
+  apiKey: string,
+  apiBase: string,
+  // commerce#824: lets the transport learn that this key's upstream said
+  // "credential dead" mid-session, so it can answer the NEXT request with a
+  // real HTTP 401 + WWW-Authenticate instead of letting the client retry a
+  // dead OAuth grant forever. Only fired for fs_oauth_ bearers — a refresh
+  // cannot resurrect a revoked raw API key.
+  onAuthError?: () => void,
+) {
   return async function apiRequest(
     method: string,
     path: string,
@@ -379,6 +395,13 @@ export function makeApiRequest(apiKey: string, apiBase: string) {
     // every resource in resources.ts, and every tool added later (#599).
     const data = neutralizeAuthority(await res.json());
     if (!res.ok) {
+      if (
+        res.status === 401 &&
+        apiKey.startsWith("fs_oauth_") &&
+        (data?.code === "EXPIRED_KEY" || data?.code === "INVALID_KEY")
+      ) {
+        onAuthError?.();
+      }
       throw new ApiError(data.error || `API request failed: ${res.status}`, res.status, data);
     }
     return data;
@@ -1638,8 +1661,8 @@ async function fetchAccountLine(apiRequest: ReturnType<typeof makeApiRequest>): 
   }
 }
 
-export function registerTools(server: McpServer, apiKey: string, apiBase: string) {
-  const apiRequest = makeApiRequest(apiKey, apiBase);
+export function registerTools(server: McpServer, apiKey: string, apiBase: string, onAuthError?: () => void) {
+  const apiRequest = makeApiRequest(apiKey, apiBase, onAuthError);
   /** Sandbox key: several real-money guarantees do not apply — say so where we make them. */
   const isTestKey = typeof apiKey === "string" && apiKey.startsWith("fs_test");
 
