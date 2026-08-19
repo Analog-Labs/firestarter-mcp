@@ -563,6 +563,19 @@ function verificationAskText(err: unknown): string | null {
  * $305000" and the seller would never learn their listing had gone dark.
  * Returns "" when the gate did not trip, so callers can append unconditionally.
  */
+/**
+ * How many members a market has, naming the window when "now" and "ever"
+ * disagree (commerce#769). A market nobody has left reads exactly as it did
+ * before: "Members: 6".
+ */
+function membersText(program: unknown): string {
+  const p = program as any;
+  const now = Number(p?.member_count ?? 0);
+  const ever = p?.member_count_all_time === undefined ? now : Number(p.member_count_all_time);
+  if (!Number.isFinite(ever) || ever <= now) return `Members: ${now}`;
+  return `Members: ${now} now · ${ever} have been, all-time (members who left keep the sales they drove)`;
+}
+
 function regateNoticeText(listing: unknown): string {
   const v = (listing as any)?.verification;
   if (v?.status !== "required") return "";
@@ -1823,12 +1836,21 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         })
         .optional()
         .describe("Who asked for this purchase, when relaying someone else's request (e.g. a teammate in chat). Stored as execution metadata so the buyer's dashboard can attribute the order. Integrations set this programmatically; pass it whenever you know the requester."),
+      // commerce#771: test mode collapses paid -> shipping -> delivered in one
+      // tick, so any test whose precondition is an order SITTING at 'shipped'
+      // was unstageable. The API has accepted preferences.hold_at_shipped since
+      // commerce#829 — no MCP tool could set it, which left the flag REST-only
+      // and the tests it was built for unstageable from any agent surface.
+      hold_at_shipped: z
+        .boolean()
+        .optional()
+        .describe("TEST MODE ONLY (fs_test_ keys): park the order at 'shipped' instead of auto-delivering it ~2s later. The mock shipment, tracking number and 'shipped' status all still happen; only the auto-deliver timer is skipped, so the order can be inspected mid-flight and then delivered explicitly with firestarter_confirm_delivery. Ignored on a live key. Use it to stage a shipped-but-not-delivered order for QA."),
     },
     // Creates a pending execution and returns priced options — it does not
     // charge anything. Payment happens in firestarter_approve, which is the
     // tool marked destructive. openWorld: it searches the live catalog.
     { title: "Start a Purchase", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by, voucher_code }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by, voucher_code, hold_at_shipped }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
@@ -1837,6 +1859,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         };
         if (listing_id) body.listing_id = listing_id;
         if (voucher_code?.trim()) body.voucher_code = voucher_code.trim();
+        // The execute route persists `preferences` verbatim; the worker reads
+        // this key inside its test_mode branch only, so forwarding it on a live
+        // key is inert rather than dangerous.
+        if (hold_at_shipped) body.preferences.hold_at_shipped = true;
         // Attribution rides the existing free-form metadata column — the REST
         // API stores body.metadata verbatim and the list endpoint echoes it.
         if (requested_by && (requested_by.name || requested_by.id)) {
@@ -4999,7 +5025,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // is shown (QA report, 2026-08-10 — "reprice reports success but the
         // buyer-facing price never moves").
         if (listing.current_price !== undefined) {
-          text += `Buyer-facing price right now: $${listing.current_price}\n`;
+          // "Buyer-facing price right now" on a listing no buyer can see reads
+          // as "it is on sale at this price" (2026-08-19 sandbox run, on a
+          // draft). Only an active listing has a buyer-facing price.
+          const live = listing.status === undefined || listing.status === "active";
+          text += live
+            ? `Buyer-facing price right now: $${listing.current_price}\n`
+            : `Price if it goes live: $${listing.current_price} — this listing is ${listing.status}, so no buyer can see or buy it right now.\n`;
           if (listing.dynamic_pricing && base_price !== undefined && listing.current_price !== base_price) {
             text += `Note: dynamic pricing is ON, so the buyer-facing price is set by the pricing engine and did NOT move to match the new base price. Disable dynamic pricing to make base_price the live price.\n`;
           }
@@ -5952,7 +5984,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               `**${name}**${p.type && p.type !== "community" ? ` (${p.type})` : ""}`,
               `Program id: \`${p.id}\` · Status: ${p.status}`,
               `URL: ${mdUrlLink(url) ?? url}${code ? ` · Share code: \`${code}\`` : ""}`,
-              `Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee · Members: ${Number(p.member_count ?? 0)}`,
+              // commerce#769: a bare "Members: 0" beside real sales and real
+              // earnings is the contradiction that issue was filed about — a
+              // member who switches markets keeps the orders they drove but
+              // stops being counted. The API answers both questions
+              // (member_count = bound right now, member_count_all_time = ever)
+              // and the web tile names the window; this surface still emitted
+              // the single unqualified number. Say which one it is, but only
+              // when they differ — otherwise it reads exactly as before.
+              `Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee · ${membersText(p)}`,
             ].join("\n");
           });
           return { content: [{ type: "text" as const, text: `**Your markets (${programs.length}):**\n\n${blocks.join("\n\n")}` }] };

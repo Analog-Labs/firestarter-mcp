@@ -352,4 +352,30 @@ describe("manifest input schemas declare every registered parameter", () => {
       `${label} is missing parameters the server accepts — agents reading the manifest cannot use them: ${missing.join(", ")}`,
     ).toEqual([]);
   });
+
+  /**
+   * The other direction, and the one #788 left open: a manifest parameter the
+   * server does NOT accept. Found by the 2026-08-19 sandbox run —
+   * firestarter_execute advertised top-level `name`, `id` and `channel` while
+   * the server nests all three inside `requested_by`. A ghost parameter is
+   * worse than a missing one: the agent believes it passed the value, the
+   * server silently ignores it, and nothing anywhere says so.
+   */
+  it.each(cases)("%s declares nothing the server does not accept", (label, m) => {
+    const live = registeredToolParams();
+    expect(live.size).toBeGreaterThan(50);
+
+    const ghosts: string[] = [];
+    for (const tool of m.tools || []) {
+      const params = live.get(tool.name);
+      if (!params) continue;
+      for (const p of Object.keys(tool.inputSchema?.properties || {})) {
+        if (!params.has(p)) ghosts.push(`${tool.name}.${p}`);
+      }
+    }
+    expect(
+      ghosts,
+      `${label} advertises parameters the server ignores — run \`npm run sync-manifests\`: ${ghosts.join(", ")}`,
+    ).toEqual([]);
+  });
 });

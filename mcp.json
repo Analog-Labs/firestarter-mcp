@@ -94,15 +94,6 @@
             "type": "string",
             "description": "A discount code the buyer already has (voucher / coupon / promo code). Pass it ONLY when the buyer gave you one — you do NOT need to hunt for codes, since the best publicly available voucher is applied automatically. Use this for a private or targeted code, which auto-apply cannot find. If the code can't be used the order still proceeds at the best price available, and the response explains why it didn't apply so you can tell the buyer."
           },
-          "name": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "channel": {
-            "type": "string"
-          },
           "location": {
             "description": "Where the buyer is. Pass this whenever you know it (from the conversation, profile, or a prior message) even without a full delivery address — it makes search location-aware so local marketplaces are shown first.",
             "type": "object",
@@ -134,6 +125,10 @@
                 "type": "string"
               }
             }
+          },
+          "hold_at_shipped": {
+            "description": "TEST MODE ONLY (fs_test_ keys): park the order at 'shipped' instead of auto-delivering it ~2s later. The mock shipment, tracking number and 'shipped' status all still happen; only the auto-deliver timer is skipped, so the order can be inspected mid-flight and then delivered explicitly with firestarter_confirm_delivery. Ignored on a live key. Use it to stage a shipped-but-not-delivered order for QA.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -837,24 +832,6 @@
           "shipping": {
             "type": "number",
             "description": "Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."
-          },
-          "street1": {
-            "type": "string"
-          },
-          "street2": {
-            "type": "string"
-          },
-          "city": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string"
-          },
-          "zip": {
-            "type": "string"
-          },
-          "country": {
-            "type": "string"
           },
           "source_url": {
             "description": "Optional. If the seller mentions or pastes a link to their OWN existing listing for this product elsewhere (their Etsy/eBay/Shopify page, etc.), pass it here. Firestarter will fetch it once and fill in whatever descriptive details (description, category, brand, materials, tags, condition) the seller didn't already give you — it never overwrites anything you explicitly set. Best-effort: if the fetch fails or finds nothing, the listing is still created normally.",
