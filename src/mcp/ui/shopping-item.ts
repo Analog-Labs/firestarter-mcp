@@ -18,7 +18,9 @@ export interface ShoppingItem {
   images?: unknown;
   price_usd?: number;
   current_price?: number;
-  price?: { amount_minor?: number | null; currency?: string } | null;
+  /** Catalog rows send {amount_minor, currency}; the firestarter_product
+   *  projection sends a plain number. priceLabel accepts both. */
+  price?: number | { amount_minor?: number | null; currency?: string } | null;
   currency?: string;
   url?: string;
   share_url?: string;
@@ -29,6 +31,9 @@ export interface ShoppingItem {
   /** Provenance/lifecycle badge for surfaces with no buyability flag
    *  (a seller's own listings, a community shelf). */
   status_label?: string | null;
+  /** Rating aggregate (phase 2 wiring): rendered ONLY when count > 0. */
+  rating?: number | null;
+  rating_count?: number | null;
 }
 
 export function firstImage(it: ShoppingItem): string | null {
@@ -42,13 +47,18 @@ export function firstImage(it: ShoppingItem): string | null {
 }
 
 export function priceLabel(it: ShoppingItem): string {
-  const currency = it.currency || it.price?.currency || "USD";
+  const priceObj = typeof it.price === "object" && it.price !== null ? it.price : null;
+  const currency = it.currency || priceObj?.currency || "USD";
   const amount =
     typeof it.price_usd === "number" ? it.price_usd
       : typeof it.current_price === "number" ? it.current_price
-        : typeof it.price?.amount_minor === "number" ? it.price.amount_minor / 100
-          : null;
-  return amount == null ? "" : `${currency} ${amount.toFixed(2)}`;
+        : typeof it.price === "number" ? it.price
+          : typeof priceObj?.amount_minor === "number" ? priceObj.amount_minor / 100
+            : null;
+  // A zero price is "price unknown" (unclaimed feed pre-listings carry 0, and
+  // listing creation enforces a positive minimum) — showing "USD 0.00" reads
+  // as free-for-sale, so render no price instead.
+  return amount == null || amount === 0 ? "" : `${currency} ${amount.toFixed(2)}`;
 }
 
 /**
@@ -74,4 +84,15 @@ export function badgeFor(it: ShoppingItem): { text: string; cls: string } | null
   if (buyable === false) return { text: "Browse-only", cls: "muted" };
   const label = typeof it.status_label === "string" ? it.status_label.trim() : "";
   return label ? { text: label, cls: "muted" } : null;
+}
+
+/**
+ * `★ 4.6 (12)` when a real aggregate exists; null renders nothing — the
+ * stars row collapses rather than showing an empty or zero state.
+ */
+export function starsLabel(it: ShoppingItem): { stars: string; count: string } | null {
+  const rating = Number(it.rating);
+  const count = Number(it.rating_count);
+  if (!Number.isFinite(rating) || !Number.isFinite(count) || count <= 0) return null;
+  return { stars: `★ ${rating.toFixed(1)}`, count: `(${count})` };
 }

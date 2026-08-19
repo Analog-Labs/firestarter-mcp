@@ -280,7 +280,12 @@ describe("#256 buyer confirmation - rendering (firestarter_status)", () => {
     installStatusFetch(approvalExec([EXTERNAL_OPT]));
     const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
     expect(text).toContain("browse-only (external)");
-    expect(text).toContain("**$39.00 all-in** - no tax");
+    // This option's shipping is UNKNOWN, so the total is not all-in and must
+    // not say so — the old wording claimed an all-in price while showing no
+    // shipping line at all, which is how a shipping-inclusive summary ended up
+    // contradicting a shipping-exclusive row for the same item.
+    expect(text).toContain("**$39.00 item total — shipping calculated at checkout** - no tax");
+    expect(text).not.toContain("all-in");
     expect(text).toContain("View on eBay: https://ebay.com/itm/123456");
     expect(text).toContain("Firestarter cannot purchase it");
     expect(text).toContain("share the link");
@@ -289,11 +294,16 @@ describe("#256 buyer confirmation - rendering (firestarter_status)", () => {
     expect(text).not.toContain("Firestarter store");
   });
 
-  it("browse-only Firestarter store (not Stripe-connected): honest 'checkout not enabled', NOT 'external'", async () => {
+  // Sell-first: a payout rail no longer gates checkout, so "the seller hasn't
+  // enabled checkout" is no longer WHY a Firestarter listing is browse-only —
+  // it is either a paused seller or an unclaimed store. The distinction this
+  // test protects (ours, not external; never "buy it elsewhere") is unchanged.
+  it("browse-only Firestarter listing: honest 'not buyable right now', NOT 'external'", async () => {
     installStatusFetch(approvalExec([UNCONNECTED_STORE_OPT]));
     const text = textOf(await captureTools().firestarter_status({ execution_id: "exec_conf1" }));
-    expect(text).toContain("Firestarter store (checkout not enabled yet)");
-    expect(text).toContain("hasn't enabled checkout yet");
+    expect(text).toContain("Firestarter listing (not buyable right now)");
+    expect(text).toContain("not accepting new orders");
+    expect(text).not.toContain("Stripe Connect");
     expect(text).toContain(`View on Firestarter: ${SHARE_URL}`);
     // It is browse-only but it is NOT external, and we don't tell the buyer to
     // "buy it directly elsewhere" - there is no elsewhere, it's our seller.
@@ -310,7 +320,7 @@ describe("#256 buyer confirmation - rendering (firestarter_status)", () => {
     expect(text).toContain("This is your own listing");
     expect(text).toContain(`View your listing: ${SHARE_URL}`);
     expect(text).not.toContain("external");
-    expect(text).not.toContain("Firestarter store (checkout not enabled yet)");
+    expect(text).not.toContain("Firestarter listing (not buyable right now)");
     expect(text).not.toContain("Firestarter cannot purchase it");
   });
 

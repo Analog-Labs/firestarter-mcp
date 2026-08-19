@@ -269,6 +269,7 @@ const SELLER_STATUS_LABELS: Record<string, string> = {
   paused: "Paused",
   delisted: "Delisted",
   sold_out: "Sold out",
+  out_of_stock: "Out of stock",
 };
 
 const sellerListing = z.object({

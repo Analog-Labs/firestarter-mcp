@@ -40,39 +40,72 @@ const result = await esbuild.build({
 const js = result.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 
 const css = `
+  /* FOUNDATION = the original production stylesheet, verbatim where possible.
+     A redesign pass (host theme variables, serif host font, padded "catalog
+     tile" contain-framing) read worse than what was live — so the original
+     look IS the design: system-ui sans, edge-to-edge cover photos, bordered
+     cards, chip badges. On top of it, only the STRUCTURAL fixes the original
+     lacked:
+       1. badge row PINNED to the card bottom (badges align across a row);
+       2. title reserves two lines (rows align when titles don't wrap);
+       3. media images absolutely positioned (a tall intrinsic image can no
+          longer stretch its square tile);
+       4. page scrolls inside a host-capped iframe (no half-cropped rows);
+       5. a stars row that stays collapsed until rating data exists;
+       6. the firestarter_product detail view, styled from the same palette. */
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    color: #18181b; background: transparent; }
+  html, body { margin: 0; }
+  body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #18181b; background: transparent; overflow-y: auto; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 12px; padding: 4px; }
   .card { display: flex; flex-direction: column; border: 1px solid #e4e4e7; border-radius: 12px;
     overflow: hidden; text-decoration: none; color: inherit; background: #fff;
     transition: border-color .12s, transform .12s; }
-  a.card:hover { border-color: #a1a1aa; transform: translateY(-2px); }
-  .media { position: relative; aspect-ratio: 1 / 1; background: #f4f4f5;
-    display: flex; align-items: center; justify-content: center; }
-  .media img { width: 100%; height: 100%; object-fit: cover; }
+  a.card:hover, .card.link:hover { border-color: #a1a1aa; transform: translateY(-2px); }
+  .media { position: relative; aspect-ratio: 1 / 1; background: #f4f4f5; min-height: 0;
+    overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .media .ph { display: none; color: #a1a1aa; font-size: 12px; }
   .media.noimg .ph { display: block; }
-  .body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 4px; }
-  .title { font-weight: 600; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical; overflow: hidden; }
-  .meta { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
-  .price { font-weight: 700; }
-  .seller { color: #71717a; font-size: 12px; }
-  .badge { align-self: flex-start; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  .body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .title { font-weight: 600; font-size: 13px; line-height: 1.3; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    min-height: calc(2 * 1.3em); }
+  .stars { font-size: 12px; color: #f59e0b; }
+  .stars .count { color: #71717a; }
+  .stars:empty { display: none; }
+  .meta { display: flex; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; }
+  .price { font-weight: 700; flex: none; }
+  .seller { color: #71717a; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+  .badgerow { margin-top: auto; padding-top: 4px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
     border: 1px solid transparent; }
   .badge.ok { background: #dcfce7; color: #166534; }
   .badge.muted { background: #f4f4f5; color: #71717a; }
   .empty { color: #71717a; text-align: center; padding: 24px; }
+
+  /* Detail view (firestarter_product) — original palette, cover hero. */
+  .detail { max-width: 460px; margin: 0 auto; padding: 4px; }
+  .media.hero { border: 1px solid #e4e4e7; border-radius: 12px; }
+  .thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+  .thumb { flex: none; width: 52px; height: 52px; padding: 0; background: #f4f4f5;
+    border: 1px solid #e4e4e7; border-radius: 8px; cursor: pointer; overflow: hidden; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .thumb.sel { border-color: #a1a1aa; }
+  .dbody { padding: 10px 2px; display: flex; flex-direction: column; gap: 6px; }
+  .dtitle { font-weight: 600; font-size: 15px; line-height: 1.3; }
+
   @media (prefers-color-scheme: dark) {
     body { color: #f4f4f5; }
     .card { background: #18181b; border-color: #3f3f46; }
-    a.card:hover { border-color: #71717a; }
+    a.card:hover, .card.link:hover { border-color: #71717a; }
     .media { background: #27272a; }
     .badge.ok { background: #14532d; color: #bbf7d0; }
     .badge.muted { background: #27272a; color: #a1a1aa; }
+    .media.hero, .thumb { border-color: #3f3f46; }
+    .thumb { background: #27272a; }
   }
 `;
 

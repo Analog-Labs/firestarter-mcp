@@ -15,7 +15,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAppResource, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results";
+// The URI carries a version segment because at least one host (Claude Desktop)
+// caches the resource by URI and never re-reads it after the extension is
+// reinstalled — an updated widget silently renders with the OLD html/css until
+// the URI changes. Bump the segment whenever the generated HTML changes
+// meaningfully; hosts fetch the "new" resource and the stale cache is orphaned.
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v2";
 
 // Origins the sandboxed iframe may load product images from. By default an MCP
 // App iframe has NO network access; images load only from origins allowlisted

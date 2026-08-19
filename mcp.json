@@ -2,14 +2,14 @@
   "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
-  "version": "2.5.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 85 tools, 7 resources, 10 prompts.",
+  "version": "2.6.0",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 86 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
   "args": [
-    "tsx",
-    "src/mcp/server.ts"
+    "-y",
+    "@analog-labs/firestarter-mcp"
   ],
   "env": {
     "FIRESTARTER_API_KEY": {
@@ -25,7 +25,7 @@
   "tools": [
     {
       "name": "firestarter_execute",
-      "description": "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+      "description": "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external, or not buyable right now) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -212,7 +212,7 @@
     },
     {
       "name": "firestarter_status",
-      "description": "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live) plus the ACCOUNT the configured API key belongs to (user + organization). Use this to check on orders, see what options were found, get tracking updates, confirm whether you are in test/sandbox mode, or answer 'which account/user am I operating as?' (call it with no arguments for the environment + account summary). Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
+      "description": "The buyer's ORDER HISTORY and order status on Firestarter — check one order, or list recent orders (\"my orders\", \"order history\", \"past orders\", \"what did I buy\"); works on every key, live and test. Also reports the current ENVIRONMENT (test vs live) plus the ACCOUNT the configured API key belongs to (user + organization). Use this to check on orders, see what options were found, get tracking updates, confirm whether you are in test/sandbox mode, or answer 'which account/user am I operating as?' (call it with no arguments for the environment + account summary). Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -230,7 +230,7 @@
     },
     {
       "name": "firestarter_approve",
-      "description": "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED — each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+      "description": "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED — each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter listings that are not buyable right now) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -685,7 +685,7 @@
     },
     {
       "name": "firestarter_purchases",
-      "description": "The buyer's cross-marketplace purchase history: everything recorded with firestarter_record_purchase, from any store, in one list — with the product URL and seller so an item can be reordered without re-searching. Use it to answer \"what did I buy\", find a past item's link/price, or start a reorder. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+      "description": "OFF-NETWORK purchases only — the pilot log of purchases an agent completed on OTHER stores and recorded with firestarter_record_purchase. This is NOT the buyer's Firestarter order history: for orders placed through Firestarter (\"my orders\", \"order history\", \"what did I buy here\") ALWAYS use firestarter_status, which works on every key. This pilot log is test-environment keys only for now; live keys get a TEST_MODE_ONLY refusal — that refusal says nothing about Firestarter order history, which remains fully available via firestarter_status.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1461,7 +1461,7 @@
     },
     {
       "name": "firestarter_catalog_search",
-      "description": "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
+      "description": "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means it cannot be checked out right now — the seller is not accepting new orders, or the store has not been claimed by its merchant (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1495,6 +1495,22 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "firestarter_product",
+      "description": "Show one product from the Firestarter catalog in full detail — all photos, description, attributes, price, buyability, and the seller's trust profile (rating, review count, units sold, time on platform). This is the buyer's ZOOM-IN after firestarter_catalog_search or firestarter_preview: pass the listing id (lst_..., also parsed from a firestarter.network/l/<id> share link). Read-only — to buy, pass the same listing_id to firestarter_execute; for a shipping quote first, use firestarter_shipping_estimate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "listing_id": {
+            "type": "string",
+            "description": "The listing to show (lst_..., from catalog search, preview, or a share link)."
+          }
+        },
+        "required": [
+          "listing_id"
+        ]
       }
     },
     {

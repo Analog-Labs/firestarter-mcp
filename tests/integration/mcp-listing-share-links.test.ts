@@ -44,7 +44,13 @@ describe("listing share-link output (#231/#232)", () => {
     expect(text).not.toContain("https://firestarter.network/l/");
   });
 
-  it("emits an API-provided live URL bare and without Markdown escapes", async () => {
+  // Share links are now emitted as MARKDOWN LINKS so they are clickable in
+  // clients that don't auto-link bare URLs. The invariant #231/#232 actually
+  // protects is unchanged and still asserted below: the id's `_`/`-` must reach
+  // the user UNESCAPED, or the URL 404s. The address also stays legible as the
+  // link's own label, so an agent relaying it (a bare share URL unfurls into a
+  // product card) can still read it straight out of the text.
+  it("emits an API-provided live URL as a clickable link, without Markdown escapes", async () => {
     const shareUrl = "https://firestarter.network/l/lst_8lKpBt_-";
     vi.stubGlobal("fetch", vi.fn(async () => json({
       id: "lst_8lKpBt_-",
@@ -61,7 +67,9 @@ describe("listing share-link output (#231/#232)", () => {
     const result = await captureTools().firestarter_list({ product_name: "Entrance gate", base_price: 99 });
     const text = result.content[0].text as string;
 
-    expect(text).toContain(`Share link: ${shareUrl}`);
+    // Clickable, targeting the exact URL the API returned.
+    expect(text).toContain(`Share link: [firestarter.network/l/lst_8lKpBt_-](${shareUrl})`);
+    // The original bug: escaping the id's separators produced a dead link.
     expect(text).not.toContain("\\\\_");
     expect(text).not.toContain("\\\\-");
   });

@@ -18,7 +18,7 @@
  * placeholder rather than a broken image.
  */
 import { App } from "@modelcontextprotocol/ext-apps";
-import { badgeFor, firstImage, priceLabel, type ShoppingItem } from "./shopping-item.js";
+import { badgeFor, firstImage, priceLabel, starsLabel, type ShoppingItem } from "./shopping-item.js";
 
 const root = document.getElementById("root")!;
 
@@ -44,12 +44,17 @@ function render(items: ShoppingItem[]): void {
              onerror="this.parentElement.classList.add('noimg');this.remove();" />`
         : "";
       const seller = it.seller ? `<span class="seller">${esc(it.seller)}</span>` : "";
+      // Fixed anatomy — media, reserved title, stars (collapses when absent),
+      // one meta row, badge PINNED to the bottom — so every card in a row has
+      // identical bones and badges align regardless of title length.
+      const stars = starsLabel(it);
       const card = `
         <div class="media">${media}<span class="ph">No photo</span></div>
         <div class="body">
           <div class="title">${title}</div>
+          <div class="stars">${stars ? `${esc(stars.stars)} <span class="count">${esc(stars.count)}</span>` : ""}</div>
           <div class="meta"><span class="price">${esc(priceLabel(it))}</span> ${seller}</div>
-          ${badge ? `<span class="badge ${badge.cls}">${esc(badge.text)}</span>` : ""}
+          <div class="badgerow">${badge ? `<span class="badge ${badge.cls}">${esc(badge.text)}</span>` : ""}</div>
         </div>`;
       // Navigation must go through app.openLink (host-mediated): a bare
       // <a target="_blank"> inside the sandboxed iframe is blocked on hosts
@@ -88,9 +93,53 @@ root.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") openCard(ev.target);
 });
 
+/** Detail view (firestarter_product): hero + thumbnail strip + trust line.
+ *  Same tokens as the grid, so it reads as the grid's sibling. */
+function renderDetail(p: Record<string, unknown>): void {
+  const title = esc(String(p.title ?? "Untitled"));
+  const imgs = (Array.isArray(p.images) ? p.images : []).filter(
+    (u): u is string => typeof u === "string" && /^https?:\/\//i.test(u),
+  );
+  const hero = imgs[0]
+    ? `<img id="hero" src="${esc(imgs[0])}" alt="${title}"
+         onerror="this.parentElement.classList.add('noimg');this.remove();" />`
+    : "";
+  const thumbs = imgs.length > 1
+    ? `<div class="thumbs">${imgs.slice(0, 8).map((u, i) =>
+        `<button class="thumb${i === 0 ? " sel" : ""}" data-src="${esc(u)}"><img src="${esc(u)}" alt="" /></button>`).join("")}</div>`
+    : "";
+  const it = p as ShoppingItem;
+  const starsInfo = starsLabel({ rating: (p as any).rating, rating_count: (p as any).rating_count });
+  const sold = Number((p as any).units_sold) > 0 ? `${(p as any).units_sold} sold` : "";
+  const seller = p.seller ? `${esc(String(p.seller))}${(p as any).seller_verified ? " ✓" : ""}` : "";
+  root.innerHTML = `
+    <div class="detail">
+      <div class="media hero">${hero}<span class="ph">No photo</span></div>
+      ${thumbs}
+      <div class="dbody">
+        <div class="dtitle">${title}</div>
+        <div class="stars">${starsInfo ? `${esc(starsInfo.stars)} <span class="count">${esc(starsInfo.count)}</span>` : ""}${sold ? ` <span class="count">· ${esc(sold)}</span>` : ""}</div>
+        <div class="meta"><span class="price">${esc(priceLabel(it))}</span> <span class="seller">${seller}</span></div>
+        ${(p as any).share_url ? `<div class="badgerow"><span class="badge ok link" data-url="${esc(String((p as any).share_url))}" role="link" tabindex="0" style="cursor:pointer">View listing page</span></div>` : ""}
+      </div>
+    </div>`;
+  root.querySelectorAll<HTMLElement>(".thumb").forEach((b) => b.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const src = b.dataset.src;
+    const heroEl = document.getElementById("hero") as HTMLImageElement | null;
+    if (src && heroEl) heroEl.src = src;
+    root.querySelectorAll(".thumb").forEach((t) => t.classList.remove("sel"));
+    b.classList.add("sel");
+  }));
+}
+
 app.ontoolresult = (params) => {
   try {
     const sc = (params?.structuredContent ?? {}) as Record<string, unknown>;
+    if (sc.product && typeof sc.product === "object") {
+      renderDetail(sc.product as Record<string, unknown>);
+      return;
+    }
     const items = (Array.isArray(sc.options) ? sc.options
       : Array.isArray(sc.listings) ? sc.listings
         : []) as ShoppingItem[];
