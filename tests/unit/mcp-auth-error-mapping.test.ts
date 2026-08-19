@@ -29,6 +29,17 @@ describe("MCP auth error mapping (#556)", () => {
         expect(m).toContain("user-session endpoint");
     });
 
+    // commerce#824: an expired OAuth grant is NOT a revoked key. The old
+    // mapping told the operator to re-provision a credential that only needed
+    // a refresh — and the agent relayed "your key is revoked" to the seller.
+    it("an expired OAuth grant says re-authorize, never re-provision", () => {
+        const m = toErrorMessage(err(401, "EXPIRED_KEY"));
+        expect(m.toLowerCase()).toContain("expired");
+        expect(m).toContain("re-authoriz");
+        expect(m).not.toContain("re-provisioned");
+        expect(m).not.toContain("invalid or revoked");
+    });
+
     it("missing credentials point at integration config, not a dead key", () => {
         const m = toErrorMessage(err(401, "MISSING_AUTH"));
         expect(m).toContain("missing Authorization header");
