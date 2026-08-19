@@ -58,7 +58,9 @@ export function protectedResourceMetadata(): Record<string, unknown> {
     authorization_servers: [oauthResourceBase()],
     bearer_methods_supported: ["header"],
     scopes_supported: ["firestarter:commerce"],
-    resource_documentation: "https://firestarter.network/docs/mcp",
+    // /mcp is the real page. /docs/mcp was never a declared SPA route, so this
+    // advertised a dead link that returns 200 and renders nothing.
+    resource_documentation: "https://firestarter.network/mcp",
   };
 }
 
