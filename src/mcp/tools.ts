@@ -3196,19 +3196,35 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   );
 
   // Tool: firestarter_upload_image
-  // Accepts a base64-encoded image from the conversation and persists it to the
-  // Firestarter image store, returning a public URL the agent can then pass to
-  // firestarter_list / firestarter_update_listing (image_urls) or firestarter_import (photo_urls).
+  // Persists a product photo to the Firestarter image store and returns a
+  // public URL the agent can then pass to firestarter_list /
+  // firestarter_update_listing (image_urls) or firestarter_import (photo_urls).
+  // commerce#819: takes the photo by URL (server-side fetch + re-host) —
+  // base64 is the fallback for images that exist nowhere as a URL, because a
+  // data URI rebuilt from a linked image does not survive being emitted as a
+  // tool argument (same mechanism as the dispute-photo fix, commerce#749).
   server.tool(
     "firestarter_upload_image",
-    "Upload a product photo the seller sent in this conversation and get back a permanent public URL. Call this FIRST when the seller provides a photo (attached image), then pass the returned URL into firestarter_list or firestarter_update_listing image_urls. Accepts a base64-encoded image (data-URI format: 'data:image/jpeg;base64,...'). Max 6 MB. Returns the hosted URL on success.",
+    "Upload a product photo and get back a permanent public URL to pass into firestarter_list or firestarter_update_listing image_urls. PREFER image_url: pass the photo's existing URL (e.g. the hosted URL of an image attached in this conversation) and the server fetches and re-hosts it. NEVER download a linked image and rebuild it as a base64 data-URI — that is exactly what fails. Use image_base64 (data-URI format, max 6 MB) only when the photo exists at no URL. Returns the hosted URL on success.",
     {
-      image_base64: z.string().describe("The image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here."),
+      image_url: z.string().optional().describe("PREFERRED. Public URL of the photo (e.g. the hosted URL of an image attached in this conversation). The server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB). Pass this whenever the image exists at any URL."),
+      image_base64: z.string().optional().describe("Fallback when the photo exists at no URL: the image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here. Max 6 MB."),
       filename: z.string().optional().describe("Optional original filename (used to detect format: png, webp, gif). Defaults to jpeg if omitted."),
     },
     { title: "Upload Product Image", readOnlyHint: false, destructiveHint: false },
-    async ({ image_base64, filename }) => {
+    async ({ image_url, image_base64, filename }) => {
       try {
+        if (image_url) {
+          const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_url, filename });
+          const url = (res as any)?.url;
+          if (!url) {
+            return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The URL must point to a public JPEG, PNG, WebP, or GIF under 6 MB." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.` }] };
+        }
+        if (!image_base64) {
+          return { content: [{ type: "text" as const, text: "Error: pass image_url (preferred — any public URL of the photo) or image_base64." }], isError: true };
+        }
         const base64Part = String(image_base64).includes(",") ? String(image_base64).split(",", 2)[1] : String(image_base64);
         const normalized = base64Part.replace(/\s+/g, "");
         const padding = (normalized.match(/=+$/)?.[0].length ?? 0);
@@ -3302,7 +3318,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       ceiling_price: z.number().optional().describe("Never surge above this price"),
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
-      image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
       source_url: z.string().url().optional().describe("Optional. If the seller mentions or pastes a link to their OWN existing listing for this product elsewhere (their Etsy/eBay/Shopify page, etc.), pass it here. Firestarter will fetch it once and fill in whatever descriptive details (description, category, brand, materials, tags, condition) the seller didn't already give you — it never overwrites anything you explicitly set. Best-effort: if the fetch fails or finds nothing, the listing is still created normally."),
       shipping: z.number().optional().describe("Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."),
       ship_from: z.object({
@@ -4721,7 +4737,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       category: z.string().optional().describe("New category (e.g. 'sports/tennis')"),
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
-      image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
       fulfillment_mode: z.enum(["platform", "seller_managed"]).nullable().optional().describe("How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Pass null to clear back to auto (platform label when a carrier-ratable ship-from exists, otherwise seller-managed)."),
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       ...listingDetailFields,
