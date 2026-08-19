@@ -46,6 +46,7 @@ interface Annotations {
   readOnlyHint?: boolean;
   destructiveHint?: boolean;
   idempotentHint?: boolean;
+  openWorldHint?: boolean;
 }
 
 let tools: { name: string; annotations: Annotations }[] = [];
@@ -157,6 +158,30 @@ const READ_ONLY = [
   "firestarter_discover_markets",
 ];
 
+// Tools that must stay open-world: they publish or edit content on the public
+// firestarter.network surface, reach an external third-party system (store
+// connectors, courier dispatch), or run a search that can leave the platform.
+// The MCP spec DEFAULTS an absent openWorldHint to true, so this list is the
+// floor, not the interesting invariant — the interesting one is the mechanical
+// "explicit boolean everywhere" test below, which stops closed-world tools
+// from silently advertising themselves as open-world via the default.
+const OPEN_WORLD = [
+  "firestarter_list",
+  "firestarter_bulk_list",
+  "firestarter_import",
+  "firestarter_update_listing",
+  "firestarter_reprice",
+  "firestarter_delist",
+  "firestarter_review",
+  "firestarter_connect_shopify",
+  "firestarter_connect_tiktok",
+  "firestarter_connect_store",
+  "firestarter_sync_shopify",
+  "firestarter_assist_quote",
+  "firestarter_assist_book",
+  "firestarter_request_escrow",
+];
+
 describe("MCP tool safety annotations", () => {
   it("exposes the full tool surface to a connected client", () => {
     expect(tools.length).toBeGreaterThan(70);
@@ -196,6 +221,31 @@ describe("MCP tool safety annotations", () => {
     }
   });
 
+  // OpenAI's plugin directory requires readOnlyHint, destructiveHint, AND
+  // openWorldHint set explicitly on every tool, and the MCP spec treats an
+  // ABSENT openWorldHint as TRUE — so any tool that omits it is advertised as
+  // open-world whether it is or not. An explicit boolean everywhere is the only
+  // state that is both spec-honest and directory-compliant.
+  it("declares an explicit openWorldHint boolean on every tool", () => {
+    const missing = tools
+      .filter((t) => typeof t.annotations.openWorldHint !== "boolean")
+      .map((t) => t.name);
+    expect(
+      missing,
+      `these tools omit openWorldHint, so the MCP default silently advertises ` +
+      `them as open-world: ${missing.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it.each(OPEN_WORLD)("keeps %s marked open-world", (tool) => {
+    const ann = byName.get(tool);
+    expect(ann, `tool not registered: ${tool}`).toBeDefined();
+    expect(
+      ann!.openWorldHint,
+      `${tool} publishes public content or reaches an external system — it must stay openWorldHint: true`,
+    ).toBe(true);
+  });
+
   it("never marks a tool both read-only and destructive", () => {
     const contradictory = tools
       .filter((t) => t.annotations.readOnlyHint === true && t.annotations.destructiveHint === true)
@@ -233,6 +283,7 @@ describe("MCP tool safety annotations", () => {
         readOnlyHint: t.annotations.readOnlyHint,
         destructiveHint: t.annotations.destructiveHint,
         idempotentHint: t.annotations.idempotentHint,
+        openWorldHint: t.annotations.openWorldHint,
       };
     }
     if (process.env.UPDATE_ANNOTATION_SNAPSHOT === "1") {
