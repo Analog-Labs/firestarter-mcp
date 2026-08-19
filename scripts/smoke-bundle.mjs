@@ -24,13 +24,18 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const bundle = join(root, "mcpb", "dist", "firestarter.mcpb");
 
-/** Kept in lockstep with src/mcp/shopping-app.ts. */
-const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results";
+// Imported from the build, never copied: the 2.5.1 promotion failed because
+// shopping-app.ts renamed the URI (…/shopping-results/v2) while a hand-kept
+// copy here still checked the old one — this smoke test reported a working
+// product grid as broken and blocked the release.
+const { SHOPPING_RESULTS_URI } = await import(
+  pathToFileURL(join(root, "dist", "mcp", "shopping-app.js")).href
+);
 /** ext-apps RESOURCE_MIME_TYPE. Hosts ignore a ui:// resource served as
  *  anything else, so the exact string is load-bearing. */
 const APP_MIME_TYPE = "text/html;profile=mcp-app";
