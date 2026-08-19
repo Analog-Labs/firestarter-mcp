@@ -6,6 +6,9 @@
  * not just a change to the constant — fails the build.
  */
 import { describe, it, expect } from "vitest";
+// The advertised version must track the release, not a literal — a hardcoded
+// string here broke on the first bump after this test landed (2.4.0 → 2.5.1).
+import { version as pkgVersion } from "../../package.json";
 
 const { default: app } = await import("../../src/mcp/route.js");
 
@@ -49,6 +52,6 @@ describe("initialize advertises the server icon", () => {
   it("I7: name and version still travel — identity is added, not replaced", async () => {
     const body = await initialize();
     expect(body).toContain("firestarter");
-    expect(body).toContain("2.4.0");
+    expect(body).toContain(pkgVersion);
   });
 });
