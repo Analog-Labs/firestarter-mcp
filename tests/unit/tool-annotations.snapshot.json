@@ -189,6 +189,10 @@
   "firestarter_preview": {
     "readOnlyHint": true
   },
+  "firestarter_product": {
+    "readOnlyHint": true,
+    "destructiveHint": false
+  },
   "firestarter_purchases": {
     "readOnlyHint": true,
     "destructiveHint": false

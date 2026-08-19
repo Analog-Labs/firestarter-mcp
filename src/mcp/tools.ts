@@ -48,6 +48,9 @@ const MARKET_LINK_BASE = process.env.MARKET_LINK_BASE || "https://firestarter.ne
 // can use the firestarter_upload_image tool directly. The dashboard URL is kept
 // as a fallback for clients that cannot encode the image into a tool argument.
 const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firestarter.network/seller";
+/** Buyer billing/settings tab — where a card is added or replaced. */
+const DASHBOARD_SETTINGS_URL =
+  process.env.DASHBOARD_SETTINGS_URL || "https://firestarter.network/dashboard?tab=settings";
 
 export function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -93,7 +96,12 @@ export function toErrorMessage(err: unknown): string {
 
 /** Strip backslashes LLMs sometimes inject when markdown-escaping underscores/hyphens in IDs. */
 function cleanListingId(id: string): string {
-  return id.replace(/\\/g, "");
+  const s = id.replace(/\\/g, "").trim();
+  // Accept a share link anywhere a listing id is: several tool descriptions
+  // promise "also parsed from a firestarter.network/l/<id> share link", and
+  // buyers paste exactly that. Extract the id from any .../l/<id> URL.
+  const m = /\/l\/(lst_[A-Za-z0-9_-]+)/.exec(s);
+  return m ? m[1] : s;
 }
 
 /** One-line human description of what a voucher takes off. */
@@ -289,6 +297,105 @@ function formatCommunityOffers(community: any, memberTierIndex: number | null = 
 
   return blocks.length > 0 ? blocks.join("\n\n") : null;
 }
+
+/**
+ * Format money for display. Currency-aware: only USD gets a bare `$`.
+ *
+ * Checkout can only charge USD (CHARGEABLE_CURRENCIES in the API), so a
+ * listing priced in anything else stays browse-only — but it is still SHOWN,
+ * and the option renderer used to print a hardcoded `$` in front of it. A
+ * THB 255 listing read as "$255.00": right number, wrong currency, ~7x wrong
+ * price. Also fixes the raw interpolation: `${opt.subtotal}` printed "13.6"
+ * for 13.6 where every other money line printed two decimals.
+ */
+function money(amount: unknown, currency?: unknown): string {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return String(amount ?? "");
+  const code = typeof currency === "string" && currency.trim() ? currency.trim().toUpperCase() : "USD";
+  return code === "USD" ? `$${n.toFixed(2)}` : `${code} ${n.toFixed(2)}`;
+}
+
+
+/**
+ * `★ 4.6 (12)` when a real aggregate exists, else null — callers render
+ * nothing rather than a hollow "no reviews yet" per row (phase-2 lexicon;
+ * the widget's starsLabel mirrors this).
+ */
+function stars(rating: unknown, count: unknown): string | null {
+  const r = Number(rating);
+  const c = Number(count);
+  if (!Number.isFinite(r) || !Number.isFinite(c) || c <= 0) return null;
+  return `\u2605 ${r.toFixed(1)} (${c})`;
+}
+
+/**
+ * One GFM table for list surfaces (orders, inventory, recent executions) so
+ * every table in the product has identical bones: same header treatment, a
+ * hard row cap with an HONEST "N more" line instead of silent truncation, and
+ * cell text pipe-escaped so seller-controlled strings can't break the row.
+ * Renders fine as plain text in hosts without table support (aligned pipes).
+ */
+function mdTable(headers: string[], rows: string[][], opts: { cap?: number; moreHint?: string } = {}): string {
+  const cap = opts.cap ?? 20;
+  const esc = (v: string) => v.replace(/\|/g, "\|").replace(/\r?\n/g, " ");
+  const line = (cells: string[]) => `| ${cells.map(esc).join(" | ")} |`;
+  const out = [line(headers), `|${headers.map(() => " --- ").join("|")}|`];
+  for (const r of rows.slice(0, cap)) out.push(line(r));
+  if (rows.length > cap) out.push(`\n_…and ${rows.length - cap} more${opts.moreHint ? ` — ${opts.moreHint}` : ""}._`);
+  return out.join("\n");
+}
+
+/**
+ * Google Shopping thumbnail URLs (encrypted-tbn*.gstatic.com) are ~150 chars
+ * of opaque token, EXPIRE, and are one per option — five of them turn an
+ * options list into a wall of dead links. They stay in structuredContent for
+ * the widget; they just don't belong in the prose.
+ */
+function isTransientThumbnail(url: string): boolean {
+  return /^https?:\/\/encrypted-tbn\d*\.gstatic\.com\//i.test(url);
+}
+
+/**
+ * Render a URL as a MARKDOWN HYPERLINK, or return null when it isn't one we
+ * will make clickable.
+ *
+ * Tool results are markdown, but a bare URL is only auto-linked by renderers
+ * that implement the GFM autolink extension — several MCP clients do not, so
+ * every link we emitted was dead text the user had to select and copy. The
+ * fix is an explicit `[label](url)`, applied where a human actually wants to
+ * CLICK something.
+ *
+ * Deliberately NOT applied to product image URLs: those are on their own line
+ * so chat clients auto-unfurl a preview and agents can fetch the bytes (#611).
+ * Wrapping them in link syntax breaks the unfurl and gains nothing — nobody
+ * wants to click a JPEG. Keeping them bare is also what keeps link density
+ * sane on a 50-row catalogue.
+ *
+ * SECURITY: labels are frequently seller-controlled (product names, community
+ * names). An unescaped `]` lets a listing called `Mug](https://evil.example)`
+ * close the link text and retarget it, so brackets are stripped from labels
+ * and `)` is percent-encoded in targets. https only — never javascript:/data:.
+ */
+function mdLink(label: string, url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  const target = url.trim();
+  if (!/^https:\/\/[^\s<>]+$/i.test(target)) return null;
+  const safeLabel = label.replace(/[[\]]/g, "").trim();
+  if (!safeLabel) return null;
+  return `[${safeLabel}](${target.replace(/\)/g, "%29")})`;
+}
+
+/**
+ * Hyperlink whose LABEL is the URL itself, minus the scheme
+ * (`firestarter.network/l/lst_x`). Used for share/community links, where the
+ * agent is often told to relay the address itself (a bare share URL unfurls
+ * into a product card) — this keeps the address legible and copyable while
+ * still being one click for a human. Returns null for a non-https/absent URL,
+ * so callers can fall back to their own "no link yet" wording.
+ */
+function mdUrlLink(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  return mdLink(url.trim().replace(/^https:\/\//i, "").replace(/\/+$/, ""), url);}
 
 /**
  * Keep external links readable in chat: suppress noisy query strings (notably
@@ -1295,7 +1402,9 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       lines.push("Order approved.");
       if (payReady.length) lines.push(...payReady);
       lines.push("");
-      lines.push("**Last step:** this order is waiting on a payment method. Ask the buyer to add a card from their dashboard billing settings; the order resumes automatically once added.");
+      // A blocked order is the one status line where the fix is a click away —
+      // previously it named the settings page without linking to it.
+      lines.push(`**Last step:** this order is waiting on a payment method. The buyer can add a card in ${mdLink("their dashboard settings", DASHBOARD_SETTINGS_URL)} (or call \`firestarter_payment_method\` for a no-login link); the order resumes automatically once added.`);
     }
     blocks.push({ type: "text", text: lines.join("\n") });
     return blocks;
@@ -1356,7 +1465,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       const browseLabel = isOwnListing
         ? " - your listing"
         : unconnectedStore
-          ? " - Firestarter store (checkout not enabled yet)"
+          ? " - Firestarter listing (not buyable right now)"
           : externalResult
             ? " - browse-only (external)"
             : "";
@@ -1374,7 +1483,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // clients auto-unfurl a preview. Bare URL on its own line — Slack,
       // WhatsApp, and Telegram all auto-preview hosted image URLs.
       const imageUrl = opt.image_url || opt.metadata?.image;
-      if (imageUrl && /^https?:\/\//i.test(String(imageUrl))) {
+      if (imageUrl && /^https?:\/\//i.test(String(imageUrl)) && !isTransientThumbnail(String(imageUrl))) {
         optLines.push(`  ${imageUrl}`);
       }
       // #256: lead with the bold all-in total, then the line-item split, and
@@ -1383,24 +1492,35 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       // line-item total as a price discrepancy (debug 2026-06-12: "$55.80" with
       // no context read as a mismatch against a $45.81 listing).
       if (opt.total != null) {
+        // Currency-aware + 2dp everywhere (see money()). Options can be
+        // non-USD: those stay browse-only because checkout can't charge them,
+        // but they are still displayed, and a bare `$` misprices them.
+        const cur = opt.currency ?? opt.metadata?.currency;
         const costParts: string[] = [];
         if (opt.subtotal != null) {
-          const itemPart = `$${opt.subtotal} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`;
+          const itemPart = `${money(opt.subtotal, cur)} item${Number(opt.quantity) > 1 ? `s x${opt.quantity}` : ""}`;
           // `subtotal` is GROSS — a voucher/community-drop discount is subtracted
           // separately into `total`, so it must show here too or the joined parts
           // sum to more than the all-in total (looked like a checkout overcharge).
-          costParts.push(opt.discount != null && Number(opt.discount) > 0 ? `${itemPart} - $${opt.discount} discount` : itemPart);
+          costParts.push(opt.discount != null && Number(opt.discount) > 0 ? `${itemPart} - ${money(opt.discount, cur)} discount` : itemPart);
         }
         // Always state shipping — a silently-dropped shipping line makes shipping
         // look unresolved. >0 shows the amount, 0 shows "free shipping", and a
         // genuinely-unknown shipping (browse-only / not rated) shows "shipping
         // calculated at checkout" instead of nothing (mirrors firestarter_preview).
-        if (opt.shipping != null && Number(opt.shipping) > 0) costParts.push(`$${opt.shipping} shipping`);
+        if (opt.shipping != null && Number(opt.shipping) > 0) costParts.push(`${money(opt.shipping, cur)} shipping`);
         else if (opt.shipping != null && Number(opt.shipping) === 0) costParts.push("free shipping");
         else if (opt.shipping == null && (opt.metadata as any)?.shipping_known === false) costParts.push("shipping calculated at checkout");
-        const taxPhrase = opt.tax != null && Number(opt.tax) > 0 ? `$${opt.tax} tax` : "no tax";
+        const taxPhrase = opt.tax != null && Number(opt.tax) > 0 ? `${money(opt.tax, cur)} tax` : "no tax";
         const breakdown = costParts.length > 0 ? `${costParts.join(" + ")}, ${taxPhrase}` : taxPhrase;
-        optLines.push(`  **$${opt.total} all-in** - ${breakdown}`);
+        // "all-in" is a PROMISE. It was printed even when the same line said
+        // "shipping calculated at checkout" — self-contradictory, and it is why
+        // the step summary quoted a shipping-inclusive total against a
+        // shipping-exclusive row for the same item. Claim it only when every
+        // component is actually known.
+        const shippingKnown = opt.shipping != null;
+        const totalLabel = shippingKnown ? "all-in" : "item total — shipping calculated at checkout";
+        optLines.push(`  **${money(opt.total, cur)} ${totalLabel}** - ${breakdown}`);
       }
       // #discount-source: state WHICH voucher applied, or why an explicit
       // voucher_code didn't — firestarter_execute's voucher_code param promises
@@ -1540,7 +1660,7 @@ async function formatExecution(exec: any): Promise<ContentBlock[]> {
       if (isOwnListing) {
         optLines.push(`  This is your own listing - shown so you can see how it appears to buyers. It is not offered for purchase.`);
       } else if (unconnectedStore) {
-        optLines.push(`  This is a Firestarter store that hasn't enabled checkout yet, so it can't be purchased here yet. Share the link so the buyer can view it, or use \`firestarter_message\` to refine toward checkout-ready listings. Do not approve this option.`);
+        optLines.push(`  This Firestarter listing can't be checked out right now — its seller is not accepting new orders, or the store has not been claimed by its merchant yet. Share the link so the buyer can view it, or use \`firestarter_message\` to refine toward buyable listings. Do not approve this option.`);
       } else if (externalResult) {
         optLines.push(`  External marketplace result - Firestarter cannot purchase it. Do not approve this option; share the link so the buyer can purchase directly.`);
       }
@@ -1674,7 +1794,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external or checkout-not-enabled) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external, or not buyable right now) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
@@ -1928,7 +2048,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // CALLING agent's context, which we neither own nor instruct (#599).
           text += `\n${i + 1}. **${sanitizeUntrusted(o.title)}** — ${price}${ship}`;
           if (o.seller) text += ` · ${sanitizeUntrusted(o.seller, 120)}`;
-          text += `\n   ${o.purchasable ? "✓ buyable through Firestarter" : `browse-only${o.url ? ` — view: ${tidyProductUrl(o.url)}` : ""}`}`;
+          // A browse-only option's ONLY next action is opening the vendor page,
+          // so that gets the click; a buyable option needs no link (it is bought
+          // by id) and adding one per row would just dilute the real ones.
+          const viewLink = o.url ? mdLink("view on the vendor's site", tidyProductUrl(o.url)) : null;
+          text += `\n   ${o.purchasable ? "✓ buyable through Firestarter" : `browse-only${viewLink ? ` — ${viewLink}` : o.url ? ` — view: ${tidyProductUrl(o.url)}` : ""}`}`;
           if (o.purchasable) {
             if (o.eligible) {
               text += `\n   ✓ eligible to buy now`;
@@ -1971,7 +2095,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_status
   server.tool(
     "firestarter_status",
-    "Check the status of a Firestarter execution or list recent executions, and report the current ENVIRONMENT (test vs live) plus the ACCOUNT the configured API key belongs to (user + organization). Use this to check on orders, see what options were found, get tracking updates, confirm whether you are in test/sandbox mode, or answer 'which account/user am I operating as?' (call it with no arguments for the environment + account summary). Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
+    "The buyer's ORDER HISTORY and order status on Firestarter — check one order, or list recent orders (\"my orders\", \"order history\", \"past orders\", \"what did I buy\"); works on every key, live and test. Also reports the current ENVIRONMENT (test vs live) plus the ACCOUNT the configured API key belongs to (user + organization). Use this to check on orders, see what options were found, get tracking updates, confirm whether you are in test/sandbox mode, or answer 'which account/user am I operating as?' (call it with no arguments for the environment + account summary). Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
     {
       execution_id: z.string().optional().describe("Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."),
       status_filter: z.string().optional().describe("Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"),
@@ -2001,9 +2125,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           return { content: [{ type: "text" as const, text: `Environment: ${environment}${identity}\n\nNo executions found.` }] };
         }
         const lines = [`Environment: ${environment}${identity}\n`, `**Recent Executions** (${data.total || executions.length} total)\n`];
-        for (const e of executions.slice(0, 10)) {
-          lines.push(`- **${e.id}** [${e.status}] ${e.request_text?.slice(0, 60) || ""}${e.request_text?.length > 60 ? "..." : ""}`);
-        }
+        // Phase 4: table, not bullets — a buyer with several open orders can
+        // scan status/date/amount in columns instead of parsing prose per row.
+        lines.push(mdTable(
+          ["Order", "Status", "Request", "Date", "Total"],
+          executions.slice(0, 10).map((e: any) => [
+            `\`${e.id}\``,
+            String(e.status ?? ""),
+            `${e.request_text?.slice(0, 48) || ""}${(e.request_text?.length ?? 0) > 48 ? "…" : ""}`,
+            formatBuyerDate(e.created_at) || "—",
+            e.total != null ? money(e.total, e.currency) : "—",
+          ]),
+          { cap: 10, moreHint: "pass status_filter or an execution_id to narrow" },
+        ));
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
@@ -2014,7 +2148,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED — each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter stores that haven't enabled checkout) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED — each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter listings that are not buyable right now) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based POSITIONAL index into the options list as displayed (the option shown as '1.' is index 0). Prefer option_id: this index is resolved against a fresh read of the execution, and the option order can change if the order was re-quoted or refined with firestarter_message since you displayed it. Omit both to approve the pre-selected best option."),
@@ -2525,15 +2659,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const detail = card.card ? `${card.card.brand} ending in ${card.card.last4} (expires ${card.card.exp_month}/${card.card.exp_year})` : "saved";
           let text = `**Payment method on file:** ${detail}\n\nOrders will charge this card automatically.\n\n`;
           const setup = await apiRequest("POST", "/v1/billing/setup-payment");
-          text += `To update or add a different card:\n${setup.short_url || setup.url}\n\n`;
-          text += `Or go to your dashboard settings: https://firestarter.network/dashboard?tab=settings`;
+          const updateLink = mdLink("Update or add a card", setup.short_url || setup.url);
+          text += updateLink ? `${updateLink} (no login needed)\n\n` : `To update or add a different card:\n${setup.short_url || setup.url}\n\n`;
+          text += `Or open ${mdLink("your dashboard settings", DASHBOARD_SETTINGS_URL)}.`;
           return { content: [{ type: "text" as const, text }] };
         }
         // No payment method - get a setup link
         const setup = await apiRequest("POST", "/v1/billing/setup-payment");
         let text = "**No payment method on file.** A card is only needed at the FINAL payment step — after the buyer has run firestarter_execute, seen the shipping estimate, and picked a delivery speed. Browsing, quoting, and comparing shipping never require one.\n\n";
-        text += `If an order is already approved and waiting on payment, add a card here to finish it (no login needed, works from any device):\n${setup.short_url || setup.url}\n\n`;
-        text += `Or add one from your dashboard settings: https://firestarter.network/dashboard?tab=settings\n\n`;
+        const addLink = mdLink("Add a card to finish this order", setup.short_url || setup.url);
+        text += addLink
+          ? `${addLink} — no login needed, works from any device.\n\n`
+          : `If an order is already approved and waiting on payment, add a card here to finish it (no login needed, works from any device):\n${setup.short_url || setup.url}\n\n`;
+        text += `Or add one from ${mdLink("your dashboard settings", DASHBOARD_SETTINGS_URL)}.\n\n`;
         text += `Once added, any pending orders resume automatically. If the buyer is not mid-purchase, start with firestarter_execute instead — no card required.`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
@@ -2597,7 +2735,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             data.ship_to ? [data.ship_to.city, data.ship_to.country].filter(Boolean).join(", ") : null,
           ].filter(Boolean);
           if (route.length === 2) text += `Route: ${route[0]} → ${route[1]}\n`;
-          text += `\nUse \`firestarter_status\` for the full order state; tracking appears here once the label is bought/added.`;
+          // A cancelled order will never ship — promising future tracking on it
+          // ("appears once the label is added") reads as "still coming".
+          text += ["cancelled", "canceled", "refunded", "failed"].includes(String(status))
+            ? `\nThis order is ${status} — nothing will ship, so no tracking will appear. Use \`firestarter_status\` for the full order state.`
+            : `\nUse \`firestarter_status\` for the full order state; tracking appears here once the label is bought/added.`;
           return { content: [{ type: "text" as const, text }] };
         }
         let text = `**Order ${execution_id} — Shipping**\n`;
@@ -2614,7 +2756,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
         if (data.shipping_method?.service) text += `Service: ${data.shipping_method.service}\n`;
         text += `Tracking: ${sanitizeUntrusted(data.tracking_number, 80)}\n`;
-        if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
+        // The one link a "where's my order?" answer needs.
+        const trackLink = mdLink(
+          `Track with ${sanitizeUntrusted(data.carrier, 40) || "the carrier"}`,
+          data.tracking_url,
+        );
+        if (trackLink) text += `${trackLink}\n`;
+        else if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
         // Carrier ETA when the shipment has one; else fall back to the date
         // promised at quote time so "when will it arrive?" always has an answer.
         if (data.estimated_delivery) text += `Estimated delivery: ${formatBuyerDate(data.estimated_delivery)}\n`;
@@ -2829,7 +2977,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     async ({ execution_id }) => {
       try {
         const data = await apiRequest("GET", `/v1/executions/${execution_id}/receipt`);
+        // A sandbox purchase moves no money, contacts no seller, and mints a
+        // fake charge id — but the receipt printed exactly like a live one, so
+        // it could be screenshotted as proof of payment. Say so, first line.
+        // Environment comes from the key prefix, the same signal
+        // firestarter_status reports.
         let text = `**Receipt — Order ${execution_id}**\n`;
+        if (apiKey.startsWith("fs_test_")) {
+          text = `**TEST MODE — simulated order. No money moved, no seller was paid.**\n\n${text}`;
+        }
         text += `Date: ${formatBuyerDate(data.paid_at || data.created_at) || "N/A"}\n`;
         if (data.product_title) text += `Item: ${sanitizeUntrusted(data.product_title)}\n`;
         if (data.subtotal_cents != null) text += `Subtotal: $${(data.subtotal_cents / 100).toFixed(2)}\n`;
@@ -3106,7 +3262,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_purchases
   server.tool(
     "firestarter_purchases",
-    "The buyer's cross-marketplace purchase history: everything recorded with firestarter_record_purchase, from any store, in one list — with the product URL and seller so an item can be reordered without re-searching. Use it to answer \"what did I buy\", find a past item's link/price, or start a reorder. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+    "OFF-NETWORK purchases only — the pilot log of purchases an agent completed on OTHER stores and recorded with firestarter_record_purchase. This is NOT the buyer's Firestarter order history: for orders placed through Firestarter (\"my orders\", \"order history\", \"what did I buy here\") ALWAYS use firestarter_status, which works on every key. This pilot log is test-environment keys only for now; live keys get a TEST_MODE_ONLY refusal — that refusal says nothing about Firestarter order history, which remains fully available via firestarter_status.",
     {
       purchase_id: z.string().optional().describe("Get one purchase (pur_...) with full details. Omit to list."),
       query: z.string().optional().describe("Filter by words in the title or seller name"),
@@ -3145,7 +3301,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       } catch (err: any) {
         if (err?.code === "TEST_MODE_ONLY") {
-          return { content: [{ type: "text" as const, text: "Purchase history is test-mode only right now. Use a test key (fs_test_*) or enable test mode for the org." }], isError: true };
+          return { content: [{ type: "text" as const, text: "The OFF-NETWORK purchase log (a test-mode pilot) isn't available on a live key. This does NOT affect Firestarter order history \u2014 for the buyer's orders placed through Firestarter, call `firestarter_status` (works on every key)." }], isError: true };
         }
         return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
       }
@@ -3402,7 +3558,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }
           text += `\nOnce resolved, activate with \`firestarter_update_listing\` (status "active").`;
         } else if (listingShareUrl(listing)) {
-          text += `Share link: ${listingShareUrl(listing)}\n`;
+          text += `Share link: ${mdUrlLink(listingShareUrl(listing)) ?? listingShareUrl(listing)}\n`;
           text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
         } else {
           text += `\n**Sandbox-only listing.** No public share link is created in test mode. It remains available through test-mode catalog and listing tools.`;
@@ -3416,7 +3572,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // path still yields a valid, encoded link (never `...?a=b?edit=`).
           const uploaderUrl = new URL(SELLER_DASHBOARD_URL);
           uploaderUrl.searchParams.set("edit", String(listing.id));
-          text += `\n\n📷 **Add a photo.** Send a photo in this chat and I'll upload it with \`firestarter_upload_image\`, then attach the URL to your listing. Or open ${uploaderUrl.toString()} to drag-and-drop directly in the dashboard.`;
+          text += `\n\n📷 **Add a photo.** Send a photo in this chat and I'll upload it with \`firestarter_upload_image\`, then attach the URL to your listing. Or ${mdLink("drag-and-drop it in the dashboard", uploaderUrl.toString()) ?? `open ${uploaderUrl.toString()}`}.`;
         }
         // Surface payout warnings — listing is active but seller should
         // connect Stripe to actually receive earnings.
@@ -3591,7 +3747,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (r.already_listed) {
           let text = `**Good news - this item is already live on Firestarter.**\n`;
           if (r.title) text += `Item: ${r.title}\n`;
-          text += `Share link: ${r.share_url}\n\nNo invite needed - the buyer can pay through escrow right now from that link.`;
+          text += `Share link: ${mdUrlLink(r.share_url) ?? r.share_url}\n\nNo invite needed - the buyer can pay through escrow right now from that link.`;
           return { content: [{ type: "text" as const, text }] };
         }
 
@@ -3712,7 +3868,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           ...(a.fee_cents !== undefined ? { fee_cents: a.fee_cents } : {}),
         }, IMPORT_TIMEOUT_MS);
         let text = `**Courier booked.** Booking ${r.id} (${r.provider}, ref ${r.provider_ref})\n`;
-        if (r.tracking_url) text += `Tracking: ${r.tracking_url}\n`;
+        if (r.tracking_url) text += `${mdLink("Track this shipment", r.tracking_url) ?? `Tracking: ${r.tracking_url}`}\n`;
         text += r.next_step;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
@@ -3787,7 +3943,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             // literal string "null".
             text = `**Stripe Connect setup (test mode)**\n\n${link.message || "Test mode: Stripe Connect account auto-approved — no onboarding needed."}\n\nListings are now purchasable by buyers.`;
           } else {
-            text = `**Stripe Connect setup**\n\nSend the seller this onboarding link (a secure Stripe-hosted page):\n${link.onboarding_url}\n`;
+            text = `**Stripe Connect setup**\n\n${mdLink("Complete Stripe onboarding", link.onboarding_url) ?? `Send the seller this onboarding link (a secure Stripe-hosted page):\n${link.onboarding_url}`} — a secure Stripe-hosted page; send it to the seller.\n`;
             text += `\nAfter they finish, run \`firestarter_payouts\` again to verify.`;
           }
           return { content: [{ type: "text" as const, text }] };
@@ -4227,12 +4383,91 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     return words.length >= 2 ? words[words.length - 1] : null;
   }
 
+  // Tool: firestarter_product — the buyer "zoom in" (phase 3).
+  // GET /v1/listings/:id serves a PUBLIC cross-org projection for active live
+  // listings: full gallery, attributes, and a curated seller-trust subset
+  // including the rating aggregate and units sold — so this works against the
+  // live API today. Individual review comments need a commerce endpoint that
+  // does not exist yet; the aggregate is shown and comments are not promised.
+  server.tool(
+    "firestarter_product",
+    "Show one product from the Firestarter catalog in full detail — all photos, description, attributes, price, buyability, and the seller's trust profile (rating, review count, units sold, time on platform). This is the buyer's ZOOM-IN after firestarter_catalog_search or firestarter_preview: pass the listing id (lst_..., also parsed from a firestarter.network/l/<id> share link). Read-only — to buy, pass the same listing_id to firestarter_execute; for a shipping quote first, use firestarter_shipping_estimate.",
+    {
+      listing_id: z.string().describe("The listing to show (lst_..., from catalog search, preview, or a share link)."),
+    },
+    { title: "View Product", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    async ({ listing_id: rawId }) => {
+      const listing_id = cleanListingId(rawId);
+      try {
+        const l = await apiRequest("GET", `/v1/listings/${listing_id}`);
+        const name = sanitizeUntrusted(l.product_name) || "Untitled";
+        const cur = l.currency;
+        const lines: string[] = [`**${name}**`];
+        const starTxt = stars(l.seller_rating, l.seller_rating_count);
+        const sold = Number(l.units_sold) > 0 ? `${l.units_sold} sold` : null;
+        const trustBits = [starTxt ? `${starTxt} seller rating` : null, sold].filter(Boolean).join(" · ");
+        if (trustBits) lines.push(trustBits);
+        lines.push(`${money(l.current_price, cur)}${l.condition ? ` · ${String(l.condition).replace(/_/g, " ")}` : ""}${l.category ? ` · ${sanitizeUntrusted(l.category, 60)}` : ""}`);
+        if (l.inventory_qty != null) lines.push(l.inventory_qty > 0 ? `In stock: ${l.inventory_qty}` : "Out of stock");
+        if (l.description) lines.push(`\n${sanitizeUntrusted(l.description, 600)}`);
+        const attrs: string[] = [];
+        if (l.brand) attrs.push(`Brand: ${sanitizeUntrusted(l.brand, 60)}`);
+        if (Array.isArray(l.materials) && l.materials.length) attrs.push(`Materials: ${sanitizeUntrusted(l.materials.join(", "), 120)}`);
+        const dims = [l.length_in, l.width_in, l.height_in].filter((v: unknown) => v != null);
+        if (dims.length === 3) attrs.push(`Dimensions: ${dims.join(" x ")} in`);
+        if (l.weight_oz != null) attrs.push(`Weight: ${l.weight_oz} oz`);
+        if (l.country_of_origin) attrs.push(`Made in: ${l.country_of_origin}`);
+        if (l.return_policy) attrs.push(`Returns: ${sanitizeUntrusted(l.return_policy, 120)}`);
+        if (l.ship_time_days != null) attrs.push(`Dispatch: ${l.ship_time_days} day(s)`);
+        if (attrs.length) lines.push(`\n${attrs.join("\n")}`);
+        // Seller trust block — public curated subset only.
+        const sellerBits = [
+          l.seller_name ? `**Seller:** ${sanitizeUntrusted(l.seller_name, 80)}` : null,
+          l.seller_verified ? "verified" : null,
+          l.seller_since ? `on Firestarter since ${String(l.seller_since).slice(0, 10)}` : null,
+          [l.seller_region, l.seller_country].filter(Boolean).join(", ") || null,
+        ].filter(Boolean).join(" · ");
+        if (sellerBits) lines.push(`\n${sellerBits}`);
+        const gallery = (Array.isArray(l.images) ? l.images : []).filter((u: unknown) => typeof u === "string" && /^https?:\/\//i.test(String(u)));
+        if (gallery.length > 0) {
+          lines.push(`\nPhotos (${gallery.length}):`);
+          for (const img of gallery.slice(0, 8)) lines.push(`  ${img}`);
+        }
+        const share = listingShareUrl(l);
+        if (share) lines.push(`\nShare: ${mdUrlLink(share) ?? share}`);
+        lines.push(`\nTo buy: \`firestarter_execute\` with listing_id \`${l.id}\`. Shipping quote first: \`firestarter_shipping_estimate\`.`);
+        return {
+          content: [{ type: "text" as const, text: lines.join("\n") }],
+          structuredContent: {
+            product: {
+              id: l.id, title: l.product_name ?? null, description: l.description ?? null,
+              price: l.current_price ?? null, currency: cur ?? "USD",
+              images: gallery, share_url: share ?? null,
+              seller: l.seller_name ?? null, seller_verified: l.seller_verified === true,
+              rating: l.seller_rating != null ? Number(l.seller_rating) : null,
+              rating_count: Number(l.seller_rating_count) || 0,
+              units_sold: Number(l.units_sold) || 0,
+              in_stock: l.inventory_qty == null || l.inventory_qty > 0,
+            },
+          },
+          _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
+        };
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        if (err instanceof ApiError && (err.code === "NOT_FOUND" || err.status === 404)) {
+          return { content: [{ type: "text" as const, text: `No active listing matched \`${listing_id}\`. It may be a draft, out of stock, sandbox-only, or the id may be wrong — find products with firestarter_catalog_search.` }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: `Error loading product: ${msg}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_catalog_search
   registerToolCompat(
     server,
     "firestarter_catalog_search",
     {
-      description: "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means the seller hasn't enabled checkout yet (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
+      description: "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means it cannot be checked out right now — the seller is not accepting new orders, or the store has not been claimed by its merchant (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
       inputSchema: {
         query: z.string().optional().describe("Free-text product search of product name, description, and category — use real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Do NOT put prices in the query ('under $50' belongs in max_price, not here) and omit filler words like 'cheap' or 'best'; price phrases that do slip in are auto-extracted into the price filters."),
         category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
@@ -4351,15 +4586,24 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // catalog_search result rendered "· null" in sandbox instead of a
           // link or an explanation. Mirrors firestarter_listings' own
           // sandbox-only wording.
-          const shareText = l.share_url ? l.share_url : "sandbox-only, no public link yet";
+          // ONE clickable thing per row, on the product name itself, instead of
+          // a bare share URL on the id line: a 50-row result with a link per row
+          // plus a separate URL per row is a wall of blue. The address stays in
+          // the link target, so an agent relaying it still has the bare URL.
+          const name = sanitizeUntrusted(l.product_name);
+          const nameCell = mdLink(name, l.share_url) ?? name;
+          // Phase 2 wiring: renders the moment the catalog API starts returning
+          // rating aggregates; absent fields render nothing (never "0 reviews").
+          const starTxt = stars(l.seller_rating ?? l.rating, l.seller_rating_count ?? l.rating_count);
+          const shareText = l.share_url ? null : "sandbox-only, no public link yet";
           lines.push(
-            `- ${picked ? "★ " : ""}**${sanitizeUntrusted(l.product_name)}** — ${price} [${tag}]${l.category ? ` · ${sanitizeUntrusted(l.category, 80)}` : ""}` +
+            `- ${picked ? "★ " : ""}**${nameCell}** — ${price} [${tag}]${l.category ? ` · ${sanitizeUntrusted(l.category, 80)}` : ""}` +
             `${note ? `\n  _"${sanitizeUntrusted(note)}"_${communityName ? ` — ${sanitizeUntrusted(communityName, 120)}` : ""}` : ""}` +
-            `\n  id: \`${l.id}\` · ${shareText}${img0 ? `\n  ${img0}` : ""}`,
+            `${starTxt ? `\n  ${starTxt}` : ""}\n  id: \`${l.id}\`${shareText ? ` · ${shareText}` : ""}${img0 ? `\n  ${img0}` : ""}`,
           );
         }
         lines.push(
-          "\nTo buy a **buyable** item, call `firestarter_execute` with `listing_id` set to its id. **Browse-only** items can't be checked out here — share the link so the buyer can view them, and suggest the seller finish Stripe Connect to enable checkout.",
+          "\nTo buy a **buyable** item, call `firestarter_execute` with `listing_id` set to its id. **Browse-only** items can't be checked out here — share the link so the buyer can view them instead.",
         );
         // Inline each listing's first photo so MCP clients render them; the URLs
         // also remain in the text above for chat clients that unfurl links.
@@ -4437,7 +4681,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             }
           }
           if (l.demand_score != null) text += `Demand score: ${l.demand_score}\n`;
-          if (l.created_at) text += `Listed: ${l.created_at}\n`;
+          if (l.created_at) text += `Listed: ${formatBuyerDate(l.created_at) || l.created_at}\n`;
           const shareUrl = listingShareUrl(l);
           if (shareUrl) {
             text += `Share link: ${shareUrl}\n`;
@@ -4484,17 +4728,27 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }).length;
 
         let text = `**Your listings (${listings.length})**\n`;
-        text += `Listed today (UTC): ${listedTodayUtc}\n`;
-        for (const l of listings) {
-          text += `- **${l.product_name}** [${l.status}] — $${Number(l.current_price).toFixed(2)}`;
-          if (l.inventory_qty != null) text += `, qty ${l.inventory_qty}`;
-          // #527: include the listing date so the agent can answer "what did I list today?"
-          // (the list view previously dropped it, so the model confabulated "no new listings").
-          if (l.created_at) text += `, listed ${String(l.created_at).slice(0, 10)}`;
-          text += ` — ID \`${l.id}\`\n`;
-          const shareUrl = listingShareUrl(l);
-          text += shareUrl ? `  Share link: ${shareUrl}\n` : "  Sandbox-only: no public share link\n";
-        }
+        text += `Listed today (UTC): ${listedTodayUtc}\n\n`;
+        // Phase 4: the inventory answer IS a table — name, status, price, qty,
+        // listed date (#527 kept), id — with share links gathered below so the
+        // table stays scannable. Sandbox listings have no public link.
+        text += mdTable(
+          ["Listing", "Status", "Price", "Qty", "Listed", "ID"],
+          listings.map((l: any) => [
+            String(l.product_name ?? ""),
+            String(l.status ?? ""),
+            money(l.current_price, l.currency),
+            l.inventory_qty != null ? String(l.inventory_qty) : "∞",
+            String(l.created_at ?? "").slice(0, 10) || "—",
+            `\`${l.id}\``,
+          ]),
+          { moreHint: "pass a listing ID for full detail" },
+        ) + "\n";
+        const shareLines = listings.slice(0, 20)
+          .map((l: any) => ({ l, url: listingShareUrl(l) }))
+          .filter((x: any) => x.url)
+          .map((x: any) => `- ${mdUrlLink(x.url) ?? x.url}`);
+        if (shareLines.length > 0) text += `\nShare links:\n${shareLines.join("\n")}\n`;
         text += `\nPass a listing ID for full detail. Active live listings include a public share link; sandbox listings remain accessible only through test-mode tools.`;
         // #611 follow-up: thumbnail the first photos so "show my products" has
         // visuals in the list view too (the detail path already embeds them).
@@ -4553,8 +4807,20 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             if (item.avg_budget) text += ` | avg budget: $${item.avg_budget}`;
             text += "\n";
           }
+        } else if (items && typeof items === "object") {
+          // The per-listing shape is a small metrics object — say it in words,
+          // not JSON (the only tool output a seller saw as a raw dump).
+          const m = items as Record<string, unknown>;
+          const row = (label: string, v: unknown) => { if (v != null) text += `- ${label}: ${v}\n`; };
+          row("Searches (24h)", m.searches_24h);
+          row("Purchase attempts (24h)", m.executions_24h);
+          row("Active monitors watching (7d)", m.active_monitors_7d);
+          if (typeof m.avg_price_point === "number") text += `- Average buyer price point: $${(m.avg_price_point as number).toFixed(2)}\n`;
+          if (m.searches_24h === 0 && m.executions_24h === 0 && m.active_monitors_7d === 0) {
+            text += "\nNo buyer activity in the last 24 hours for this listing.";
+          }
         } else {
-          text += JSON.stringify(items, null, 2);
+          text += String(items);
         }
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
@@ -5063,19 +5329,30 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const header = testCount > 0
           ? `**Your Orders** (${orders.length}, ${testCount} in test mode)\n`
           : `**Your Orders** (${orders.length})\n`;
-        const lines = [header];
+        // Phase 4: a statement-style table — one row per order, identical
+        // columns, honest cap — instead of a bullet per order whose fields
+        // drifted around the line. order_id stays in a code span (#556: the
+        // agent chains it into confirm/ship without re-asking).
         let anyPending = false;
-        for (const o of orders) {
-          const amount = o.amount_cents ? `$${(o.amount_cents / 100).toFixed(2)}` : "pending";
-          const payout = o.net_payout_cents ? `$${(o.net_payout_cents / 100).toFixed(2)} net` : "";
+        const rows = orders.map((o: any) => {
           if (o.status === "pending" || o.status === "confirmed") anyPending = true;
-          // #556: surface the order_id so the agent can chain straight into
-          // firestarter_confirm_order / firestarter_ship_order without re-asking.
-          const tracking = o.tracking_number
-            ? ` - Tracking: ${o.carrier || "Carrier"} ${o.tracking_number}${o.tracking_url ? ` (${o.tracking_url})` : ""}`
-            : "";
-          const testTag = o.test_mode === true ? " - TEST MODE (no real money)" : "";
-          lines.push(`- **${o.product_title}** x${o.quantity} - ${amount}${payout ? ` (${payout})` : ""} - Status: ${o.status} - Payout: ${o.payout_status}${tracking}${testTag} - order_id \`${o.id}\``);
+          const amount = o.amount_cents ? money(o.amount_cents / 100, o.currency) : "pending";
+          const payout = o.net_payout_cents ? money(o.net_payout_cents / 100, o.currency) : "—";
+          const status = `${o.status}${o.test_mode === true ? " (test mode)" : ""}`;
+          const tracking = o.tracking_number ? `${o.carrier || "carrier"} ${o.tracking_number}` : "—";
+          return [String(o.product_title ?? ""), `x${o.quantity ?? 1}`, amount, payout, status, tracking, `\`${o.id}\``];
+        });
+        const lines = [header, mdTable(
+          ["Product", "Qty", "Amount", "Net payout", "Status", "Tracking", "order_id"],
+          rows,
+          { moreHint: "ask for a specific order or status to narrow" },
+        )];
+        if (orders.some((o: any) => o.tracking_url)) {
+          lines.push("");
+          for (const o of orders.slice(0, 20)) {
+            const link = o.tracking_url ? mdLink(`Track ${o.tracking_number}`, o.tracking_url) : null;
+            if (link) lines.push(`- ${link}`);
+          }
         }
         if (anyPending) {
           lines.push(`\nAccept a pending order with firestarter_confirm_order (its order_id), then add tracking with firestarter_ship_order once it's on its way.`);
@@ -5448,9 +5725,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
             // Status-aware next step. Withdraw/counter need an open, pre-escalation
             // dispute; escalate only works after the seller has engaged.
-            const pendingSellerOffer = offers.find((o: any) => o.offered_by === "seller" && !o.accepted_at && !o.rejected_at);
+            // A closed/resolved dispute can still carry an offer row that was
+            // never explicitly accepted or rejected — prompting "accept /
+            // reject / counter" on it invites actions that can no longer apply.
+            const disputeActionable = !["closed", "resolved", "dismissed", "auto_resolved"].includes(String(d.status));
+            const pendingSellerOffer = disputeActionable
+              ? offers.find((o: any) => o.offered_by === "seller" && !o.accepted_at && !o.rejected_at)
+              : undefined;
             lines.push("");
-            if (pendingSellerOffer) {
+            if (!disputeActionable) {
+              lines.push("This dispute is closed — no further actions apply. If something is still wrong with the order, open a new dispute on it.");
+            } else if (pendingSellerOffer) {
               lines.push(`The seller is offering you a **${pendingSellerOffer.buyer_pct}% refund**. Accept (action "accept"), reject (action "reject"), or counter (action "counter" with buyer_pct + seller_pct).`);
             } else if (d.status === "open") {
               lines.push(`Waiting on the seller. You can add a message or photo (action "message"), or withdraw (action "withdraw").`);
@@ -5478,7 +5763,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const openCount = disputes.filter((d: any) => d.is_open).length;
           const outLines = [`**Your disputes** (${disputes.length}${openCount ? `, ${openCount} open` : ", all resolved"})\n`];
           for (const d of disputes) {
-            outLines.push(`- **${d.product || "Order"}** — ${d.id} — ${statusLabel(d.status)}${d.is_open ? "" : " (closed)"}${d.execution_id ? ` — order ${d.execution_id}` : ""}`);
+            // Don't stutter "closed (closed)" when the status label already
+            // says the dispute is over; the suffix is only for open-sounding
+            // labels on disputes that are in fact closed.
+            const label = statusLabel(d.status);
+            const closedSuffix = d.is_open || /closed|resolved|dismissed/i.test(label) ? "" : " (closed)";
+            outLines.push(`- **${d.product || "Order"}** — ${d.id} — ${label}${closedSuffix}${d.execution_id ? ` — order ${d.execution_id}` : ""}`);
           }
           outLines.push(`\nSee one in full: firestarter_disputes with its dispute_id (or the order's execution_id).`);
           return textBlock(outLines.join("\n"));
@@ -5514,7 +5804,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           let text = `**Market created.**${p.display_name ? ` ${p.display_name}.` : ""} Program id: \`${p.id}\`. Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee`;
           if (res.override_bps_capped) text += ` (capped from your request to the platform max of ${(Number(res.max_self_serve_bps ?? 0) / 100).toFixed(2)}%)`;
           text += ".";
-          if (p.slug) text += `\n\nYour community URL: ${MARKET_LINK_BASE}/${p.slug}`;
+          if (p.slug) text += `\n\nYour community URL: ${mdUrlLink(`${MARKET_LINK_BASE}/${p.slug}`) ?? `${MARKET_LINK_BASE}/${p.slug}`}`;
           text += `\n\nNext: firestarter_market_link with program_id \`${p.id}\` to get a share code your community joins through. Then curate what your community recommends with firestarter_set_market_picks — those picks are the first thing buyers see. Track earnings with firestarter_market_earnings; connect payouts (to withdraw) with firestarter_connect_payouts.`;
           return { content: [{ type: "text" as const, text }] };
         } catch (err: any) {
@@ -5543,7 +5833,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const res = await apiRequest("POST", "/v1/attribution/links", { program_id, channel, campaign });
           const code = res.link?.code;
           if (!code) return { content: [{ type: "text" as const, text: "Link created but no code was returned." }], isError: true };
-          return { content: [{ type: "text" as const, text: `**Share link:** ${MARKET_LINK_BASE}/${code}\n(share code: \`${code}\`)\n\nGive this to your community. Each member who redeems it — by opening the link, or pasting the code to their Firestarter agent (firestarter_join_market) — joins your market. Prefer a memorable URL? Claim a handle with firestarter_set_market_handle and ${MARKET_LINK_BASE}/<handle> resolves to the same market.` }] };
+          return { content: [{ type: "text" as const, text: `**Share link:** ${mdUrlLink(`${MARKET_LINK_BASE}/${code}`) ?? `${MARKET_LINK_BASE}/${code}`}\n(share code: \`${code}\`)\n\nGive this to your community. Each member who redeems it — by opening the link, or pasting the code to their Firestarter agent (firestarter_join_market) — joins your market. Prefer a memorable URL? Claim a handle with firestarter_set_market_handle and ${MARKET_LINK_BASE}/<handle> resolves to the same market.` }] };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Error creating share link: ${toErrorMessage(err)}` }], isError: true };
         }
@@ -5562,7 +5852,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         try {
           const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, { slug: handle.toLowerCase() });
           const slug = res.program?.slug ?? handle.toLowerCase();
-          return { content: [{ type: "text" as const, text: `**Handle set.** Your community URL is now ${MARKET_LINK_BASE}/${slug}\n\nShare it anywhere — it resolves to the same market as your share code and stays stable if you rotate the code.` }] };
+          return { content: [{ type: "text" as const, text: `**Handle set.** Your community URL is now ${mdUrlLink(`${MARKET_LINK_BASE}/${slug}`) ?? `${MARKET_LINK_BASE}/${slug}`}\n\nShare it anywhere — it resolves to the same market as your share code and stays stable if you rotate the code.` }] };
         } catch (err: any) {
           if (err instanceof ApiError && err.code === "SLUG_TAKEN") {
             return { content: [{ type: "text" as const, text: `That handle (\`${handle}\`) is already taken. Pick a different one and try again.` }], isError: true };
@@ -5661,7 +5951,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             return [
               `**${name}**${p.type && p.type !== "community" ? ` (${p.type})` : ""}`,
               `Program id: \`${p.id}\` · Status: ${p.status}`,
-              `URL: ${url}${code ? ` · Share code: \`${code}\`` : ""}`,
+              `URL: ${mdUrlLink(url) ?? url}${code ? ` · Share code: \`${code}\`` : ""}`,
               `Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee · Members: ${Number(p.member_count ?? 0)}`,
             ].join("\n");
           });
@@ -6288,7 +6578,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               c.order_count_bucket && c.order_count_bucket !== "0" ? `${c.order_count_bucket} orders driven` : null,
             ].filter(Boolean).join(" · ");
             const lines = [`**${name}**${c.tagline ? ` — ${c.tagline}` : ""}`];
-            if (url) lines.push(url);
+            if (url) lines.push(mdUrlLink(url) ?? url);
             if (c.code) lines.push(`Join code: \`${c.code}\``);
             if (proof) lines.push(proof);
             return lines.join("\n");
