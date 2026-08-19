@@ -66,4 +66,34 @@ describe("firestarter_upload_image", () => {
     expect(calls[0].url).not.toContain("/seller/products/upload-image");
     expect(res.isError).toBeFalsy();
   });
+
+  // commerce#819: a photo the agent can link to must be passable AS a URL —
+  // re-encoding it as a data URI is exactly what fails in a tool call (the
+  // same mechanism as the dispute-photo fix, commerce#749).
+  it("forwards image_url to the upload route and returns the re-hosted URL (#819)", async () => {
+    const tools = captureTools();
+    const calls = installFetch(() => ({ status: 200, json: { url: "https://cdn.test/blob/rehosted.jpg" } }));
+
+    const res = await tools.firestarter_upload_image({
+      image_url: "https://files.example/photo.jpg",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://api.test/v1/sellers/upload-image");
+    expect(calls[0].body.image_url).toBe("https://files.example/photo.jpg");
+    expect(calls[0].body.image_base64).toBeUndefined();
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("https://cdn.test/blob/rehosted.jpg");
+  });
+
+  it("errors without calling the API when neither image_url nor image_base64 is given (#819)", async () => {
+    const tools = captureTools();
+    const calls = installFetch(() => ({ status: 200, json: {} }));
+
+    const res = await tools.firestarter_upload_image({});
+
+    expect(calls).toHaveLength(0);
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/image_url|image_base64/);
+  });
 });

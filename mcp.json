@@ -747,22 +747,23 @@
     },
     {
       "name": "firestarter_upload_image",
-      "description": "Upload a product photo the seller sent in this conversation and get back a permanent public URL. Call this FIRST when the seller provides a photo (attached image), then pass the returned URL into firestarter_list or firestarter_update_listing image_urls. Accepts a base64-encoded image (data-URI format: 'data:image/jpeg;base64,...'). Max 6 MB. Returns the hosted URL on success.",
+      "description": "Upload a product photo and get back a permanent public URL to pass into firestarter_list or firestarter_update_listing image_urls. PREFER image_url: pass the photo's existing URL (e.g. the hosted URL of an image attached in this conversation) and the server fetches and re-hosts it. NEVER download a linked image and rebuild it as a base64 data-URI — that is exactly what fails. Use image_base64 (data-URI format, max 6 MB) only when the photo exists at no URL. Returns the hosted URL on success.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "image_base64": {
             "type": "string",
-            "description": "The image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here."
+            "description": "Fallback when the photo exists at no URL: the image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here. Max 6 MB."
           },
           "filename": {
             "type": "string",
             "description": "Optional original filename (used to detect format: png, webp, gif). Defaults to jpeg if omitted."
+          },
+          "image_url": {
+            "description": "PREFERRED. Public URL of the photo (e.g. the hosted URL of an image attached in this conversation). The server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB). Pass this whenever the image exists at any URL.",
+            "type": "string"
           }
-        },
-        "required": [
-          "image_base64"
-        ]
+        }
       }
     },
     {
@@ -831,7 +832,7 @@
           },
           "image_urls": {
             "type": "array",
-            "description": "Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."
+            "description": "Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."
           },
           "shipping": {
             "type": "number",
@@ -1705,7 +1706,7 @@
           },
           "image_urls": {
             "type": "array",
-            "description": "Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST to get a hosted URL, then pass it here. Never ask them to re-send a photo already in the conversation."
+            "description": "Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."
           },
           "fulfillment_mode": {
             "description": "How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Pass null to clear back to auto (platform label when a carrier-ratable ship-from exists, otherwise seller-managed).",
