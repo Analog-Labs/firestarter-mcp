@@ -189,7 +189,9 @@ function formatCommunityShelf(community: any): string | null {
     lines.push(`…and ${picks.length - SHELF_RENDER_LIMIT} more.`);
   }
   lines.push(
-    `\nBuy any of these and ${name} earns a share of Firestarter's fee — at no extra cost to you. ` +
+    // Same sanitation as the header — the community name is owner-controlled
+    // text reaching a BUYER, and this footer previously interpolated it raw.
+    `\nBuy any of these and ${sanitizeUntrusted(name, 120) || "this community"} earns a share of Firestarter's fee — at no extra cost to you. ` +
     `Want one? I can price it for checkout: pass its listing_id to firestarter_execute.`,
   );
   return lines.join("\n");
@@ -207,9 +209,11 @@ export function formatCommunitySells(community: any): string | null {
   if (sells.length === 0) return null;
   const name =
     typeof community?.name === "string" && community.name.trim() ? community.name.trim() : "this community";
-  const lines: string[] = [`**What ${name} sells:**`];
+  // Same sanitation as the picks shelf: these names are seller-controlled
+  // text reaching a BUYER — the sells list previously rendered them raw.
+  const lines: string[] = [`**What ${sanitizeUntrusted(name, 120) || "this community"} sells:**`];
   for (const s of sells.slice(0, SHELF_RENDER_LIMIT)) {
-    const nm = typeof s?.product_name === "string" && s.product_name.trim() ? s.product_name.trim() : "Untitled";
+    const nm = sanitizeUntrusted(s?.product_name) || "Untitled";
     const price = Number.isFinite(Number(s?.price)) ? `$${Number(s.price).toFixed(2)}` : "price at checkout";
     const id = typeof s?.listing_id === "string" && s.listing_id ? ` (listing_id: \`${s.listing_id}\`)` : "";
     lines.push(`• ${nm} — ${price}${id}`);
