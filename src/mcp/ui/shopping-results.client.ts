@@ -48,8 +48,10 @@ function render(items: ShoppingItem[]): void {
       // one meta row, badge PINNED to the bottom — so every card in a row has
       // identical bones and badges align regardless of title length.
       const stars = starsLabel(it);
+      // No image at all → the placeholder must show immediately; the onerror
+      // path only covers an image that EXISTS and fails to load.
       const card = `
-        <div class="media">${media}<span class="ph">No photo</span></div>
+        <div class="media${img ? "" : " noimg"}">${media}<span class="ph">No photo</span></div>
         <div class="body">
           <div class="title">${title}</div>
           <div class="stars">${stars ? `${esc(stars.stars)} <span class="count">${esc(stars.count)}</span>` : ""}</div>
@@ -65,7 +67,11 @@ function render(items: ShoppingItem[]): void {
         : `<div class="card">${card}</div>`;
     })
     .join("");
-  root.innerHTML = `<div class="grid">${cards}</div>`;
+  // When ANY card has a rating, every card reserves the stars line so prices
+  // and sellers stay row-aligned next to rated neighbours; when none do (a
+  // young catalog), the line collapses grid-wide and cards stay compact.
+  const anyStars = items.some((it) => starsLabel(it) !== null);
+  root.innerHTML = `<div class="grid${anyStars ? " has-stars" : ""}">${cards}</div>`;
 }
 
 function renderError(msg: string): void {
@@ -114,7 +120,7 @@ function renderDetail(p: Record<string, unknown>): void {
   const seller = p.seller ? `${esc(String(p.seller))}${(p as any).seller_verified ? " ✓" : ""}` : "";
   root.innerHTML = `
     <div class="detail">
-      <div class="media hero">${hero}<span class="ph">No photo</span></div>
+      <div class="media hero${imgs[0] ? "" : " noimg"}">${hero}<span class="ph">No photo</span></div>
       ${thumbs}
       <div class="dbody">
         <div class="dtitle">${title}</div>

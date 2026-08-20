@@ -76,6 +76,9 @@ const css = `
   .stars { font-size: 12px; color: #f59e0b; }
   .stars .count { color: #71717a; }
   .stars:empty { display: none; }
+  /* Mixed-rating rows: when the grid has ANY stars, unrated cards keep an
+     empty stars line so price/seller rows align across the row. */
+  .grid.has-stars .stars:empty { display: block; min-height: 1.4em; }
   .meta { display: flex; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; }
   .price { font-weight: 700; flex: none; }
   .seller { color: #71717a; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
