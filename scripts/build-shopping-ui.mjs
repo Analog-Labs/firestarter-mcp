@@ -100,16 +100,30 @@ const css = `
   .dbody { padding: 10px 2px; display: flex; flex-direction: column; gap: 6px; }
   .dtitle { font-weight: 600; font-size: 15px; line-height: 1.3; }
 
+  /* Dark theme, two triggers with one palette:
+     1. the HOST's explicit choice — the client stamps hostContext.theme as
+        [data-theme] on :root (applyDocumentTheme), which must win in BOTH
+        directions (dark app on light OS, light app on dark OS);
+     2. the OS preference as fallback, guarded so an explicit light stamp
+        beats a dark OS. */
   @media (prefers-color-scheme: dark) {
-    body { color: #f4f4f5; }
-    .card { background: #18181b; border-color: #3f3f46; }
-    a.card:hover, .card.link:hover { border-color: #71717a; }
-    .media { background: #27272a; }
-    .badge.ok { background: #14532d; color: #bbf7d0; }
-    .badge.muted { background: #27272a; color: #a1a1aa; }
-    .media.hero, .thumb { border-color: #3f3f46; }
-    .thumb { background: #27272a; }
+    :root:not([data-theme="light"]) body { color: #f4f4f5; }
+    :root:not([data-theme="light"]) .card { background: #18181b; border-color: #3f3f46; }
+    :root:not([data-theme="light"]) a.card:hover, :root:not([data-theme="light"]) .card.link:hover { border-color: #71717a; }
+    :root:not([data-theme="light"]) .media { background: #27272a; }
+    :root:not([data-theme="light"]) .badge.ok { background: #14532d; color: #bbf7d0; }
+    :root:not([data-theme="light"]) .badge.muted { background: #27272a; color: #a1a1aa; }
+    :root:not([data-theme="light"]) .media.hero, :root:not([data-theme="light"]) .thumb { border-color: #3f3f46; }
+    :root:not([data-theme="light"]) .thumb { background: #27272a; }
   }
+  :root[data-theme="dark"] body { color: #f4f4f5; }
+  :root[data-theme="dark"] .card { background: #18181b; border-color: #3f3f46; }
+  :root[data-theme="dark"] a.card:hover, :root[data-theme="dark"] .card.link:hover { border-color: #71717a; }
+  :root[data-theme="dark"] .media { background: #27272a; }
+  :root[data-theme="dark"] .badge.ok { background: #14532d; color: #bbf7d0; }
+  :root[data-theme="dark"] .badge.muted { background: #27272a; color: #a1a1aa; }
+  :root[data-theme="dark"] .media.hero, :root[data-theme="dark"] .thumb { border-color: #3f3f46; }
+  :root[data-theme="dark"] .thumb { background: #27272a; }
 `;
 
 const html = `<!doctype html>

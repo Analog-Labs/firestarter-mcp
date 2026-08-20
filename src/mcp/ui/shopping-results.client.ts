@@ -17,7 +17,7 @@
  * `_meta.ui.csp.resourceDomains`, so a photo on an un-allowlisted host shows the
  * placeholder rather than a broken image.
  */
-import { App } from "@modelcontextprotocol/ext-apps";
+import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { badgeFor, firstImage, priceLabel, starsLabel, type ShoppingItem } from "./shopping-item.js";
 
 const root = document.getElementById("root")!;
@@ -155,4 +155,17 @@ app.ontoolresult = (params) => {
   }
 };
 
-app.connect().catch((e) => renderError(e instanceof Error ? e.message : String(e)));
+// Adopt the HOST's theme, not the OS's. The iframe's prefers-color-scheme
+// follows the system, but a Desktop user can run the app dark on a light
+// system (or vice versa) — hostContext.theme is the truth when the host
+// sends one, and applyDocumentTheme stamps it as [data-theme] + colorScheme
+// for the stylesheet's explicit-theme selectors. No theme in hostContext →
+// no stamp → the prefers-color-scheme fallback keeps working as before.
+function adoptHostTheme(theme: unknown): void {
+  if (theme === "dark" || theme === "light") applyDocumentTheme(theme);
+}
+app.addEventListener("hostcontextchanged", (ctx: any) => adoptHostTheme(ctx?.theme));
+
+app.connect()
+  .then(() => adoptHostTheme((app.getHostContext() as any)?.theme))
+  .catch((e) => renderError(e instanceof Error ? e.message : String(e)));
