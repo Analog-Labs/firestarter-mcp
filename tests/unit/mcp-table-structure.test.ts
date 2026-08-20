@@ -68,6 +68,25 @@ describe("pipes inside cells never break row structure", () => {
     expect(t).toContain("Nasty \\| pipe \\| laden");
   });
 
+  it("a backslash-pipe in cell text cannot split the row either", async () => {
+    // "a\|b": with naive pipe-escaping this becomes "a\\|b" — an escaped
+    // BACKSLASH followed by a BARE pipe, which still splits. Backslashes must
+    // be escaped before pipes.
+    vi.stubGlobal("fetch", vi.fn(async () => json({
+      environment: "live",
+      executions: [
+        { id: "exec_1", status: "cancelled", request_text: "a\\|b tricky", created_at: "2026-08-01T10:00:00.000Z" },
+      ],
+    })));
+    const t = text(await captureTools().firestarter_status({}));
+    const rows = tableRows(t);
+
+    expect(rows.length).toBe(1);
+    expect(rows[0].length).toBe(5);
+    // Escaped backslash pair + escaped pipe — no bare pipe survives.
+    expect(t).toContain("a\\\\\\|b tricky");
+  });
+
   it("a | in a listing name stays one cell in the listings table", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({ listings: [
       { id: "lst_1", product_name: "Pipe | Bomb | Name", current_price: 5, currency: "USD",

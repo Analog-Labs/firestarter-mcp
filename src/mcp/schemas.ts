@@ -186,6 +186,14 @@ const catalogListing = z.object({
   share_url: z.string().nullable(),
   /** http(s) product photo URLs; the shopping-results app renders images[0]. */
   images: z.array(z.string()),
+  /** Seller's average review rating (1 decimal), null until they have reviews.
+   *  Same aggregate the listing-detail endpoint returns. The shopping widget
+   *  renders it as the card's stars row — without these two fields in the
+   *  STRUCTURED row the widget can never show stars, no matter what the text
+   *  rendering says (the mapper below is a strip-list, not a passthrough). */
+  seller_rating: z.number().nullable(),
+  /** Number of reviews behind seller_rating (0 when none). */
+  seller_rating_count: z.number().int(),
   picked_by_community: z.boolean(),
   pick_note: z.string().nullable(),
 });
@@ -239,6 +247,12 @@ export function toCatalogStructured(
       images: Array.isArray(l?.images)
         ? l.images.filter((u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
         : [],
+      // Aggregate-only social proof, normalized like the API detail view:
+      // rating null until reviews exist, count coerced to a non-negative int.
+      seller_rating: toPriceOrNull(l?.seller_rating),
+      seller_rating_count: Number.isFinite(Number(l?.seller_rating_count))
+        ? Math.max(0, Math.trunc(Number(l.seller_rating_count)))
+        : 0,
       picked_by_community: l?.picked_by_community === true,
       pick_note: sanitizeUntrustedOrNull(l?.pick_note),
     };

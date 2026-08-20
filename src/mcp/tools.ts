@@ -342,7 +342,12 @@ function mdTable(headers: string[], rows: string[][], opts: { cap?: number; more
   // (e.g. a buyer's request text "A | B") split its table row into extra
   // columns. Cells that pass through sanitizeUntrusted were shielded by
   // accident; raw cells (the buyer's own request text) were not.
-  const esc = (v: string) => v.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  //
+  // Backslashes are escaped FIRST: without that, cell text "a\|b" becomes
+  // "a\\|b" — an escaped backslash followed by a BARE pipe — which still
+  // splits the row. Escaping order makes both characters inert.
+  const esc = (v: string) =>
+    v.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r\n?|\n/g, " ");
   const line = (cells: string[]) => `| ${cells.map(esc).join(" | ")} |`;
   const out = [line(headers), `|${headers.map(() => " --- ").join("|")}|`];
   for (const r of rows.slice(0, cap)) out.push(line(r));
