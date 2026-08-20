@@ -117,6 +117,15 @@ try {
     if (unhinted.length) fail(`tools missing a read-only/destructive hint: ${unhinted.join(", ")}`);
     else console.log("✓ every tool declares a safety hint");
 
+    // The MCP spec defaults an ABSENT openWorldHint to true, so a tool that
+    // omits it is advertised as open-world whether it is or not — and the
+    // OpenAI directory review requires the hint set explicitly on every tool.
+    const noWorld = tools
+      .filter((t) => typeof t.annotations?.openWorldHint !== "boolean")
+      .map((t) => t.name);
+    if (noWorld.length) fail(`tools missing an explicit openWorldHint: ${noWorld.join(", ")}`);
+    else console.log("✓ every tool declares an explicit openWorldHint");
+
     const contradictory = tools
       .filter((t) => t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint === true)
       .map((t) => t.name);
