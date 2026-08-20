@@ -1807,11 +1807,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_execute
   server.tool(
     "firestarter_execute",
-    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → review options with the buyer → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs) — present these to the buyer so they can pick a speed, don't silently assume the cheapest; the buyer chooses at approval via shipping_option_index (use firestarter_shipping_options to re-fetch or preview a speed's total; for a shipping quote on a listing BEFORE starting any purchase, use firestarter_shipping_estimate). You do NOT need a budget, an address, or a payment method to call this — a card is only requested at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. If the buyer has a saved shipping address, it is used automatically — you do NOT need to ask for their street, zip, or phone; the response's `default_delivery` shows a masked view of it so you can just confirm (\"ship to your saved address?\"). Only collect a new address if they have none saved or want it shipped somewhere else, and prefer passing a saved `address_id` (from firestarter_addresses) over re-typing it. ALWAYS pass the buyer's `location` (country, and city if known) when you know it — results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. When you already have an exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search), pass listing_id to skip search and pin to that exact product. Results may include browse-only options (external, or not buyable right now) that can't be approved — share their links instead. Set auto_pay only when the buyer has explicitly pre-authorized buying without a confirmation step.",
+    "Start a purchase. Step 1 of the buy flow: it finds products matching a natural-language request (or pins to an exact listing), verifies the seller, computes real pricing + shipping, and returns ranked OPTIONS that are AWAITING APPROVAL — it does NOT pay yet. Full flow: firestarter_execute (find/price) → firestarter_approve (confirm + pay) → firestarter_receipt (proof of payment) and firestarter_track_order (delivery). Each purchasable option lists real DELIVERY OPTIONS (Standard / Express / Same-Day with prices and ETAs); the delivery speed is the buyer's choice, selected at approval via shipping_option_index (firestarter_shipping_options re-fetches or previews a speed's total; firestarter_shipping_estimate quotes shipping on a listing BEFORE any purchase starts). No budget, address, or payment method is needed to call this — a card is requested only at the very end, after the buyer approves; browsing, quoting, and comparing shipping never require one. A saved shipping address is used automatically — the buyer's street, zip, and phone are already on file, and the response's `default_delivery` shows a masked view of the ship-to. A new address matters only when none is saved or the order ships somewhere else; a saved `address_id` (from firestarter_addresses) is accepted in place of a re-typed address. When the buyer's `location` (country, and city if known) is provided, results are localized to their country so a buyer in Kenya sees locally-deliverable options first instead of an empty or US-only list. An exact listing id (lst_..., e.g. from a firestarter.network/l/<id> share link or firestarter_catalog_search) can be passed as listing_id to skip search and pin to that exact product. Results may include browse-only options (external, or not buyable right now) that can't be approved — each carries a link that can be shared instead. auto_pay presumes the buyer's explicit prior authorization to buy without a confirmation step.",
     {
       request: z.string().describe("Natural language description of what to buy (e.g. 'specialty coffee beans under $30'). This is the only required field — call with just this and refine later."),
       listing_id: z.string().optional().describe("Exact Firestarter listing id (lst_...) to buy — from a listing or a share link (firestarter.network/l/<id>). Pins the purchase to that listing, skipping product search. Always pass it when you have one."),
-      voucher_code: z.string().optional().describe("A discount code the buyer already has (voucher / coupon / promo code). Pass it ONLY when the buyer gave you one — you do NOT need to hunt for codes, since the best publicly available voucher is applied automatically. Use this for a private or targeted code, which auto-apply cannot find. If the code can't be used the order still proceeds at the best price available, and the response explains why it didn't apply so you can tell the buyer."),
+      voucher_code: z.string().optional().describe("A discount code the buyer already has (voucher / coupon / promo code). Only meaningful for a code the buyer supplied — the best publicly available voucher is applied automatically, so searching for codes is unnecessary; this field exists for private or targeted codes that auto-apply cannot find. If the code can't be used the order still proceeds at the best price available, and the response explains why it didn't apply."),
       budget_max: z.number().optional().describe("Maximum budget in USD. Optional — omit to see all options regardless of price."),
       // Permissive, forever-stable boundary: accept a string OR any object shape
       // and NEVER reject for shape (an older/stale cached client that omits
@@ -1985,7 +1985,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_preview",
     {
       description:
-        "Preview real products for a natural-language request WITHOUT starting a purchase. Returns live options with prices, whether each can be bought through Firestarter (vs browse-only), shipping, and per-option eligibility — in budget, can arrive by the deadline, and ships to the destination. Use it to show the buyer what's available and answer \"what can you get me?\" before committing to firestarter_execute. Read-only: nothing is bought and no approval is created.",
+        "Preview real products for a natural-language request WITHOUT starting a purchase. Returns live options with prices, whether each can be bought through Firestarter (vs browse-only), shipping, and per-option eligibility — in budget, can arrive by the deadline, and ships to the destination. Answers \"what can you get me?\" — a view of what's available before any purchase starts (firestarter_execute). Read-only: nothing is bought and no approval is created.",
       inputSchema: {
         query: z.string().describe("What to look for, e.g. 'polo t-shirt' or 'wireless earbuds under $50'"),
         country: z.string().optional().describe("Destination country (ISO alpha-2 or common name) — enables shipping/serviceability checks"),
@@ -2008,7 +2008,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         cursor: z.string().optional().describe("Opaque pagination cursor from a prior preview's page.next_cursor to fetch the next page."),
       },
       outputSchema: previewOutputShape,
-      annotations: { title: "Preview Products", readOnlyHint: true, openWorldHint: true },
+      annotations: { title: "Preview Products", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
       // MCP Apps: render these results as an inline product grid (photos) in
       // supporting hosts (Claude Desktop, VS Code). Additive — hosts without
       // MCP Apps support ignore this and fall back to the text + image-block
@@ -2126,7 +2126,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       execution_id: z.string().optional().describe("Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."),
       status_filter: z.string().optional().describe("Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"),
     },
-    { title: "Check Order Status", readOnlyHint: true, destructiveHint: false },
+    { title: "Check Order Status", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ execution_id, status_filter }) => {
       // Environment is determined by the API key prefix (auth.ts): fs_test_* ->
       // sandbox, anything else -> live. Surfaced so the agent can correctly
@@ -2174,7 +2174,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_approve
   server.tool(
     "firestarter_approve",
-    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → you confirm the ship-to with the buyer → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically — you do NOT need to collect or re-type their street, zip, or phone; just confirm where it's shipping (the execute/approve responses show a masked view). Only pass a `delivery_address` (or a saved `address_id` from firestarter_addresses) when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; to pick a different one pass option_id (PREFERRED — each purchasable option prints its own `option_id:`, and it identifies the product rather than a position that can shift between display and approval) or, failing that, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — if the buyer wants a faster or specific one, pass shipping_option_index (the [number] from that menu); omit it to use the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter listings that are not buyable right now) are rejected with a view link instead. When the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order, omit execution_id: the tool resolves the single pending purchase automatically (and asks which one only if several are pending). If approval returns PRICE_CHANGED, show the exact updated total to the buyer and ask again; only after they explicitly confirm it, call this tool again with confirm_total set to that exact value AND consent_nonce set to the one-time nonce that PRICE_CHANGED returned (echo it verbatim — it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected — collect one then.",
+    "Confirm and place an order that is awaiting approval — this is the step that actually BUYS and pays. Lifecycle: firestarter_execute (or a listing_id buy) returns options awaiting approval → firestarter_approve places and pays for the order → the buyer can then get a receipt (firestarter_receipt) and follow delivery (firestarter_track_order). The buyer's SAVED DEFAULT address is used automatically (the execute/approve responses show a masked view of the ship-to); a `delivery_address` (or a saved `address_id` from firestarter_addresses) applies only when the buyer has no saved address or wants THIS order shipped somewhere else. By default it approves the pre-selected (best purchasable) option; a different one is selected with option_id (each purchasable option prints its own `option_id:`; it identifies the product itself rather than a position that can shift between display and approval, which makes it the more reliable selector) or, as a positional fallback, selected_option. Delivery speed is the buyer's choice: the option shows a numbered 'Delivery options' menu (Standard / Express / Same-Day with prices + ETAs) — shipping_option_index (the [number] from that menu) selects a specific speed, and omitting it uses the cheapest. Only Firestarter-purchasable options can be approved — browse-only results (external listings, or Firestarter listings that are not buyable right now) are rejected with a view link instead. When execution_id is omitted (e.g. the user just says \"approve\"/\"confirm\"/\"yes\" without naming an order), the tool resolves the single pending purchase automatically, and lists the candidates when several are pending. A PRICE_CHANGED result means the total changed since the options were shown; placing the order at the new price requires the buyer's explicit confirmation of the exact updated total, expressed as a repeat call with confirm_total set to that exact value AND consent_nonce set to the one-time nonce PRICE_CHANGED returned, verbatim (it is single-use and cannot be guessed). If no address is saved and none is passed, approval of physical goods is rejected.",
     {
       execution_id: z.string().optional().describe("The execution ID to approve (e.g. 'exec_abc123'). Omit when the user simply replied \"approve\": the tool then approves the one execution awaiting approval, surfaces payment-setup guidance if the order is parked awaiting a payment method, or lists the candidates if several are pending."),
       selected_option: z.number().int().min(0).optional().describe("0-based POSITIONAL index into the options list as displayed (the option shown as '1.' is index 0). Prefer option_id: this index is resolved against a fresh read of the execution, and the option order can change if the order was re-quoted or refined with firestarter_message since you displayed it. Omit both to approve the pre-selected best option."),
@@ -2187,7 +2187,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       confirm_total: z.number().nonnegative().optional().describe("Exact updated total in USD from a prior PRICE_CHANGED response. Pass only after showing that total to the buyer and receiving a new explicit confirmation; never guess or pre-fill it on the first approval."),
       consent_nonce: z.string().optional().describe("The single-use consent_nonce string from a prior PRICE_CHANGED response. Pass it VERBATIM together with confirm_total when re-approving a price change. It is one-time-use and cannot be guessed — never fabricate it; only echo the exact value the last PRICE_CHANGED returned."),
     },
-    { title: "Approve and Pay", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    { title: "Approve and Pay", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     async ({ execution_id, selected_option, option_id, delivery_address, address_id, shipping_option_index, confirm_total, consent_nonce }) => {
       try {
         // Bare "approve" (no execution_id): resolve the pending purchase so a
@@ -2353,14 +2353,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // index into approve. Non-blocking: approving without a pick uses the cheapest.
   server.tool(
     "firestarter_shipping_options",
-    "Show and compare the delivery speeds for an order awaiting approval, and preview the re-priced total for a chosen speed — before paying. Returns the numbered 'Delivery options' menu (Standard / Express / Same-Day, each with its price, ETA, and all-in total); the buyer picks one and you place the order by calling firestarter_approve with shipping_option_index set to that [number]. Use this when the buyer asks about delivery speed/cost, wants it faster, or you want to show the trade-off before they approve — otherwise firestarter_execute already lists these inline and approving without a pick uses the cheapest rate. Pass refresh:true to re-fetch live carrier rates (e.g. if the quote is stale), and select_index to preview one speed's new total. For a listing the buyer hasn't started buying yet (no execution), use firestarter_shipping_estimate instead.",
+    "Show and compare the delivery speeds for an order awaiting approval, and preview the re-priced total for a chosen speed — before paying. Returns the numbered 'Delivery options' menu (Standard / Express / Same-Day, each with its price, ETA, and all-in total); the [number] of the buyer's pick is what firestarter_approve takes as shipping_option_index to place the order at that speed. Use this when the buyer asks about delivery speed/cost, wants it faster, or the speed/price trade-off is in question before approval — firestarter_execute already lists these inline, and approving without a pick uses the cheapest rate. Pass refresh:true to re-fetch live carrier rates (e.g. if the quote is stale), and select_index to preview one speed's new total. For a listing the buyer hasn't started buying yet (no execution), use firestarter_shipping_estimate instead.",
     {
       execution_id: z.string().describe("The execution ID (exec_...) to show delivery options for — an order that is awaiting approval."),
       option_id: z.string().optional().describe("Which option's delivery methods to show (opt_...). Omit to use the pre-selected option (the one the buyer is about to approve)."),
       select_index: z.number().int().min(0).optional().describe("Preview a specific delivery speed: the [number] from the menu. Shows that speed's new all-in total and the exact shipping_option_index to approve with. Does NOT select or pay — it's a preview."),
       refresh: z.boolean().optional().describe("Re-fetch live carrier rates and persist them before showing the menu. Use when the stored rates may be stale (e.g. >30 min old). Off by default."),
     },
-    { title: "Shipping Options", readOnlyHint: true, destructiveHint: false },
+    { title: "Shipping Options", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ execution_id, option_id, select_index, refresh }) => {
       try {
         const qs = new URLSearchParams();
@@ -2478,7 +2478,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // answer "how much is shipping?" while the buyer was still browsing.
   server.tool(
     "firestarter_shipping_estimate",
-    "Estimate shipping for a listing BEFORE starting a purchase — read-only: no execution is created, no approval, nothing is bought. Given a listing id (lst_...) and a destination — a saved address_id, or just a country + ZIP (or city); a full street address is NOT needed — returns the rated delivery options (price, ETA, carrier when known) the buyer would see at checkout. Use it to answer \"how much is shipping?\" or \"can this ship to me?\" while the buyer is still browsing, e.g. from firestarter_preview / firestarter_catalog_search results or a firestarter.network/l/<id> share link. The rows are informational, NOT a menu to approve from: to actually buy at a speed, run firestarter_execute with the listing_id and pick the speed at approval via shipping_option_index (or firestarter_shipping_options once the order exists). Street-less destinations may get estimate tiers; exact carrier rates are re-quoted at approval.",
+    "Estimate shipping for a listing BEFORE starting a purchase — read-only: no execution is created, no approval, nothing is bought. Given a listing id (lst_...) and a destination — a saved address_id, or just a country + ZIP (or city); a full street address is NOT needed — returns the rated delivery options (price, ETA, carrier when known) the buyer would see at checkout. Use it to answer \"how much is shipping?\" or \"can this ship to me?\" while the buyer is still browsing, e.g. from firestarter_preview / firestarter_catalog_search results or a firestarter.network/l/<id> share link. The rows are informational, NOT a menu to approve from: buying at a speed happens through firestarter_execute with the listing_id, with the speed selected at approval via shipping_option_index (or firestarter_shipping_options once the order exists). Street-less destinations may get estimate tiers; exact carrier rates are re-quoted at approval.",
     {
       listing_id: z.string().describe("The listing to estimate shipping for (lst_..., from firestarter_preview, firestarter_catalog_search, firestarter_listings, or a firestarter.network/l/<id> share link)."),
       address_id: z.string().optional().describe("A saved buyer address id (addr_..., from firestarter_addresses) to estimate delivery to. Prefer this when the buyer has one on file — no need to ask where they live."),
@@ -2491,7 +2491,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // as a write, it drew a confirmation prompt in the middle of browsing — on
     // the very tool built so a buyer could ask "how much is shipping?" without
     // committing to anything.
-    { title: "Estimate Shipping", readOnlyHint: true, destructiveHint: false },
+    { title: "Estimate Shipping", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ listing_id, address_id, country, zip, city }) => {
       try {
         const body: any = { listing_id: cleanListingId(listing_id) };
@@ -2533,9 +2533,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // to reference an address, and the raw values stay server-side.
   server.tool(
     "firestarter_addresses",
-    "List the buyer's saved shipping addresses (masked). Use this to see if they already have an address on file BEFORE asking them to type one — then pass the matching `address_id` to firestarter_execute or firestarter_approve. The default address (used automatically at approval) is marked. Values are masked (partial street, no zip/phone); you don't need the full address to reference it by id.",
+    "List the buyer's saved shipping addresses (masked). Shows whether an address is already on file; each entry's `address_id` is accepted by firestarter_execute and firestarter_approve, so a saved address never has to be re-typed. The default address (used automatically at approval) is marked. Values are masked (partial street, no zip/phone); an address is referenced by id, so the full value is not needed.",
     {},
-    { title: "Saved Addresses", readOnlyHint: true, destructiveHint: false },
+    { title: "Saved Addresses", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async () => {
       try {
         const data = await apiRequest("GET", "/v1/addresses");
@@ -2584,13 +2584,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       city: z.string().describe("City"),
       state: z.string().optional().describe("State / province / region"),
       zip: z.string().optional().describe("Postal / ZIP code"),
-      country: z.string().optional().describe("ISO country code (e.g. US, PK, KE, NG). ALWAYS pass it when the buyer's country is known or named anywhere in the address — omitting it makes the API infer the country from the address text, falling back to US only as a last resort."),
+      country: z.string().optional().describe("ISO country code (e.g. US, PK, KE, NG). Recommended whenever the buyer's country is known or named anywhere in the address — when omitted, the API infers the country from the address text, falling back to US only as a last resort."),
       name: z.string().optional().describe("Recipient name"),
       phone: z.string().optional().describe("Phone number for delivery"),
       label: z.string().optional().describe("Label for this address (e.g. 'Home', 'Office', 'Warehouse'). If omitted, a default label is assigned."),
       is_default: z.boolean().optional().describe("Set to true to make this the default shipping address."),
     },
-    { title: "Save an Address", readOnlyHint: false, destructiveHint: false },
+    { title: "Save an Address", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async (args) => {
       try {
         // #449: no blind `country: "US"` default here — a Lagos, Nigeria address
@@ -2637,7 +2637,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().optional().describe("Listing to list drops for (required for action 'list')."),
       drop_id: z.string().optional().describe("Drop to claim (required for action 'claim')."),
     },
-    { title: "Drops", readOnlyHint: false, destructiveHint: false },
+    { title: "Drops", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ action, listing_id, drop_id }) => {
       try {
         if (action === "claim") {
@@ -2673,9 +2673,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payment_method
   server.tool(
     "firestarter_payment_method",
-    "Check the buyer's payment method status and get a link to add or update their card. IMPORTANT — the card is the LAST step of a purchase, NOT a precondition: run firestarter_execute first and let the buyer see the shipping estimate and pick a delivery speed (shipping_option_index) BEFORE any card is collected. A card is only genuinely needed once an order is parked at awaiting_payment_method (after approval), or when the buyer explicitly asks to add one now. Do NOT collect a card up front just to browse, quote, or compare shipping — none of those need one. Use this tool when the buyer asks about payment or an order is waiting on a card. Returns a no-login Stripe setup link (works from any channel - WhatsApp, Slack, Telegram) plus a dashboard link.",
+    "Check the buyer's payment method status and get a link to add or update their card. The card is the LAST step of a purchase, NOT a precondition: search (firestarter_execute), shipping estimates, and delivery-speed selection (shipping_option_index) all happen before any card is collected, and browsing, quoting, and comparing shipping never require one. A card is genuinely needed only once an order is parked at awaiting_payment_method (after approval), or when the buyer explicitly asks to add one now. Use this tool when the buyer asks about payment or an order is waiting on a card. Returns a no-login Stripe setup link (works from any channel - WhatsApp, Slack, Telegram) plus a dashboard link.",
     {},
-    { title: "Manage Payment Method", readOnlyHint: false, destructiveHint: false },
+    { title: "Manage Payment Method", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async () => {
       try {
         const methods = await apiRequest("GET", "/v1/payments/methods");
@@ -2714,7 +2714,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       execution_id: z.string().describe("The execution ID to cancel"),
       reason: z.string().optional().describe("Reason for cancellation"),
     },
-    { title: "Cancel Order", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    { title: "Cancel Order", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     async ({ execution_id, reason }) => {
       try {
         await apiRequest("POST", `/v1/executions/${execution_id}/cancel`, { reason });
@@ -2735,7 +2735,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       execution_id: z.string().describe("The execution/order ID to track (exec_...)"),
     },
-    { title: "Track Delivery", readOnlyHint: true, destructiveHint: false },
+    { title: "Track Delivery", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ execution_id }) => {
       try {
         // API-key-authed route. Do NOT use /commerce/tracking/:id — that one is
@@ -2834,7 +2834,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       execution_id: z.string().describe("The execution/order ID to return (exec_...)"),
       reason: z.string().optional().describe("Reason for the return (e.g. 'wrong size', 'damaged', 'not as described')"),
     },
-    { title: "Start a Return", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    { title: "Start a Return", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     async ({ execution_id, reason }) => {
       try {
         const data = await apiRequest("POST", `/v1/executions/${execution_id}/return`, { reason });
@@ -2861,7 +2861,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       execution_id: z.string().describe("The execution/order ID to confirm delivery for (exec_...)"),
     },
-    { title: "Confirm Delivery Received", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    { title: "Confirm Delivery Received", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     async ({ execution_id }) => {
       try {
         // Find the order ID from the execution
@@ -2888,7 +2888,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       rating: z.number().int().min(1).max(5).describe("Rating from 1 (poor) to 5 (excellent)"),
       comment: z.string().max(1000).optional().describe("Optional text review (max 1000 chars)"),
     },
-    { title: "Leave a Review", readOnlyHint: false, destructiveHint: false },
+    { title: "Leave a Review", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ execution_id, rating, comment }) => {
       try {
         // Find the order ID from the execution
@@ -2929,7 +2929,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       alert_threshold_pct: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
       disable: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_spend_cap."),
     },
-    { title: "Check Spending Cap", readOnlyHint: true, destructiveHint: false },
+    { title: "Check Spending Cap", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async (args: any = {}) => {
       try {
         const balance = await apiRequest("GET", "/v1/billing/balance");
@@ -2955,7 +2955,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_set_spend_cap
   server.tool(
     "firestarter_set_spend_cap",
-    "Raise, lower, set, or remove the buyer's monthly spend cap - the safety limit on total monthly spend. Call this whenever the buyer wants to increase, raise, bump, set, lower, or change their cap (e.g. 'increase my spending cap to $100', 'raise my limit to $X', 'cap my spending at $X'). IMPORTANT: when a purchase is rejected with SPEND_CAP_EXCEEDED and the buyer wants to proceed, call this with a higher spend_cap_dollars and then retry the purchase - never tell the buyer you cannot change the cap. Set disable:true to remove the cap entirely. Use firestarter_spend_cap to read the current value without changing it.",
+    "Raise, lower, set, or remove the buyer's monthly spend cap - the safety limit on total monthly spend. Covers any request to increase, raise, bump, set, lower, or change the cap (e.g. 'increase my spending cap to $100', 'raise my limit to $X', 'cap my spending at $X'). The cap is always buyer-adjustable: a purchase rejected with SPEND_CAP_EXCEEDED goes through once the cap is raised here with a higher spend_cap_dollars and the purchase is retried. Set disable:true to remove the cap entirely. Use firestarter_spend_cap to read the current value without changing it.",
     {
       spend_cap_dollars: z.number().min(1).optional().describe("New monthly spend cap in dollars (e.g. 500 = $500/month)."),
       alert_threshold_pct: z.number().int().min(1).max(100).optional().describe("Fire a warning when monthly spend reaches this % of the cap. Default 80."),
@@ -2964,7 +2964,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // Overwrites a persistent account-level safety limit — raising it loosens a
     // spending guard, so a host should confirm rather than fire it silently.
     // Re-setting the same value is a no-op, hence idempotent.
-    { title: "Set Spending Cap", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    { title: "Set Spending Cap", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     async ({ spend_cap_dollars, alert_threshold_pct, disable }) => {
       try {
         if (disable) {
@@ -2999,7 +2999,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       execution_id: z.string().describe("The execution/order ID to get a receipt for (exec_...)"),
     },
-    { title: "Get Receipt", readOnlyHint: true, destructiveHint: false },
+    { title: "Get Receipt", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ execution_id }) => {
       try {
         const data = await apiRequest("GET", `/v1/executions/${execution_id}/receipt`);
@@ -3045,7 +3045,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       set_limit_usd: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."),
       disable: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_auto_approve_limit."),
     },
-    { title: "Check Auto-Approve Limit", readOnlyHint: true, destructiveHint: false },
+    { title: "Check Auto-Approve Limit", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async (args: any = {}) => {
       try {
         const bal = await apiRequest("GET", "/v1/billing/balance");
@@ -3072,7 +3072,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_set_auto_approve_limit
   server.tool(
     "firestarter_set_auto_approve_limit",
-    "Set or disable the buyer's PERSISTENT, account-level auto-approval limit for purchases. Orders at or below the limit are auto-approved and paid without a manual confirmation step; anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Pass set_limit_usd (e.g. 50 for '$50 per order'; 0 makes every order require manual approval) OR disable=true to turn auto-approval off entirely. The maximum limit is $10,000. Always confirm the exact dollar amount with the buyer before setting it — never invent, assume, or round a value the buyer did not state. Only report success after this tool returns a confirmation. Use firestarter_auto_approve_limit to read the current value without changing it.",
+    "Set or disable the buyer's PERSISTENT, account-level auto-approval limit for purchases. Orders at or below the limit are auto-approved and paid without a manual confirmation step; anything above pauses for approval. It applies to EVERY future order on the account, across all surfaces (chat, dashboard, API), until changed. Pass set_limit_usd (e.g. 50 for '$50 per order'; 0 makes every order require manual approval) OR disable=true to turn auto-approval off entirely. The maximum limit is $10,000. Because orders under the limit are paid with no confirmation step, the exact dollar amount is safety-critical: the tool stores precisely the value passed, and success is confirmed by the response's echo of the stored setting. Use firestarter_auto_approve_limit to read the current value without changing it.",
     {
       set_limit_usd: z
         .number()
@@ -3088,7 +3088,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // Mutates a PERSISTENT account-level billing setting (overwrites the prior
     // value), so it is destructive in the MCP sense; re-setting the same value
     // is a no-op, hence idempotent.
-    { title: "Set Auto-Approve Limit", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    { title: "Set Auto-Approve Limit", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     async ({ set_limit_usd, disable }) => {
       try {
         if (set_limit_usd === undefined && !disable) {
@@ -3144,7 +3144,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       execution_id: z.string().describe("The execution ID to message"),
       message: z.string().describe("Follow-up message (e.g. 'I prefer organic options' or 'Can you find something cheaper?')"),
     },
-    { title: "Refine Purchase Request", readOnlyHint: false, destructiveHint: false },
+    { title: "Refine Purchase Request", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async ({ execution_id, message }) => {
       try {
         await apiRequest("POST", `/v1/executions/${execution_id}/message`, { message });
@@ -3168,7 +3168,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       goal: z.string().optional().describe("Natural language goal for AI-powered meaningful change detection (e.g. 'price drops below $180')"),
       webhook_url: z.string().optional().describe("Webhook URL to receive change notifications"),
     },
-    { title: "Watch Price or Stock", readOnlyHint: false, destructiveHint: false },
+    { title: "Watch Price or Stock", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async ({ name, query, schedule, price_drop_pct, goal, webhook_url }) => {
       try {
         const body: any = { name, type: "product", targets: [{ query }], schedule: schedule || "daily", conditions: {} };
@@ -3196,7 +3196,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       monitor_id: z.string().optional().describe("Get details for a specific monitor ID. Omit to list all monitors."),
       include_checks: z.boolean().optional().describe("Include recent check history (default: true for single monitor, false for list)"),
     },
-    { title: "List Price Monitors", readOnlyHint: true, destructiveHint: false },
+    { title: "List Price Monitors", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ monitor_id, include_checks }) => {
       try {
         if (monitor_id) {
@@ -3264,7 +3264,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       purchased_at: z.string().optional().describe("ISO 8601 purchase timestamp; omit for 'just now'"),
       raw_payload: z.record(z.string(), z.unknown()).optional().describe("Any extra captured details (confirmation-page fields, shipping, options)"),
     },
-    { title: "Record External Purchase", readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    { title: "Record External Purchase", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     async (args) => {
       try {
         const res = await apiRequest("POST", "/v1/external-purchases", args);
@@ -3288,14 +3288,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_purchases
   server.tool(
     "firestarter_purchases",
-    "OFF-NETWORK purchases only — the pilot log of purchases an agent completed on OTHER stores and recorded with firestarter_record_purchase. This is NOT the buyer's Firestarter order history: for orders placed through Firestarter (\"my orders\", \"order history\", \"what did I buy here\") ALWAYS use firestarter_status, which works on every key. This pilot log is test-environment keys only for now; live keys get a TEST_MODE_ONLY refusal — that refusal says nothing about Firestarter order history, which remains fully available via firestarter_status.",
+    "OFF-NETWORK purchases only — the pilot log of purchases an agent completed on OTHER stores and recorded with firestarter_record_purchase. This is NOT the buyer's Firestarter order history: orders placed through Firestarter (\"my orders\", \"order history\", \"what did I buy here\") live in firestarter_status, which works on every key. This pilot log is test-environment keys only for now; live keys get a TEST_MODE_ONLY refusal — that refusal says nothing about Firestarter order history, which remains fully available via firestarter_status.",
     {
       purchase_id: z.string().optional().describe("Get one purchase (pur_...) with full details. Omit to list."),
       query: z.string().optional().describe("Filter by words in the title or seller name"),
       source: z.string().optional().describe("Only purchases from one marketplace (e.g. \"lazada\")"),
       limit: z.number().optional().describe("Max results (default 20, max 50)"),
     },
-    { title: "My Purchases", readOnlyHint: true, destructiveHint: false },
+    { title: "My Purchases", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ purchase_id, query, source, limit }) => {
       try {
         if (purchase_id) {
@@ -3342,7 +3342,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       monitor_id: z.string().describe("The monitor ID to pause or delete"),
       action: z.enum(["pause", "resume", "delete"]).describe("Action to take: pause (stop checks, keep history), resume (restart checks), delete (permanent)"),
     },
-    { title: "Stop Watching", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    { title: "Stop Watching", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     async ({ monitor_id, action }) => {
       try {
         if (action === "delete") {
@@ -3364,7 +3364,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       monitor_id: z.string().describe("The monitor ID to check now"),
     },
-    { title: "Check Price Monitor", readOnlyHint: false, destructiveHint: false },
+    { title: "Check Price Monitor", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ monitor_id }) => {
       try {
         await apiRequest("POST", `/v1/monitors/${monitor_id}/run`);
@@ -3410,13 +3410,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // tool argument (same mechanism as the dispute-photo fix, commerce#749).
   server.tool(
     "firestarter_upload_image",
-    "Upload a product photo and get back a permanent public URL to pass into firestarter_list or firestarter_update_listing image_urls. PREFER image_url: pass the photo's existing URL (e.g. the hosted URL of an image attached in this conversation) and the server fetches and re-hosts it. NEVER download a linked image and rebuild it as a base64 data-URI — that is exactly what fails. Use image_base64 (data-URI format, max 6 MB) only when the photo exists at no URL. Returns the hosted URL on success.",
+    "Upload a product photo and get back a permanent public URL, accepted by firestarter_list and firestarter_update_listing image_urls. Two input forms: image_url takes the photo's existing URL (e.g. the hosted URL of an image attached in this conversation), which the server fetches and re-hosts — the reliable form whenever a URL exists; image_base64 (data-URI format, max 6 MB) covers a photo that exists at no URL. Downloading a linked image and rebuilding it as a base64 data-URI is this tool's known failure mode — image_url exists to avoid it. Returns the hosted URL on success.",
     {
       image_url: z.string().optional().describe("PREFERRED. Public URL of the photo (e.g. the hosted URL of an image attached in this conversation). The server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB). Pass this whenever the image exists at any URL."),
       image_base64: z.string().optional().describe("Fallback when the photo exists at no URL: the image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here. Max 6 MB."),
       filename: z.string().optional().describe("Optional original filename (used to detect format: png, webp, gif). Defaults to jpeg if omitted."),
     },
-    { title: "Upload Product Image", readOnlyHint: false, destructiveHint: false },
+    { title: "Upload Product Image", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ image_url, image_base64, filename }) => {
       try {
         if (image_url) {
@@ -3461,7 +3461,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_register_seller
   server.tool(
     "firestarter_register_seller",
-    "Register the current account as a seller on Firestarter. This is required BEFORE the seller can create listings (firestarter_list), import products (firestarter_import), or connect a store (firestarter_connect_shopify). Only requires a business_name. If firestarter_list or firestarter_import returns NO_SELLER_PROFILE, call this first, then retry the original tool immediately. Idempotent: if the account is already a seller, returns the existing profile without error. After registration the seller can immediately list products - payouts (firestarter_payouts) can be set up later.",
+    "Register the current account as a seller on Firestarter. Registration is the precondition for creating listings (firestarter_list), importing products (firestarter_import), and connecting a store (firestarter_connect_shopify): a NO_SELLER_PROFILE error from those tools means this registration hasn't happened yet, and they succeed once it has. Only requires a business_name. Idempotent: if the account is already a seller, returns the existing profile without error. After registration the seller can immediately list products - payouts (firestarter_payouts) can be set up later.",
     {
       business_name: z.string().describe("REQUIRED. The seller's business or brand name, e.g. \"Tania's Art Studio\" or \"QuickShip Electronics\"."),
       type: z.enum(["retailer", "wholesaler", "manufacturer", "reseller"]).optional().describe("Optional. Seller type. Defaults to 'retailer'. Only ask if the seller mentions they're a wholesaler/manufacturer."),
@@ -3470,7 +3470,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       // the point of this tool, and payouts can be set up later.
       country: z.string().optional().describe("Optional. ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'US'. Pass it if the seller has already mentioned where they are — it is required later for Stripe payouts and recording it now saves an extra round-trip. Never invent one: omit it rather than guessing from language or timezone, because Stripe locks it permanently at account creation."),
     },
-    { title: "Register as Seller", readOnlyHint: false, destructiveHint: false },
+    { title: "Register as Seller", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async ({ business_name, type, country }) => {
       try {
         const body: any = { business_name };
@@ -3514,7 +3514,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
-    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults — do NOT interrogate the seller for category, inventory, shipping, or ship-from. Create the listing immediately with what you have, then tell them what defaulted and how to refine it. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — offer these as refinements, don't demand them up front. If the seller already sent a photo in the conversation, reuse that URL in image_urls — never ask them to re-send it. The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
+    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts a photo URL already available in the conversation (e.g. one returned by firestarter_upload_image). The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
     {
       product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
       base_price: z.number().describe("REQUIRED. Sale price in USD, e.g. 49.99."),
@@ -3544,7 +3544,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       allow_duplicate: z.boolean().optional().describe("Create this listing even though the seller already has one with the same name. Only pass true if the seller confirms they genuinely want a second, separate listing."),
       ...listingDetailFields,
     },
-    { title: "Create Listing", readOnlyHint: false, destructiveHint: false },
+    { title: "Create Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, source_url, shipping, ship_from, shipping_policy, fulfillment_mode, allow_imageless, allow_duplicate, ...details }) => {
       try {
         const body: any = { product_name, base_price };
@@ -3656,7 +3656,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         ...listingDetailFields,
       })).min(1).max(100).describe("The products to create, up to 100 per call."),
     },
-    { title: "Create Listings in Bulk", readOnlyHint: false, destructiveHint: false },
+    { title: "Create Listings in Bulk", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ products }) => {
       try {
         const body = {
@@ -3689,13 +3689,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // the draft is reviewed in chat, then activated via firestarter_update_listing.
   server.tool(
     "firestarter_import",
-    "Import a seller's EXISTING listing from another marketplace (Craigslist, Gumtree, their own site) into Firestarter. Give it the listing URL, or pasted listing text plus photo URLs, and it creates a DRAFT listing for the seller to review - not live, not buyable, no share link yet. Amazon, Walmart, eBay, Etsy, Facebook Marketplace, OfferUp, Mercari and Shopee usually block server fetches: a fetch is still attempted, but send BOTH source_url (for provenance) AND raw_text + photo_urls together up front for these platforms rather than waiting for a failure, since the fetch is unlikely to succeed and a second round trip just wastes a turn. Other sites that fail return PLATFORM_BLOCKED or EXTRACTION_EMPTY - when that happens, ask the seller to paste the listing text and photos and retry with raw_text. Activation (firestarter_update_listing, status 'active') requires a positive price (firestarter_reprice if the import found none) and at least one photo.",
+    "Import a seller's EXISTING listing from another marketplace (Craigslist, Gumtree, their own site) into Firestarter. Give it the listing URL, or pasted listing text plus photo URLs, and it creates a DRAFT listing for the seller to review - not live, not buyable, no share link yet. Amazon, Walmart, eBay, Etsy, Facebook Marketplace, OfferUp, Mercari and Shopee usually block server fetches: a fetch is still attempted, but for these platforms a call carrying BOTH source_url (for provenance) AND raw_text + photo_urls succeeds in one round trip where the fetch alone rarely does. Other sites that fail return PLATFORM_BLOCKED or EXTRACTION_EMPTY - a retry with the seller's pasted listing text in raw_text (plus photo_urls) recovers the import. Activation (firestarter_update_listing, status 'active') requires a positive price (firestarter_reprice if the import found none) and at least one photo.",
     {
       source_url: z.string().optional().describe("URL of the seller's existing listing (e.g. a Craigslist post). For known bot-blocking platforms (Amazon, eBay, Etsy, Facebook, OfferUp, Mercari, Walmart, Shopee), still include this for provenance, but pair it with raw_text up front."),
       raw_text: z.string().optional().describe("Pasted listing text (title, price, description - at least 10 characters). Send this alongside source_url up front for known bot-blocking platforms (Amazon, eBay, etc.) - a fetch will still be tried but is unlikely to succeed. Required whenever source_url is omitted or a fetch fails; also fills gaps URL extraction missed."),
       photo_urls: z.array(z.string()).optional().describe("Photo URLs for the listing, e.g. image links the seller pasted in chat. Seller photos lead the images array."),
     },
-    { title: "Import Catalog", readOnlyHint: false, destructiveHint: false },
+    { title: "Import Catalog", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ source_url, raw_text, photo_urls }) => {
       try {
         const body: any = {};
@@ -3752,7 +3752,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // mint a claim link, but THE BUYER delivers it to the seller themselves.
   server.tool(
     "firestarter_request_escrow",
-    "BUYER-side tool: the user found a listing on another site (Craigslist, Facebook Marketplace, Gumtree, ...) and wants to pay through Firestarter escrow instead of cash/wire. Creates an escrow invite with a claim link for the SELLER, plus a ready-to-send message. The buyer must send that message to the seller themselves through the platform where they found the listing - Firestarter never contacts external sellers, and neither should you (never automate messages to Craigslist or marketplace posters). Needs the listing URL and the buyer's email (ask for it - that is where the goes-live notification lands). Facebook Marketplace / eBay / Etsy / OfferUp / Mercari usually block the fetch - a fetch is still attempted, but also ask the buyer for the item title and price and pass them along so the invite has real data even if it fails.",
+    "BUYER-side tool: the user found a listing on another site (Craigslist, Facebook Marketplace, Gumtree, ...) and wants to pay through Firestarter escrow instead of cash/wire. Creates an escrow invite with a claim link for the SELLER, plus a ready-to-send message. Firestarter never contacts external sellers: the invite reaches the seller only when the buyer sends that message themselves through the platform where they found the listing. Needs the listing URL and the buyer's email (that is where the goes-live notification lands). Facebook Marketplace / eBay / Etsy / OfferUp / Mercari usually block the fetch - a fetch is still attempted, and a call that also carries the item title and price yields an invite with real data even when the fetch fails.",
     {
       source_url: z.string().describe("URL of the external listing the buyer wants to purchase"),
       buyer_email: z.string().describe("Buyer's email address - notified when the seller claims and the listing goes live"),
@@ -3760,7 +3760,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       title: z.string().optional().describe("Item title, buyer-supplied. Ask for this up front for platforms that usually block fetches (Facebook Marketplace etc.) - the fetch is tried but is unlikely to succeed."),
       price: z.number().optional().describe("Asking price in the listing's currency, buyer-supplied (for platforms that usually block fetches)"),
     },
-    { title: "Request Escrow", readOnlyHint: false, destructiveHint: false },
+    { title: "Request Escrow", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ source_url, buyer_email, buyer_name, title, price }) => {
       try {
         const body: any = { source_url, buyer_email };
@@ -3807,7 +3807,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // human always confirms the price first.
   server.tool(
     "firestarter_assist_quote",
-    "Get pickup+delivery quotes for a PHYSICAL item, including loading/unloading help (a courier crew) for bulky or heavy things - weight racks, sofas, appliances. Use when a buyer or seller asks how to move an item, or proactively when an item is clearly bulky. Pure price check: books nothing, charges nothing. Include lat/lng for both stops when the user shared a location pin - some couriers (Lalamove in Thailand) cannot quote without coordinates. Returns quotes cheapest-first with a quote_ref; to actually book one, confirm the price with the human FIRST, then call firestarter_assist_book.",
+    "Get pickup+delivery quotes for a PHYSICAL item, including loading/unloading help (a courier crew) for bulky or heavy things - weight racks, sofas, appliances. Use when a buyer or seller asks how to move an item, or proactively when an item is clearly bulky. Pure price check: books nothing, charges nothing. Include lat/lng for both stops when the user shared a location pin - some couriers (Lalamove in Thailand) cannot quote without coordinates. Returns quotes cheapest-first, each with a quote_ref that firestarter_assist_book takes to book it; booking is a real dispatch with a real charge and requires the human's prior confirmation of the exact price.",
     {
       pickup_address: z.string().describe("Pickup street address"),
       dropoff_address: z.string().describe("Dropoff street address"),
@@ -3821,7 +3821,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       needs_disassembly: z.boolean().optional(),
       declared_value_cents: z.number().optional().describe("Item value in cents, for courier insurance on high-value items"),
     },
-    { title: "Assist Quote", readOnlyHint: false, destructiveHint: false },
+    { title: "Assist Quote", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async (a) => {
       try {
         const r = await apiRequest("POST", "/v1/assist/quote", {
@@ -3863,7 +3863,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_assist_book
   server.tool(
     "firestarter_assist_book",
-    "Book a courier from a firestarter_assist_quote result. ONLY call after the human has explicitly confirmed the exact price - this dispatches a real crew and the fee is charged to the buyer's order. Link the purchase execution when there is one: the courier's proof-of-delivery photo then starts the escrow inspection window automatically.",
+    "Book a courier from a firestarter_assist_quote result. Booking dispatches a real crew and the fee is charged to the buyer's order; it requires the human's prior explicit confirmation of the exact quoted price. When the booking is linked to a purchase execution, the courier's proof-of-delivery photo starts the escrow inspection window automatically.",
     {
       provider: z.string().describe("Provider name from the chosen quote (e.g. lalamove, nash)"),
       quote_ref: z.string().describe("quote_ref from firestarter_assist_quote"),
@@ -3881,7 +3881,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // The description tells the model to confirm the price with a human first;
     // annotating it non-destructive told the host it need not prompt, leaving
     // that guarantee resting entirely on the model obeying prose.
-    { title: "Assist Book", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    { title: "Assist Book", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     async (a) => {
       try {
         const r = await apiRequest("POST", "/v1/assist/book", {
@@ -3911,7 +3911,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Do NOT assume a seller's country is ineligible for Stripe — pass their real country and let Stripe answer; suggest PayPal when Stripe declines it, or when the seller prefers it.",
+    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list — and PayPal covers sellers whose country Stripe declines, or who prefer it.",
     {
       // Wise/Payoneer are implemented but not selectable — neither connect flow
       // yields a destination its adapter can spend. Narrowing the enum stops an
@@ -3930,7 +3930,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // per-tool, not per-invocation, so the classification has to cover the
     // worst it can do. The cost is a host confirmation on the read path too;
     // that is the right trade against an unprompted refund/payout change.
-    { title: "View Payouts", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    { title: "View Payouts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     async ({ provider, country, paypal_email, wise_recipient_id, payoneer_email }) => {
       try {
         // If no provider specified, check current status
@@ -4020,11 +4020,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_connect_shopify
   server.tool(
     "firestarter_connect_shopify",
-    "Connect a seller's Shopify store to Firestarter — step 1 of the Shopify flow: connect_shopify → (catalog syncs automatically) → firestarter_listings to see imported products → firestarter_sync_shopify to refresh after store edits → orders arrive via firestarter_seller_orders → firestarter_ship_order. Call with NO arguments first: if a store is already connected it returns the connection status, store name, and last sync time (and you're done); if not, it tells you to ask for the store handle. Once you have the handle, call again with shop_handle to mint a one-click install link — the seller clicks it, approves on Shopify, and their whole catalog syncs into Firestarter automatically (no tokens to paste). Use this whenever a seller mentions Shopify, wants to connect/link their store, or asks why their products aren't showing up. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain). To force a fresh catalog pull on an already-connected store, use firestarter_sync_shopify instead.",
+    "Connect a seller's Shopify store to Firestarter — step 1 of the Shopify flow: connect_shopify → (catalog syncs automatically) → firestarter_listings to see imported products → firestarter_sync_shopify to refresh after store edits → orders arrive via firestarter_seller_orders → firestarter_ship_order. Called with NO arguments: if a store is already connected it returns the connection status, store name, and last sync time; if not, the response reports that the store handle is the missing input. Called with shop_handle: mints a one-click install link — the seller clicks it, approves on Shopify, and their whole catalog syncs into Firestarter automatically (no tokens to paste). Use this whenever a seller mentions Shopify, wants to connect/link their store, or asks why their products aren't showing up. The store handle is the part before .myshopify.com in their Shopify admin URL (Settings > Domains > the permanent xxxxx.myshopify.com, NOT their custom domain). To force a fresh catalog pull on an already-connected store, use firestarter_sync_shopify instead.",
     {
       shop_handle: z.string().optional().describe("Optional. The seller's Shopify store handle (e.g. 'matrix-store' from matrix-store.myshopify.com). Omit on the first call to check existing connection status — only needed when no store is connected yet. Accepts the bare handle or the full myshopify.com domain (it's normalized). If the seller doesn't know it, tell them: Shopify admin > Settings > Domains > the permanent .myshopify.com address."),
     },
-    { title: "Connect Shopify", readOnlyHint: false, destructiveHint: false },
+    { title: "Connect Shopify", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ shop_handle }) => {
       try {
         // Check existing connections first
@@ -4108,12 +4108,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_connect_tiktok
   server.tool(
     "firestarter_connect_tiktok",
-    "Connect a seller's TikTok Shop to Firestarter so their catalog syncs and orders flow back. If a TikTok Shop is already connected, returns its status. TikTok Shop currently connects by ACCESS TOKEN (not one-click OAuth yet): the seller authorizes Firestarter in TikTok Shop Partner Center and provides their shop access token + shop id/region. Call with no arguments to check status or get setup instructions; call with access_token AND shop_domain to create the connection. Use this whenever a seller mentions TikTok Shop or wants to sync their TikTok products. NEVER display the access token back to the seller or in chat.",
+    "Connect a seller's TikTok Shop to Firestarter so their catalog syncs and orders flow back. If a TikTok Shop is already connected, returns its status. TikTok Shop currently connects by ACCESS TOKEN (not one-click OAuth yet): the seller authorizes Firestarter in TikTok Shop Partner Center and provides their shop access token + shop id/region. Call with no arguments to check status or get setup instructions; call with access_token AND shop_domain to create the connection. Use this whenever a seller mentions TikTok Shop or wants to sync their TikTok products. The access token is a secret credential: it is stored encrypted server-side and never echoed in any response.",
     {
       access_token: z.string().optional().describe("The seller's TikTok Shop access token (from TikTok Shop Partner Center authorization). Omit to check status or get instructions. This is a secret — never echo it back."),
       shop_domain: z.string().optional().describe("The seller's TikTok Shop identifier (shop id, shop cipher, or region/store name). Required together with access_token to create the connection."),
     },
-    { title: "Connect TikTok Shop", readOnlyHint: false, destructiveHint: false },
+    { title: "Connect TikTok Shop", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ access_token, shop_domain }) => {
       try {
         // Check existing connection first.
@@ -4227,7 +4227,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       consumer_key: z.string().optional().describe("WooCommerce only — from WooCommerce > Settings > Advanced > REST API."),
       consumer_secret: z.string().optional().describe("WooCommerce only — paired with consumer_key."),
     },
-    { title: "Connect a Store", readOnlyHint: false, destructiveHint: false },
+    { title: "Connect a Store", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ platform, access_token, shop_domain, consumer_key, consumer_secret }) => {
       if ((platform as string) === "shopify" || (platform as string) === "tiktok_shop") {
         return { content: [{ type: "text" as const, text: `Use firestarter_connect_shopify or firestarter_connect_tiktok for ${platform} — this tool only covers bigcommerce/shopee/lazada/wix/woocommerce.` }] };
@@ -4298,11 +4298,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // so store edits made after the initial connect show up on Firestarter.
   server.tool(
     "firestarter_sync_shopify",
-    "Re-sync a connected store's catalog into Firestarter — pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter. Use this AFTER firestarter_connect_shopify, whenever the seller says they added/edited/removed products, prices look stale, a previous sync errored, or items aren't appearing. The store must already be connected (run firestarter_connect_shopify first if not). Syncing runs in the background and returns immediately — tell the seller it may take a moment, then confirm results with firestarter_listings. Read-mostly: it imports/updates Firestarter listings from the store but never changes the seller's Shopify store. By default it syncs the seller's connected Shopify store; pass connection_id to target a specific connection when several platforms are linked.",
+    "Re-sync a connected store's catalog into Firestarter — pulls the latest products, prices, and inventory from Shopify (or another connected platform) so changes the seller made in their store show up on Firestarter. Use whenever the seller says they added/edited/removed products, prices look stale, a previous sync errored, or items aren't appearing. Requires an already-connected store (firestarter_connect_shopify creates the connection). Syncing runs in the background and returns immediately; the refreshed products appear in firestarter_listings once the sync completes, which can take a moment. Read-mostly: it imports/updates Firestarter listings from the store but never changes the seller's Shopify store. By default it syncs the seller's connected Shopify store; pass connection_id to target a specific connection when several platforms are linked.",
     {
       connection_id: z.string().optional().describe("Optional. The platform connection id (conn_...) to re-sync. Omit to sync the seller's Shopify store automatically — only needed to disambiguate when the seller has connected more than one platform."),
     },
-    { title: "Sync Shopify Catalog", readOnlyHint: false, destructiveHint: false },
+    { title: "Sync Shopify Catalog", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ connection_id }) => {
       try {
         const conns = await apiRequest("GET", "/v1/connections");
@@ -4493,9 +4493,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     server,
     "firestarter_catalog_search",
     {
-      description: "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means it cannot be checked out right now — the seller is not accepting new orders, or the store has not been claimed by its merchant (share the link instead). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — narrow the query or raise `limit`. Read-only: never charges or changes anything.",
+      description: "Search the Firestarter NETWORK catalog — products listed for sale by ALL sellers — without starting a purchase. This is the BUYER-facing browse tool: use it to see what's available before buying, compare prices, or check whether the network carries an item. Different from firestarter_listings, which only shows YOUR OWN seller listings. Each result includes a listing id (lst_...) you can pass to firestarter_execute (as listing_id) to buy it, the share link, and a `buyable` flag — buyable means it can be purchased now; browse-only means it cannot be checked out right now — the seller is not accepting new orders, or the store has not been claimed by its merchant (the share link still shows the item). Results lead with buyable, cheapest first. Pass `country` to filter for items that ship to the buyer's country. test/live follows the API key's environment. Returns up to `limit` matches (default 20, max 50); when more exist the result notes it — a narrower query or higher `limit` surfaces the rest. Read-only: never charges or changes anything.",
       inputSchema: {
-        query: z.string().optional().describe("Free-text product search of product name, description, and category — use real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Do NOT put prices in the query ('under $50' belongs in max_price, not here) and omit filler words like 'cheap' or 'best'; price phrases that do slip in are auto-extracted into the price filters."),
+        query: z.string().optional().describe("Free-text product search of product name, description, and category — matches best on real product nouns, e.g. 'leather conditioner', 'wireless earbuds'. Price constraints belong in max_price rather than the query ('under $50' is a filter, not a search term), and filler words like 'cheap' or 'best' add no signal; price phrases that do slip into the query are auto-extracted into the price filters."),
         category: z.string().optional().describe("Filter by category, e.g. 'Rings', 'Accessories', 'Stickers'."),
         country: z.string().optional().describe("ISO 3166-1 alpha-2 country code (e.g. 'TH', 'US', 'GB'). Filters for listings that ship to this country. Pass the buyer's country to see locally-deliverable options."),
         min_price: z.number().optional().describe("Minimum price in the listing currency (inclusive)."),
@@ -4656,7 +4656,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         listing_id: z.string().optional().describe("Specific listing ID (lst_...) for full detail. Omit to list every listing you have, drafts included."),
       },
       outputSchema: sellerListingsOutputShape,
-      annotations: { title: "List My Listings", readOnlyHint: true, destructiveHint: false },
+      annotations: { title: "List My Listings", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       // MCP Apps: render the seller's own products as the same inline grid the
       // buyer-facing tools use. Additive — hosts without app support fall back
       // to the text + image-block result below.
@@ -4804,7 +4804,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().optional().describe("Specific listing ID to check demand for"),
       category: z.string().optional().describe("Check demand for a category (e.g. 'electronics/audio')"),
     },
-    { title: "View Demand Signals", readOnlyHint: true, destructiveHint: false },
+    { title: "View Demand Signals", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ listing_id: rawListingId, category }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
@@ -4868,7 +4868,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_create_voucher
   server.tool(
     "firestarter_create_voucher",
-    "Create a voucher (also called a coupon, promo code, or discount code) that buyers can apply to your listings. Requires a SELLER account with at least one listing — a community-market owner who only recommends other sellers' products has nothing of their own to discount and should reward members with tiered access (firestarter_set_market_tiers) instead. Supports percentage off, a fixed amount off, or free shipping, with an optional start/end date, usage cap, per-buyer limit, minimum order value, and scoping to a single listing. YOU FUND THE DISCOUNT: it comes out of your proceeds, and the platform fee is charged on the discounted total. Dates accept natural language — 'next Friday', 'in 2 weeks' — as well as ISO dates. A discount above 50% requires confirm_deep_discount, so confirm the number with the seller before re-sending. If the voucher would leave the seller's cheapest orders below the payable minimum the call is rejected with an explanation rather than creating something whose orders would fail at payment.",
+    "Create a voucher (also called a coupon, promo code, or discount code) that buyers can apply to your listings. Requires a SELLER account with at least one listing — a community-market owner who only recommends other sellers' products has nothing of their own to discount; tiered access (firestarter_set_market_tiers) is the member-reward mechanism for that case. Supports percentage off, a fixed amount off, or free shipping, with an optional start/end date, usage cap, per-buyer limit, minimum order value, and scoping to a single listing. YOU FUND THE DISCOUNT: it comes out of your proceeds, and the platform fee is charged on the discounted total. Dates accept natural language — 'next Friday', 'in 2 weeks' — as well as ISO dates. A discount above 50% requires confirm_deep_discount — a flag attesting that the seller has confirmed that unusually deep number. If the voucher would leave the seller's cheapest orders below the payable minimum the call is rejected with an explanation rather than creating something whose orders would fail at payment.",
     {
       code: z.string().describe("The code buyers type, e.g. 'SUMMER20'. 2-64 characters: letters, numbers, dashes or underscores. Case-insensitive; stored uppercase."),
       discount_percent: z.number().int().min(1).max(100).optional().describe("Percent off, 1-100. Use this OR discount_amount_cents, not both."),
@@ -4884,7 +4884,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       confirm_deep_discount: z.boolean().optional().describe("Required to create a discount above 50%. Only pass it after the seller has confirmed that exact number."),
     },
     // The seller funds this discount out of their own proceeds, at up to 100%.
-    { title: "Create Voucher", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    { title: "Create Voucher", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     async ({ code, discount_percent, discount_amount_cents, free_shipping, ...rest }) => {
       try {
         const body: any = { code, ...rest };
@@ -4924,7 +4924,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_vouchers",
     "List your vouchers (coupons / promo codes / discount codes) with their status and what each one has cost you so far. Status is one of active, scheduled (start date not reached), expired, exhausted (hit its usage cap), or paused. Use this to answer 'what discounts am I running?' or 'how is SUMMER20 doing?'.",
     {},
-    { title: "Vouchers", readOnlyHint: true, destructiveHint: false },
+    { title: "Vouchers", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async () => {
       try {
         const { vouchers } = await apiRequest("GET", "/v1/sellers/vouchers");
@@ -4952,7 +4952,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_update_voucher
   server.tool(
     "firestarter_update_voucher",
-    "Pause, resume, extend, or adjust the limits on an existing voucher. Pausing (active=false) stops it being redeemed without deleting it, so its history is kept. The code and the discount VALUE cannot be changed — buyers may already hold the code, and repricing an offer someone was given is a different voucher, so pause this one and create another instead.",
+    "Pause, resume, extend, or adjust the limits on an existing voucher. Pausing (active=false) stops it being redeemed without deleting it, so its history is kept. The code and the discount VALUE cannot be changed — buyers may already hold the code, and repricing an offer someone was given is a different voucher — the supported path is pausing this one and creating another.",
     {
       voucher_id: z.string().describe("The voucher id (promo_...) from firestarter_vouchers."),
       active: z.boolean().optional().describe("false pauses it, true resumes it."),
@@ -4962,7 +4962,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       per_buyer_limit: z.number().int().min(1).optional().describe("New per-buyer cap."),
       min_order_cents: z.number().int().min(0).optional().describe("New minimum order subtotal in cents."),
     },
-    { title: "Update Voucher", readOnlyHint: false, destructiveHint: false },
+    { title: "Update Voucher", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async ({ voucher_id, ...patch }) => {
       try {
         if (Object.values(patch).every((v) => v === undefined)) {
@@ -4984,7 +4984,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_reprice
   server.tool(
     "firestarter_reprice",
-    "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules. Shipping is always estimated live from a delivery service provider and can no longer be set per-listing. Repricing re-fires the possession-verification gate whenever the listing would END UP at or above $500, or is in a luxury category at ANY price - so it can trip on a price CUT too (e.g. a watch dropped from $40 to $30), and it applies to paused and out-of-stock listings, not just live ones. When it trips the new price is saved but the listing is moved back to draft and stops being buyable until the seller submits a photo via firestarter_verify. Warn the seller BEFORE calling if the listing looks luxury or lands near $500. The tool output says so when it happens - relay it, never report a bare success.",
+    "Adjust pricing or rules for an existing listing. Update base price, floor/ceiling limits, dynamic pricing settings, or pricing rules. Shipping is always estimated live from a delivery service provider and can no longer be set per-listing. Repricing re-fires the possession-verification gate whenever the listing would END UP at or above $500, or is in a luxury category at ANY price - so it can trip on a price CUT too (e.g. a watch dropped from $40 to $30), and it applies to paused and out-of-stock listings, not just live ones. When it trips, the new price is saved but the listing is moved back to draft and stops being buyable until the seller submits a photo via firestarter_verify; the tool output states this explicitly whenever it happens, so such a response is a conditional success, not a plain one.",
     {
       listing_id: z.string().describe("The listing ID to reprice"),
       base_price: z.number().optional().describe("New base price in USD"),
@@ -4997,7 +4997,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       // (the possession re-gate demotes it to draft), which is exactly what this
       // flag is for — a client that auto-approves non-destructive tools must not
       // run this unattended.
-      { title: "Change Listing Price", readOnlyHint: false, destructiveHint: true },
+      { title: "Change Listing Price", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ listing_id: rawListingId, base_price, floor_price, ceiling_price, dynamic_pricing, shipping }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
@@ -5050,7 +5050,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_update_listing
   server.tool(
     "firestarter_update_listing",
-    "Update a listing's product details — name, description, category, inventory, status, brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, or variants. Use this to rename a product, change its description, update stock levels, pause/reactivate a listing, or fill in/correct any of those detail fields. Also activates imported drafts (status 'active') - drafts need a positive price and at least one photo. High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code to relay, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
+    "Update a listing's product details — name, description, category, inventory, status, brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, or variants. Use this to rename a product, change its description, update stock levels, pause/reactivate a listing, or fill in/correct any of those detail fields. Also activates imported drafts (status 'active') - drafts need a positive price and at least one photo. High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code for the seller, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
     {
       listing_id: z.string().describe("The listing ID to update"),
       product_name: z.string().optional().describe("New product name/title"),
@@ -5063,7 +5063,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       ...listingDetailFields,
     },
-    { title: "Update Listing", readOnlyHint: false, destructiveHint: false },
+    { title: "Update Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, fulfillment_mode, allow_imageless, ...details }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
@@ -5131,7 +5131,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       countries: z.array(z.string()).optional().describe("mode 'list' only: ISO alpha-2 destination codes to serve, e.g. ['CA','GB']. The ship-from country is always included automatically."),
       exclude: z.array(z.string()).optional().describe("mode 'worldwide' only: ISO alpha-2 codes to carve out, e.g. ['BR']."),
     },
-    { title: "Set Shipping Policy", readOnlyHint: false, destructiveHint: false },
+    { title: "Set Shipping Policy", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ listing_id: rawListingId, mode, countries, exclude }) => {
       const listing_id = cleanListingId(rawListingId);
       if (mode === "list" && !(countries && countries.length > 0)) {
@@ -5167,9 +5167,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_ship_from_locations
   server.tool(
     "firestarter_ship_from_locations",
-    "List the seller's ship-from (fulfillment) locations. The PRIMARY location is the origin every shipping quote is rated from — if buyers see wrong shipping prices or 'can't ship there', check this first. Use firestarter_save_ship_from to add/correct one and firestarter_delete_ship_from to remove one. Seller accounts only.",
+    "List the seller's ship-from (fulfillment) locations. The PRIMARY location is the origin every shipping quote is rated from — wrong shipping prices or 'can't ship there' reports usually trace back to it. Use firestarter_save_ship_from to add/correct one and firestarter_delete_ship_from to remove one. Seller accounts only.",
     {},
-    { title: "Ship From Locations", readOnlyHint: true, destructiveHint: false },
+    { title: "Ship From Locations", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async () => {
       try {
         const data = await apiRequest("GET", "/v1/sellers/locations");
@@ -5201,7 +5201,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       label: z.string().optional().describe("Label, e.g. 'Bangkok warehouse'"),
       is_primary: z.boolean().optional().describe("Make this the primary (rate-quote origin)."),
     },
-    { title: "Save Ship From", readOnlyHint: false, destructiveHint: false },
+    { title: "Save Ship From", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async ({ location_id, is_primary, ...addr }) => {
       const hasAddress = Object.values(addr).some((v) => typeof v === "string" && v.trim());
       try {
@@ -5234,11 +5234,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_delete_ship_from
   server.tool(
     "firestarter_delete_ship_from",
-    "Delete a seller ship-from (fulfillment) location by id (floc_..., from firestarter_ship_from_locations). If you delete the primary, add or promote another with firestarter_save_ship_from — otherwise quotes fall back to the platform origin. Seller accounts only.",
+    "Delete a seller ship-from (fulfillment) location by id (floc_..., from firestarter_ship_from_locations). Deleting the primary leaves quotes rated from the platform origin until another location is added or promoted via firestarter_save_ship_from. Seller accounts only.",
     {
       location_id: z.string().describe("The location id (floc_...) to delete"),
     },
-    { title: "Delete Ship From", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    { title: "Delete Ship From", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     async ({ location_id }) => {
       try {
         await apiRequest("DELETE", `/v1/sellers/locations/${location_id}`);
@@ -5261,7 +5261,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       listing_id: z.string().describe("The listing ID (lst_...) that needs possession verification"),
       photo_url: z.string().describe("Public https URL of the seller's photo showing the item next to the handwritten verification code"),
     },
-    { title: "Verify Listing", readOnlyHint: false, destructiveHint: false },
+    { title: "Verify Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ listing_id, photo_url }) => {
       try {
         const r = await apiRequest("POST", `/v1/listings/${listing_id}/verification`, { photo_url }, VERIFY_TIMEOUT_MS);
@@ -5311,11 +5311,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_delist
   server.tool(
     "firestarter_delist",
-    "Remove one of your listings from the network (soft delete). Buyers' agents can no longer find or buy it, and its share link goes dark. Always confirm with the user before delisting — this takes the product off the market immediately.",
+    "Remove one of your listings from the network (soft delete). Takes the product off the market immediately: buyers' agents can no longer find or buy it, and its share link goes dark.",
     {
       listing_id: z.string().describe("The listing ID (lst_...) to delist"),
     },
-    { title: "Remove Listing", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    { title: "Remove Listing", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     async ({ listing_id: rawListingId }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
@@ -5345,7 +5345,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_seller_orders",
     "View the seller's incoming orders — product, quantity, amount, net payout, order status, payout status, and carrier tracking when shipped. This is the start of the fulfillment flow: firestarter_seller_orders (see what sold) → firestarter_confirm_order (accept a pending order) → firestarter_ship_order (add tracking; the buyer is notified automatically). Use whenever a seller asks about their orders, sales, what sold, or recent activity. Covers all orders including those from a connected Shopify store. Each order line carries the order_id you pass to confirm/ship. Read-only: never changes anything.",
     {},
-    { title: "View Incoming Orders", readOnlyHint: true, destructiveHint: false },
+    { title: "View Incoming Orders", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async () => {
       try {
         const data = await apiRequest("GET", "/v1/sellers/orders");
@@ -5399,11 +5399,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_confirm_order
   server.tool(
     "firestarter_confirm_order",
-    "Accept a pending incoming order — step 2 of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). Use when a seller wants to accept/confirm an order a buyer placed. Confirming notifies the buyer that the order is accepted and is the gate before shipping. Pass the order_id exactly as shown by firestarter_seller_orders (the order_id field, NOT the exec_... execution id). Only orders still in 'pending' can be confirmed — an order that's already confirmed or shipped doesn't need this; go straight to firestarter_ship_order.",
+    "Accept a pending incoming order — step 2 of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). Use when a seller wants to accept/confirm an order a buyer placed. Confirming notifies the buyer that the order is accepted and is the gate before shipping. Pass the order_id exactly as shown by firestarter_seller_orders (the order_id field, NOT the exec_... execution id). Only orders still in 'pending' can be confirmed — an order that's already confirmed or shipped doesn't need this — firestarter_ship_order handles its next step.",
     {
       order_id: z.string().describe("REQUIRED. The order_id from firestarter_seller_orders (the seller_earnings id, not the exec_... execution id)."),
     },
-    { title: "Confirm Order as Seller", readOnlyHint: false, destructiveHint: false },
+    { title: "Confirm Order as Seller", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async ({ order_id }) => {
       try {
         await apiRequest("PUT", `/v1/sellers/orders/${order_id}/confirm`);
@@ -5430,7 +5430,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       tracking_number: z.string().describe("REQUIRED. The carrier's tracking number for the shipment."),
       carrier: z.string().optional().describe("Optional. Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL'). Defaults to USPS when omitted — don't ask the seller unless they used a non-USPS carrier."),
     },
-    { title: "Ship an Order", readOnlyHint: false, destructiveHint: false },
+    { title: "Ship an Order", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async ({ order_id, tracking_number, carrier }) => {
       try {
         const body: any = { tracking_number };
@@ -5455,7 +5455,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_seller_analytics",
     "View seller revenue and order analytics - total revenue, order count, average order value, and 30-day daily breakdown. Use when a seller asks about their performance, earnings, or sales trends.",
     {},
-    { title: "Seller Analytics", readOnlyHint: true, destructiveHint: false },
+    { title: "Seller Analytics", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async () => {
       try {
         const data = await apiRequest("GET", "/v1/sellers/analytics");
@@ -5474,7 +5474,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // an explicit action), so the tool must translate the seller's intent here.
   server.tool(
     "firestarter_seller_disputes",
-    "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). Pass dispute_id ALONE to read the full thread - what the buyer actually claimed, and any photos they attached - before deciding anything. To act, add an action: 'message' (reply with a note and/or evidence photos, e.g. the packing shot taken before dispatch - use image_urls), 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Prefer reading the thread and replying with evidence before refunding or contesting. Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
+    "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). Pass dispute_id ALONE to read the full thread - what the buyer actually claimed, and any photos they attached. To act, add an action: 'message' (reply with a note and/or evidence photos, e.g. the packing shot taken before dispatch - use image_urls), 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
     {
       dispute_id: z.string().optional().describe("Dispute ID to act on (disp_...). Omit to list all disputes. Pass it with NO action to read the full thread first."),
       action: z.enum(["message", "refund", "contest", "split"]).optional().describe("What to do with the dispute: 'message' = reply to the buyer with a note and/or evidence photos (no money moves); 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."),
@@ -5491,7 +5491,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // per-tool, not per-invocation, so the classification has to cover the
     // worst it can do. The cost is a host confirmation on the read path too;
     // that is the right trade against an unprompted refund/payout change.
-    { title: "Seller Disputes", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    { title: "Seller Disputes", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     async ({ dispute_id, action, message, image_urls, image_base64, buyer_pct, seller_pct, reasoning }) => {
       try {
         if (dispute_id) {
@@ -5632,7 +5632,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       // per-tool, not per-invocation, so the classification has to cover the
       // worst it can do. The cost is a host confirmation on the read path too;
       // that is the right trade against an unprompted refund/payout change.
-      { title: "Buyer Disputes", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      { title: "Buyer Disputes", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       async ({ action, execution_id, dispute_id, reason, type, message, image_urls, image_base64, offer_id, buyer_pct, seller_pct }) => {
         try {
           // ── OPEN a new dispute ─────────────────────────────────────────────
@@ -5820,7 +5820,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   {
     server.tool(
       "firestarter_create_market",
-      "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use this WHENEVER a user asks to create, set up, or start a community market, affiliate program, or 'store for my audience' (e.g. Discord/Telegram/X following) — call this tool directly; do NOT route them through seller onboarding or ask about their country. Creating a market does NOT require being a Firestarter seller, connecting Stripe, or living in a payout-supported country — it works from ANY country, including ones where seller payouts aren't yet available. (A payout method is only needed LATER to withdraw accrued earnings, and can be connected any time.) Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Optionally claim a `handle` now for a memorable community URL (firestarter.network/m/<handle>); you can also set or change it later with firestarter_set_market_handle. Then call firestarter_market_link to get a share code for the community.",
+      "Set up a community/affiliate 'market' on Firestarter so a community owner or influencer earns a share of Firestarter's platform fee on every sale their community drives. Use when a user asks to create, set up, or start a community market, affiliate program, or 'store for my audience' (e.g. Discord/Telegram/X following). Market creation is independent of seller onboarding and country: it does NOT require being a Firestarter seller, connecting Stripe, or living in a payout-supported country — it works from ANY country, including ones where seller payouts aren't yet available. (A payout method is only needed LATER to withdraw accrued earnings, and can be connected any time.) Creates an attribution PROGRAM owned by the caller. `share_bps` is the cut of the PLATFORM FEE in basis points (1000 = 10%); it is capped at the platform self-serve max and the response returns the effective value. Optionally claim a `handle` now for a memorable community URL (firestarter.network/m/<handle>); it can also be set or changed later with firestarter_set_market_handle. A share code for the community comes from firestarter_market_link.",
       {
         share_bps: z.number().int().min(0).max(10000).describe("Cut of Firestarter's platform fee in basis points (1000 = 10%). Capped at the platform self-serve max; the response returns the effective value."),
         type: z.enum(["community", "developer"]).optional().describe("Program type. Default 'community'."),
@@ -5828,7 +5828,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         tagline: z.string().max(80).optional().describe("One-line 'what this community is about', shown under the name on the join page and in firestarter_market_preview. Change it later with firestarter_update_market."),
         handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/i, "handle must be 2-31 chars: letters, digits and hyphens, starting with a letter or digit").optional().describe("Optional vanity handle for the community URL — firestarter.network/m/<handle> instead of a random share code. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase), so 'Analog' and 'analog' are the same handle. Must be unique; the API rejects handles that are reserved or shaped like a share code. If it's taken the whole create fails, so retry with a different handle (or omit it and claim one later with firestarter_set_market_handle)."),
       },
-      { title: "Create Market", readOnlyHint: false, destructiveHint: false },
+      { title: "Create Market", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       async ({ share_bps, type, display_name, tagline, handle }) => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/programs", { type: type ?? "community", override_bps: share_bps, display_name, tagline, slug: handle?.toLowerCase() });
@@ -5859,7 +5859,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         channel: z.string().optional().describe("Optional channel tag, e.g. 'discord', 'x', 'telegram'."),
         campaign: z.string().optional().describe("Optional campaign tag for tracking."),
       },
-      { title: "Market Link", readOnlyHint: false, destructiveHint: false },
+      { title: "Market Link", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       async ({ program_id, channel, campaign }) => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/links", { program_id, channel, campaign });
@@ -5879,7 +5879,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         program_id: z.string().describe("The market/program id from firestarter_create_market."),
         handle: z.string().regex(/^[a-z0-9][a-z0-9-]{1,30}$/i, "handle must be 2-31 chars: letters, digits and hyphens, starting with a letter or digit").describe("Vanity handle for the community URL — firestarter.network/m/<handle>. 2-31 chars: letters, digits and hyphens, must start with a letter or digit. Case is ignored (normalized to lowercase). Must be unique; reserved words and share-code-shaped strings are rejected."),
       },
-      { title: "Set Market Handle", readOnlyHint: false, destructiveHint: false },
+      { title: "Set Market Handle", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       async ({ program_id, handle }) => {
         try {
           const res = await apiRequest("PATCH", `/v1/attribution/programs/${encodeURIComponent(program_id)}`, { slug: handle.toLowerCase() });
@@ -5909,7 +5909,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         tagline: z.string().max(80).optional().describe("One-line description shown under the name. Empty string clears it."),
         discoverable: z.boolean().optional().describe("Whether this market appears in the public 'Discover communities' list (firestarter_discover_markets)."),
       },
-      { title: "Update Market", readOnlyHint: false, destructiveHint: false },
+      { title: "Update Market", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       async ({ program_id, display_name, tagline, discoverable }) => {
         const body: Record<string, unknown> = {};
         if (display_name !== undefined) body.display_name = display_name === "" ? null : display_name;
@@ -5939,7 +5939,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_market_earnings",
       "Show the earnings of the markets you own: override earnings pending vs paid out, and transaction counts. Use when a community owner asks how much they have earned or wants their attribution dashboard.",
       {},
-      { title: "Market Earnings", readOnlyHint: true, destructiveHint: false },
+      { title: "Market Earnings", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/attribution/earnings");
@@ -5968,7 +5968,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_my_markets",
       "List the community markets you OWN (created with firestarter_create_market): each one's program id, buyer-facing name, community URL/handle, share code, status, your fee share, and current member count. Use when an owner asks 'what markets do I have?', needs a market's program_id for another tool (firestarter_market_link, firestarter_set_market_handle, firestarter_set_market_picks), or wants an at-a-glance view. Read-only. For earnings use firestarter_market_earnings; to preview a community's public shelf use firestarter_market_preview.",
       {},
-      { title: "My Markets", readOnlyHint: true, destructiveHint: false },
+      { title: "My Markets", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/attribution/programs");
@@ -6004,7 +6004,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_set_market_tiers",
-      "Configure member tiers for a community market you own. Tiers reward members with ACCESS, never money or discounts — a higher tier sees picks you've staged early (firestarter_set_market_picks with min_tier). A member's tier is derived from their qualifying orders in your community over the last 12 months; nothing is stored per member, so there is no balance to top up and nothing expires. Every market already has working defaults (Member 0 / Regular 2 / Insider 5) — only call this to rename rungs, change how many orders each needs, add a 4th rung, or switch tiers off. Raising a threshold never demotes an existing member for 30 days.",
+      "Configure member tiers for a community market you own. Tiers reward members with ACCESS, never money or discounts — a higher tier sees picks you've staged early (firestarter_set_market_picks with min_tier). A member's tier is derived from their qualifying orders in your community over the last 12 months; nothing is stored per member, so there is no balance to top up and nothing expires. Every market already has working defaults (Member 0 / Regular 2 / Insider 5) — this tool renames rungs, changes how many orders each needs, adds a 4th rung, or switches tiers off. Raising a threshold never demotes an existing member for 30 days.",
       {
         program_id: z.string().describe("The market/program id (from firestarter_my_markets)."),
         enabled: z.boolean().optional().describe("Set false to switch tiers off entirely for this market. Default true."),
@@ -6013,7 +6013,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           min_orders: z.number().int().min(0).max(100).optional().describe("Qualifying orders needed. Ignored for the first rung, which is always 0 (everyone who joins). Must increase down the list."),
         })).min(2).max(4).optional().describe("2-4 rungs, cheapest first. Omit to keep the platform defaults."),
       },
-      { title: "Set Market Tiers", readOnlyHint: false, destructiveHint: false },
+      { title: "Set Market Tiers", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       async ({ program_id, enabled, tiers }) => {
         try {
           const tier_config = tiers
@@ -6047,7 +6047,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         expires_in_hours: z.number().positive().optional().describe("Hours until the drop expires. Default 168 (7 days)."),
       },
       // Commits the owner's wallet (or the seller's margin) to a discount pot.
-      { title: "Create Drop", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      { title: "Create Drop", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       async ({ program_id, listing_id, discount_cents, max_claims, min_tier, priority_hours, expires_in_hours }) => {
         try {
           const body: Record<string, unknown> = { listing_id, discount_cents, max_claims };
@@ -6111,7 +6111,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         program_id: z.string().describe("The market/program id you own (from firestarter_my_markets) — the drop belongs to this program."),
         drop_id: z.string().describe("The drop id to cancel (from firestarter_create_drop's response or firestarter_market_drops)."),
       },
-      { title: "Cancel Drop", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      { title: "Cancel Drop", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
       async ({ program_id, drop_id }) => {
         try {
           await apiRequest("POST", `/v1/attribution/programs/${encodeURIComponent(program_id)}/drops/${encodeURIComponent(drop_id)}/cancel`);
@@ -6134,7 +6134,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         program_id: z.string().describe("The market/program id you own (from firestarter_my_markets)."),
       },
-      { title: "Market Drops", readOnlyHint: true, destructiveHint: false },
+      { title: "Market Drops", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       async ({ program_id }) => {
         try {
           const res = await apiRequest("GET", `/v1/attribution/programs/${encodeURIComponent(program_id)}/drops`);
@@ -6179,7 +6179,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_drop_requests",
       "List the community-sponsored drop requests waiting on YOUR decision as a seller: a community owner has proposed a per-claim discount on one of your listings, and it stays invisible to buyers and unclaimable until you approve or reject it (or expires on its own). Shows the requesting community, the listing, the discount, how many members can claim it, and the deadline to decide. Use firestarter_approve_drop or firestarter_reject_drop with a request's drop id — or firestarter_trust_community_drops to stop reviewing this community's requests one by one.",
       {},
-      { title: "Drop Requests", readOnlyHint: true, destructiveHint: false },
+      { title: "Drop Requests", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/drops/requests");
@@ -6208,11 +6208,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_approve_drop",
-      "Approve a pending community drop request on one of your listings (from firestarter_drop_requests), making it go live immediately so members can start claiming it. IMPORTANT: the per-claim discount comes out of YOUR proceeds on each claimed sale — not Firestarter's platform fee — so only approve amounts that still leave you a margin you're happy with. The requesting community is notified of the approval.",
+      "Approve a pending community drop request on one of your listings (from firestarter_drop_requests), making it go live immediately so members can start claiming it. The per-claim discount comes out of YOUR proceeds on each claimed sale — not Firestarter's platform fee — so an approved discount directly reduces your margin on those sales. The requesting community is notified of the approval.",
       {
         drop_id: z.string().describe("The drop id to approve (from firestarter_drop_requests)."),
       },
-      { title: "Approve Drop", readOnlyHint: false, destructiveHint: false },
+      { title: "Approve Drop", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       async ({ drop_id }) => {
         try {
           await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/approve`);
@@ -6241,7 +6241,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         drop_id: z.string().describe("The drop id to reject (from firestarter_drop_requests)."),
         reason: z.string().optional().describe("Optional short reason shown to the requesting community owner (e.g. 'discount too deep for this item')."),
       },
-      { title: "Reject Drop", readOnlyHint: false, destructiveHint: false },
+      { title: "Reject Drop", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       async ({ drop_id, reason }) => {
         try {
           await apiRequest("POST", `/v1/drops/${encodeURIComponent(drop_id)}/reject`, { reason });
@@ -6261,7 +6261,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         program_id: z.string().describe("The community/market program id to trust — appears on each request from firestarter_drop_requests, or shared directly by the community owner."),
       },
-      { title: "Trust Community Drops", readOnlyHint: false, destructiveHint: false },
+      { title: "Trust Community Drops", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       async ({ program_id }) => {
         try {
           const res = await apiRequest("POST", `/v1/drops/programs/${encodeURIComponent(program_id)}/trust`);
@@ -6282,7 +6282,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       {
         program_id: z.string().describe("The community/market program id to stop trusting."),
       },
-      { title: "Untrust Community Drops", readOnlyHint: false, destructiveHint: false },
+      { title: "Untrust Community Drops", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       async ({ program_id }) => {
         try {
           const res = await apiRequest("POST", `/v1/drops/programs/${encodeURIComponent(program_id)}/untrust`);
@@ -6300,7 +6300,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       server,
       "firestarter_set_market_picks",
       {
-        description: "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Provide listing ids (lst_...) — find them with firestarter_catalog_search. `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
+        description: "Curate the shelf ('Recommends') for a community market you own — the products buyers see first on your join page and in the agent (firestarter_market_preview / firestarter_join_market). Picks are OTHER sellers' listings you recommend; your OWN listings already appear under what you sell and are rejected here. Up to 15 picks. Use when an owner wants to add, remove, reorder, or replace what their community recommends. Takes listing ids (lst_..., as returned by firestarter_catalog_search). `action`: 'replace' (default — the picks you pass become the exact shelf, in the order given), 'add' (append to the current shelf), or 'remove' (drop the given listing ids). Each pick may carry a short `note` ('why I picked it') that buyers see.",
         inputSchema: {
         program_id: z.string().describe("The market/program id (from firestarter_create_market or firestarter_my_markets)."),
         picks: z.array(z.object({
@@ -6311,7 +6311,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         action: z.enum(["replace", "add", "remove"]).optional().describe("replace (default): the picks become the exact shelf, in order. add: append to the current shelf. remove: drop the given listing ids."),
         },
         outputSchema: shelfOutputShape,
-        annotations: { title: "Set Market Picks", readOnlyHint: false, destructiveHint: false },
+        annotations: { title: "Set Market Picks", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
         // The owner's confirmation is a shelf, so show the shelf they just built.
         _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
       },
@@ -6410,7 +6410,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       },
       // Same reasoning as firestarter_payouts: sets the destination that market
       // earnings are cashed out to.
-      { title: "Connect Payout Account", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      { title: "Connect Payout Account", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       async ({ country }) => {
         try {
           const status = await apiRequest("GET", "/v1/attribution/connect/status");
@@ -6444,11 +6444,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_fund_wallet",
-      "Deposit money into your drop wallet via Stripe Checkout — the prepaid balance that self-funds drops you create (firestarter_create_drop). Once a drop's whole pot (max_claims x discount) is covered by your wallet balance, it goes LIVE IMMEDIATELY with no seller approval needed, because you're paying for the discount yourself rather than asking the seller to eat it. $1.00 minimum deposit. Returns a Stripe Checkout link to open in a browser; the wallet credits once payment completes (poll with firestarter_wallet_balance). Use when an owner asks to fund/top up/add money to their drop wallet.",
+      "Deposit money into your drop wallet via Stripe Checkout — the prepaid balance that self-funds drops you create (firestarter_create_drop). Once a drop's whole pot (max_claims x discount) is covered by your wallet balance, it goes LIVE IMMEDIATELY with no seller approval needed, because you're paying for the discount yourself rather than asking the seller to eat it. $1.00 minimum deposit. Returns a Stripe Checkout link to open in a browser; the wallet credits once payment completes (the credit shows up in firestarter_wallet_balance). Use when an owner asks to fund/top up/add money to their drop wallet.",
       {
         amount_cents: z.number().int().min(100).describe("Amount to deposit, in cents. Minimum 100 ($1.00)."),
       },
-      { title: "Add Funds to Wallet", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      { title: "Add Funds to Wallet", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       async ({ amount_cents }) => {
         try {
           const res = await apiRequest("POST", "/v1/drops/wallet/deposit", { amount_cents });
@@ -6476,7 +6476,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_wallet_balance",
       "Show your drop wallet's balance: the spendable balance (available to fund new drops or withdraw), funds reserved against live self-funded drops that have been claimed but not yet released to the seller, funds already spent (paid out to sellers for claims that converted into a completed purchase), and lifetime totals deposited and withdrawn. Use when an owner asks what's in their drop wallet, before firestarter_withdraw_wallet, or to check whether a firestarter_fund_wallet deposit has cleared yet. Read-only.",
       {},
-      { title: "Check Wallet Balance", readOnlyHint: true, destructiveHint: false },
+      { title: "Check Wallet Balance", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       async () => {
         try {
           const res = await apiRequest("GET", "/v1/drops/wallet");
@@ -6499,11 +6499,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_withdraw_wallet",
-      "Cash out unused drop-wallet balance to your connected Stripe payout account (set one up with firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn — funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; check firestarter_wallet_balance first if unsure. $1.00 minimum. IMPORTANT: each call is an INDEPENDENT withdrawal attempt — it is NOT a deduped replay of a prior call, so calling it twice withdraws twice. If a call times out or errors and you're unsure whether the payout went through, do NOT simply call again — first check firestarter_wallet_balance (a completed withdrawal reduces the balance), and only withdraw again for the remaining amount you actually intend to move.",
+      "Cash out unused drop-wallet balance to your connected Stripe payout account (from firestarter_connect_payouts). Only your SPENDABLE balance can be withdrawn — funds reserved against live, unreleased claims on your self-funded drops aren't withdrawable until those claims resolve; firestarter_wallet_balance shows the split. $1.00 minimum. Not idempotent: each call is an INDEPENDENT withdrawal attempt, never a deduped replay of a prior call, so two calls withdraw twice — including a retry after a timeout or error whose outcome is unknown. A completed withdrawal reduces the balance reported by firestarter_wallet_balance, which is how an uncertain outcome is distinguished from a failed one before any further withdrawal.",
       {
         amount_cents: z.number().int().min(100).describe("Amount to withdraw, in cents. Minimum 100 ($1.00)."),
       },
-      { title: "Withdraw Wallet Balance", readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      { title: "Withdraw Wallet Balance", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       async ({ amount_cents }) => {
         // A fresh key per logical withdrawal, generated once here (not inside any
         // retry loop) so a lost-response HTTP retry of THIS call reuses the same
@@ -6546,12 +6546,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       server,
       "firestarter_market_preview",
       {
-        description: "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, its curated shelf (the owner's picks of OTHER sellers' products), and what the community itself sells (its own listings) — every item with a listing_id you can buy via firestarter_execute. Use this WHENEVER a buyer pastes a market code/link or asks 'what is this community / what do they recommend / what's in this market' before committing — show both surfaces, then let them choose to join (firestarter_join_market) or just buy an item. Preview first so the buyer sees the picks before choosing to join. IMPORTANT framing: JOINING itself gives the buyer no automatic discount or cashback — their price is unchanged and the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. A community MAY separately fund drops (real discounts the buyer claims before checkout) and reward members with tiered early access — surface those when present, but never imply that joining alone grants a discount.",
+        description: "Preview a community market BEFORE joining — read-only, no join. Given a share code or vanity handle, returns what a signed-out visitor sees on firestarter.network/m/<handle>: the community name, tagline, its curated shelf (the owner's picks of OTHER sellers' products), and what the community itself sells (its own listings) — every item with a listing_id that firestarter_execute accepts for purchase. Use when a buyer pastes a market code/link or asks 'what is this community / what do they recommend / what's in this market' — the preview shows both surfaces before any commitment, and joining (firestarter_join_market) remains a separate optional step; items are buyable without joining. JOINING itself gives the buyer no automatic discount or cashback — their price is unchanged and the community earns a share of Firestarter's platform fee at no extra cost to the buyer, never from the seller's payout; the buyer's benefit is curation and supporting the community. A community MAY separately fund drops (real discounts the buyer claims before checkout) and reward members with tiered early access; both appear in the preview when present — joining alone still grants no discount.",
         inputSchema: {
           code: z.string().describe("The community's share code or vanity handle (e.g. the <code> in firestarter.network/m/<code>)."),
         },
         outputSchema: shelfOutputShape,
-        annotations: { title: "Market Preview", readOnlyHint: true, destructiveHint: false },
+        annotations: { title: "Market Preview", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
         // MCP Apps: the shelf is a product list, so render it as the same grid
         // the catalog uses — with the photos the prose render never showed.
         _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
@@ -6634,15 +6634,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       server,
       "firestarter_join_market",
       {
-        description: "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. If the buyer is already supporting a different community, confirm with them first — joining moves their attribution to the new community. Use when a user pastes a Firestarter join/market code or asks to join a community's market. Tip: to show the community's picks BEFORE joining, call firestarter_market_preview first.",
+        description: "Join a community market using its share code, so the caller's purchases (and, when enabled, their sales) are attributed to that community and it earns its share. Joining REPLACES any community the buyer already supports — their attribution moves to the new community for all future orders. Use when a user pastes a Firestarter join/market code or asks to join a community's market. The community's picks are visible before joining via firestarter_market_preview.",
         inputSchema: {
           code: z.string().describe("The market share code the community gave you."),
         },
         outputSchema: shelfOutputShape,
         // Redirects fee attribution for every future order, and silently REPLACES
-        // any community the buyer already supports. The description already says
-        // to confirm with the buyer first — the annotation now agrees.
-        annotations: { title: "Join Market", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+        // any community the buyer already supports. The description states the
+        // replacement fact; destructiveHint is what gates it on confirmation.
+        annotations: { title: "Join Market", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
         _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
       },
       async ({ code }: { code: string }) => {
@@ -6700,7 +6700,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         description: "Show which community market the buyer is currently connected to (if any): the community name, join code, program status, AND its products — what the community recommends (its curated shelf) and what it sells (its own listings), each buyable via firestarter_execute. Use when a buyer asks 'what market am I in?', 'am I connected to a community?', 'what can I buy here?', or before joining/leaving so you can confirm the current state — it doubles as a re-discovery of the community's picks. Read-only.",
         inputSchema: {},
         outputSchema: shelfOutputShape,
-        annotations: { title: "My Market", readOnlyHint: true, destructiveHint: false },
+        annotations: { title: "My Market", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
         _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
       },
       async () => {
@@ -6762,10 +6762,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
 
     server.tool(
       "firestarter_leave_market",
-      "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch to another one. Already-earned credit on past orders still clears; only future activity stops being attributed. Confirm with the buyer before calling — this is an account-level change.",
+      "Disconnect (delink) the buyer from their current community market so future orders no longer credit it. Use when a buyer asks to leave/disconnect a community, or wants to switch to another one. Already-earned credit on past orders still clears; only future activity stops being attributed. This is an account-level change.",
       {},
       // Account-level change; the description says to confirm before calling.
-      { title: "Leave Market", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      { title: "Leave Market", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       async () => {
         try {
           const res = await apiRequest("POST", "/v1/attribution/disconnect", {});
