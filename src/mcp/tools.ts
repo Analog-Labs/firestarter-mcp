@@ -605,6 +605,59 @@ function regateNoticeText(listing: unknown): string {
   );
 }
 
+/**
+ * commerce#775/#858: photos the API refused, named.
+ *
+ * Four commerce producers set `rejected_images` — listing-create.ts, the
+ * listings PATCH, and two seller-dashboard routes — and until this function
+ * existed the field appeared nowhere in this file. A create that stored 2 of 3
+ * photos printed "Photos: 2 attached" and the agent reported success; one that
+ * stored 0 of 1 printed the NEEDS_IMAGE block, which reads as "you didn't send
+ * a photo" to a seller who did.
+ *
+ * Not an error: the write succeeded and the listing may well be live. This says
+ * what did not make it and why, so the agent can offer the photo again instead
+ * of asking the seller to re-send something already in the conversation.
+ */
+function rejectedPhotosText(listing: unknown): string {
+  const rejected = (listing as any)?.rejected_images;
+  if (!Array.isArray(rejected) || rejected.length === 0) return "";
+
+  const lines = rejected
+    .map((r: any) => {
+      // The API pairs every entry with a seller-readable reason. Degrading to
+      // the bare URL is still better than silence — the point is that the
+      // seller learns a photo is missing at all.
+      const url = typeof r?.url === "string" && r.url ? r.url : "a photo";
+      const reason = typeof r?.reason === "string" && r.reason ? ` — ${r.reason}` : "";
+      return `- ${url}${reason}`;
+    })
+    .join("\n");
+
+  const n = rejected.length;
+  return (
+    `\n**${n} photo${n === 1 ? "" : "s"} could not be added:**\n${lines}\n` +
+    `\nThe rest of the listing saved normally. Offer to try ${n === 1 ? "it" : "them"} again — if the ` +
+    `seller attached the photo in this conversation, call firestarter_upload_image first and pass the ` +
+    `hosted URL, rather than asking them to re-send it.\n`
+  );
+}
+
+/**
+ * commerce#858/7: a restock the API accepted but did not republish.
+ *
+ * `PATCH /v1/listings/:id` answers 200 with `restock_blocked` when stock was
+ * written while the listing is held — behind possession verification, or on a
+ * moderation hold (#751). It used to read as a plain "Listing updated", so a
+ * seller restocking a held listing believed they were back on sale and had no
+ * way to find out why no orders came.
+ */
+function blockedRestockText(listing: unknown): string {
+  const message = (listing as any)?.restock_blocked?.message;
+  if (typeof message !== "string" || !message) return "";
+  return `\n**The stock change saved, but the listing did not go back on sale.** ${message}\n`;
+}
+
 
 /**
  * commerce#749/#786: attach evidence to a dispute and post the message.
@@ -3574,6 +3627,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `Shipping: estimated at checkout by the delivery provider, based on the buyer's destination\n`;
         if (listing.fulfillment_mode === "seller_managed") text += `Fulfillment: seller-managed — each paid order holds in awaiting_shipment until you ship it and add tracking with firestarter_ship_order\n`;
         if (Array.isArray(listing.images) && listing.images.length) text += `Photos: ${listing.images.length} attached\n`;
+        // ...and the ones that did NOT attach. "Photos: 2 attached" on a
+        // 3-photo create is true and still leaves the seller believing all
+        // three landed (commerce#858/3).
+        text += rejectedPhotosText(listing);
         // Surface activation blocks so the seller knows WHY the listing is a
         // draft and what to do about it — without this the agent just says
         // "Status: draft" and the seller is stuck.
@@ -5089,6 +5146,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.category) text += `Category: ${listing.category}\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
         if (listing.status) text += `Status: ${listing.status}\n`;
+        // An edit replaces the gallery wholesale, so a refused photo here can
+        // mean the seller ended up with FEWER photos than they started with
+        // (commerce#775). Never report that as a clean update.
+        text += rejectedPhotosText(listing);
+        // commerce#858/7: stock written on a held listing answers 200. Without
+        // this the seller thinks they are back on sale.
+        text += blockedRestockText(listing);
         // commerce#768: a category change can trip the possession gate on a
         // live listing, which succeeds AND takes the listing offline.
         text += regateNoticeText(listing);
