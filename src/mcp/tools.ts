@@ -337,7 +337,12 @@ function stars(rating: unknown, count: unknown): string | null {
  */
 function mdTable(headers: string[], rows: string[][], opts: { cap?: number; moreHint?: string } = {}): string {
   const cap = opts.cap ?? 20;
-  const esc = (v: string) => v.replace(/\|/g, "\|").replace(/\r?\n/g, " ");
+  // NB: the replacement needs a DOUBLE backslash in source — "\|" in a JS
+  // string literal is just "|", which made this a no-op: a | inside a cell
+  // (e.g. a buyer's request text "A | B") split its table row into extra
+  // columns. Cells that pass through sanitizeUntrusted were shielded by
+  // accident; raw cells (the buyer's own request text) were not.
+  const esc = (v: string) => v.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
   const line = (cells: string[]) => `| ${cells.map(esc).join(" | ")} |`;
   const out = [line(headers), `|${headers.map(() => " --- ").join("|")}|`];
   for (const r of rows.slice(0, cap)) out.push(line(r));
@@ -2155,7 +2160,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // scan status/date/amount in columns instead of parsing prose per row.
         lines.push(mdTable(
           ["Order", "Status", "Request", "Date", "Total"],
-          executions.slice(0, 10).map((e: any) => [
+          // Full list — mdTable itself caps at 10 (opts.cap) and renders the
+          // "…and N more" hint. Pre-slicing here starved it of the overflow,
+          // so the hint was unreachable dead code.
+          executions.map((e: any) => [
             `\`${e.id}\``,
             String(e.status ?? ""),
             `${e.request_text?.slice(0, 48) || ""}${(e.request_text?.length ?? 0) > 48 ? "…" : ""}`,
