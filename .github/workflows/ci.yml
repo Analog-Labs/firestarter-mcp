@@ -1,10 +1,15 @@
 name: CI
 
 on:
+  # `staging` is included deliberately. Ordinary fixes target staging and
+  # releases promote staging -> main, so main-only CI meant every fix merged
+  # unverified and the FIRST run of the suite was the promotion PR. That is how
+  # the 2.5.1 promotion failed on a smoke-test URI nobody had exercised: the
+  # breakage had been sitting on staging, green by absence.
   push:
-    branches: [main]
+    branches: [main, staging]
   pull_request:
-    branches: [main]
+    branches: [main, staging]
 
 # A newer push to the same ref supersedes an in-flight run.
 concurrency:

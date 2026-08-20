@@ -100,12 +100,14 @@ const schemas = await advertisedSchemas();
 
 let total = 0;
 let totalAdded = 0;
+let totalRemoved = 0;
 for (const rel of ["mcp.json", "src/mcp/mcp.json"]) {
   const path = join(root, rel);
   const before = readFileSync(path, "utf8");
   const json = JSON.parse(before);
   const changed: string[] = [];
   const added: string[] = [];
+  const removed: string[] = [];
 
   for (const tool of json.tools ?? []) {
     const live = runtime.get(tool.name);
@@ -153,17 +155,35 @@ for (const rel of ["mcp.json", "src/mcp/mcp.json"]) {
         props[param] = JSON.parse(JSON.stringify(schema));
         added.push(`${tool.name}.${param}`);
       }
+
+      // ...and the mirror image, found by the 2026-08-19 sandbox run: a param
+      // the manifest declares that the server does NOT accept. #788 only ever
+      // added, so a parameter that later moved (firestarter_execute's name/id/
+      // channel folding into `requested_by`; firestarter_list's address fields
+      // into `ship_from`) stayed advertised forever. A ghost is worse than an
+      // omission — the agent believes it passed the value, the server ignores
+      // it, and nothing says so.
+      for (const param of Object.keys(props)) {
+        if (advertised[param]) continue;
+        delete props[param];
+        removed.push(`${tool.name}.${param}`);
+        const req = tool.inputSchema?.required;
+        if (Array.isArray(req)) {
+          tool.inputSchema.required = req.filter((r: string) => r !== param);
+        }
+      }
     }
   }
 
-  if (changed.length || added.length) {
+  if (changed.length || added.length || removed.length) {
     writeFileSync(path, `${JSON.stringify(json, null, 2)}\n`);
     total += changed.length;
     totalAdded += added.length;
+    totalRemoved += removed.length;
   }
-  console.log(`${rel}: ${changed.length} description(s) synced, ${added.length} param(s) declared${added.length ? ` (${added.join(", ")})` : ""}`);
+  console.log(`${rel}: ${changed.length} description(s) synced, ${added.length} param(s) declared${added.length ? ` (${added.join(", ")})` : ""}, ${removed.length} ghost param(s) removed${removed.length ? ` (${removed.join(", ")})` : ""}`);
 }
 
-console.log(total || totalAdded
-  ? `synced ${total} description(s) and declared ${totalAdded} missing param(s) from runtime`
+console.log(total || totalAdded || totalRemoved
+  ? `synced ${total} description(s), declared ${totalAdded} missing param(s) and removed ${totalRemoved} ghost param(s)`
   : "already in sync with runtime");
