@@ -1849,6 +1849,79 @@ function registerToolCompat(server: McpServer, name: string, config: any, handle
 }
 
 /**
+ * Human-readable country name from an ISO 3166-1 alpha-2 code, falling back
+ * to the code itself for anything Intl can't resolve (a reserved/unassigned
+ * code, or an unrecognized country the API already normalized to ""). An
+ * agent relaying "we can't pay out to PK" to a seller reads badly next to
+ * "...to Pakistan".
+ */
+const REGION_DISPLAY_NAMES = new Intl.DisplayNames(["en"], { type: "region" });
+function countryLabel(code: string): string {
+  if (!code) return code;
+  try {
+    return REGION_DISPLAY_NAMES.of(code.toUpperCase()) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+/** "A", "A and B", "A, B, and C" — for short rail-name lists. */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+/**
+ * "<RAIL(S)> decide(s) eligibility at connect time — worth trying." The one
+ * sentence for naming a still-"unknown" rail, shared by unpaidCountryHeadline
+ * below (the no-rail-confirmed answer) and firestarter_payout_eligibility's
+ * supported-rail branch (naming an ALSO-unknown rail alongside one already
+ * confirmed) — hand-copying it into both, even with honest wording each
+ * time, is exactly the pattern that put this branch's original bug in five
+ * places. One source; both call sites read from it.
+ */
+function unknownRailNote(names: string[]): string {
+  const decideVerb = names.length === 1 ? "decides" : "decide";
+  return `${joinNames(names)} ${decideVerb} eligibility at connect time — worth trying.`;
+}
+
+/**
+ * The headline for a country where the top-level `supported` answer is
+ * false. Ported from apps/web's usePayoutEligibility.ts (firestarter-commerce
+ * #839) so the MCP tool and the seller dashboard derive the same sentence
+ * from the same per-rail verdicts, rather than drifting the way the flat
+ * "browse-only" copy did.
+ *
+ * Derived from each rail's VERDICT, never from the flattened `supported`
+ * boolean:
+ *  - `"unsupported"` (PayPal, which publishes its own payouts country list)
+ *    is named specifically — that absence is a real fact, not a guess.
+ *  - `"unknown"` (Stripe outside our best-effort seed) is NEVER folded into a
+ *    claim that Firestarter can't pay the country — Stripe decides
+ *    eligibility per seller at connect time and may well work. This is the
+ *    exact distinction #839's four countries (Pakistan, Bangladesh, Nigeria,
+ *    Egypt) sit in: PayPal unsupported, Stripe unknown.
+ *  - Only when EVERY enabled rail is definitively "unsupported" (nothing left
+ *    "unknown") does the confident "we can't pay out to X yet" sentence
+ *    appear.
+ */
+function unpaidCountryHeadline(rails: Array<{ provider: string; verdict: string }>, country: string): string {
+  const unsupportedNames = rails.filter((r) => r.verdict === "unsupported").map((r) => r.provider.toUpperCase());
+  const unknownNames = rails.filter((r) => r.verdict === "unknown").map((r) => r.provider.toUpperCase());
+
+  if (unknownNames.length === 0) {
+    return `We can't pay out to ${country} yet.`;
+  }
+
+  const unknownSentence = unknownRailNote(unknownNames);
+
+  if (unsupportedNames.length === 0) return unknownSentence;
+
+  return `${joinNames(unsupportedNames)} can't pay out to ${country} yet. ${unknownSentence}`;
+}
+
+/**
  * "Account:" line for firestarter_status — who the configured API key belongs
  * to (the org's owner user + the org), from GET /v1/me. Best-effort by design:
  * identity is garnish on a status check, and an older API without the endpoint
@@ -3565,7 +3638,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `- Create listings with \`firestarter_list\` (just product_name + base_price)\n`;
         text += `- Import existing listings with \`firestarter_import\`\n`;
         text += `- Connect a Shopify store with \`firestarter_connect_shopify\`\n`;
-        text += `\n**Important:** Connect Stripe payouts with \`firestarter_payouts\` so buyers can actually purchase your listings. Without it, listings are visible but show as "browse-only" (checkout blocked). Takes ~2 minutes.\n`;
+        text += `\n**Payouts:** Not required to start selling — connect one later with \`firestarter_payouts\` when ready to receive money. Until then, listings go live and sell normally; earnings wait safely in escrow (selling pauses only if held earnings reach $1,000 or the oldest hold is 30 days old). Not sure a country is payable? Check first with \`firestarter_payout_eligibility\`.\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -3593,7 +3666,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
-    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts a photo URL already available in the conversation (e.g. one returned by firestarter_upload_image). The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
+    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts a photo URL already available in the conversation (e.g. one returned by firestarter_upload_image). The listing goes live instantly unless something blocks activation (e.g. no product photo yet — see allow_imageless), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
     {
       product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
       base_price: z.number().describe("REQUIRED. Sale price in USD, e.g. 49.99."),
@@ -3688,7 +3761,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Array.isArray(listing.activation_warnings) && listing.activation_warnings.length > 0) {
           for (const warn of listing.activation_warnings) {
             if (warn.code === "SELLER_PAYOUTS_RECOMMENDED") {
-              text += `\n\n⚠️ **Payouts not connected — buyers cannot purchase this listing yet.** The listing is visible in search, but checkout is blocked until Stripe payouts are set up. Call \`firestarter_payouts\` now to get a setup link (takes ~2 minutes).`;
+              text += `\n\n⚠️ **Payouts not connected.** The listing is live and sellable — earnings just wait in escrow until a payout method is connected (selling pauses only if held earnings reach $1,000 or the oldest hold is 30 days old). Call \`firestarter_payouts\` to connect one (~2 minutes), or \`firestarter_payout_eligibility\` to check a country first.`;
             }
           }
         }
@@ -3994,7 +4067,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list — and PayPal covers sellers whose country Stripe declines, or who prefer it.",
+    "Manage seller payout method — this is how a seller RECEIVES money, not permission to sell. A seller with no payout method lists and sells normally; earnings wait in escrow, and selling pauses automatically only once held earnings reach $1,000 or the oldest hold is 30 days old. Two providers: Stripe (bank payouts wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (many countries, but NOT all — its payouts list excludes Pakistan, Bangladesh, Nigeria and Egypt among others). Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list. To check a specific country before the seller invests any effort, call firestarter_payout_eligibility.",
     {
       // Wise/Payoneer are implemented but not selectable — neither connect flow
       // yields a destination its adapter can spend. Narrowing the enum stops an
@@ -4033,7 +4106,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             // API allowlist that no longer exists — eligibility is Stripe's
             // call now, so quoting a country list here only talks sellers out of
             // the rail that would have worked.
-            text = `**No payout method configured.** Listings are visible but buyers cannot checkout.\n\nAvailable providers:\n- **Stripe** — bank payouts wherever Stripe Connect operates, incl. much of Asia-Pacific; ~5 min setup. Needs the country the business banks in (locked permanently once connected).\n- **PayPal** — 200+ countries, ~2 min setup (just an email)\n\nIf unsure whether Stripe covers a country, try it — you get a clear answer naming the country, and PayPal remains available either way.\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
+            text = `**No payout method configured.** You can still list and sell — earnings wait safely in escrow — but selling pauses automatically once held earnings reach $1,000 or the oldest hold is 30 days old.\n\nAvailable providers:\n- **Stripe** — bank payouts wherever Stripe Connect operates, incl. much of Asia-Pacific; ~5 min setup. Needs the country the business banks in (locked permanently once connected).\n- **PayPal** — ~2 min setup (just an email), but its payouts list does not cover every country.\n\nNot sure we can pay your country? Call \`firestarter_payout_eligibility\` first.\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
           }
           return { content: [{ type: "text" as const, text }] };
         }
@@ -4098,6 +4171,80 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text: `Error managing payouts: ${msg}${hint}` }], isError: true };
       }
     }
+  );
+
+  // Tool: firestarter_payout_eligibility
+  server.tool(
+    "firestarter_payout_eligibility",
+    "Check whether Firestarter can pay a seller in a given country BEFORE they invest any effort — no seller account required. Takes an ISO 3166-1 alpha-2 country code and returns each payout rail's verdict for it. PayPal publishes its own payouts country list, so its 'unsupported' verdict is authoritative; Stripe decides eligibility per seller at connect time, so it comes back 'unknown' for any country outside a small documented snapshot — never treat 'unknown' as 'no'. Use this whenever someone asks 'can I sell on Firestarter from <country>' or before walking a seller through registration, so an unsupported country is caught up front instead of after earnings accrue that cannot be withdrawn. A seller in an unsupported (or still-undetermined) country can still register, list, and sell — earnings wait in escrow — but selling pauses once held earnings reach $1,000 or the oldest hold is 30 days old, which is exactly why checking first is worth it.",
+    {
+      country: z.string().length(2).describe("ISO 3166-1 alpha-2 country code, e.g. 'PK', 'NG', 'MY'."),
+    },
+    {
+      title: "Check Payout Eligibility",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async ({ country }) => {
+      try {
+        const res = await apiRequest("GET", `/v1/payouts/eligibility?country=${encodeURIComponent(country)}`);
+        const rails = (res?.rails ?? []) as Array<{
+          provider: string;
+          supported: boolean;
+          verdict: "supported" | "unsupported" | "unknown";
+          requirements: string[];
+        }>;
+        const label = countryLabel(res?.country || country);
+
+        const usable = rails.filter((r) => r.verdict === "supported");
+        if (usable.length > 0) {
+          const lines = usable
+            .map((r) => `- **${r.provider.toUpperCase()}** — needs: ${r.requirements.length ? r.requirements.map((x) => x.replace(/_/g, " ")).join(", ") : "no extra setup"}`)
+            .join("\n");
+          const parts = [`**We can pay sellers in ${label}.**\n\n${lines}`];
+          // A rail already confirmed does not make a still-"unknown" rail (e.g.
+          // Stripe outside our best-effort seed) worth hiding — the whole point
+          // of carrying "unknown" through this tool is that it can ALSO work,
+          // decided per seller at connect time. Dropping it here would flatten
+          // the exact distinction unpaidCountryHeadline exists to preserve.
+          const maybe = rails.filter((r) => r.verdict === "unknown");
+          if (maybe.length > 0) {
+            parts.push(unknownRailNote(maybe.map((r) => r.provider.toUpperCase())));
+          }
+          parts.push(`Set one up with \`firestarter_payouts\`.`);
+          return {
+            content: [{
+              type: "text" as const,
+              text: parts.join("\n\n"),
+            }],
+          };
+        }
+
+        // No rail confirmed yet. The headline is derived from each rail's
+        // VERDICT, never from the flattened `supported: false` — an "unknown"
+        // rail (Stripe, which decides per seller at connect time) must never
+        // be folded into "we can't pay this country". See unpaidCountryHeadline.
+        const parts = [unpaidCountryHeadline(rails, label)];
+        parts.push(`A seller can still register, list, and sell from ${label} right now — earnings wait safely in escrow — but selling pauses automatically once held earnings reach $1,000 or the oldest hold is 30 days old.`);
+        if (res?.waitlist_available) {
+          parts.push(`We're tracking demand for ${label}; ask the seller if they'd like to be notified when a confirmed rail opens.`);
+        }
+        return { content: [{ type: "text" as const, text: parts.join("\n\n") }] };
+      } catch (err: any) {
+        if (err instanceof ApiError && err.code === "INVALID_COUNTRY") {
+          return {
+            content: [{ type: "text" as const, text: "Pass a two-letter ISO country code, e.g. 'PK' or 'MY'." }],
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: `Couldn't check eligibility: ${toErrorMessage(err)}` }],
+          isError: true,
+        };
+      }
+    },
   );
 
   // Tool: firestarter_connect_shopify
