@@ -51,6 +51,21 @@ export const PREVIEW_REASON_LABELS: Record<string, string> = {
   DESTINATION_UNSERVICEABLE: "doesn't ship to that destination",
 };
 
+/** https-only photo list. Same rule as the API's safeImages: `javascript:` is
+ *  XSS in any host that renders the URL, `data:` smuggles bytes past every
+ *  fetch-time check, and `http:` is mixed content that silently fails. */
+function httpsImages(v: unknown): string[] {
+  return Array.isArray(v)
+    ? v.filter((u): u is string => typeof u === "string" && /^https:\/\//i.test(u))
+    : [];
+}
+
+/** A real aggregate or null. Never 0 — see previewOption.rating. */
+function ratingOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 const previewOption = z.object({
   rank: z.number().int(),
   /** Listing/result id — chain to firestarter_execute when source is a FS store. */
@@ -68,6 +83,15 @@ const previewOption = z.object({
   source: z.string(),
   url: z.string().nullable(),
   image_url: z.string().nullable(),
+  /** Full https photo set; the shopping-results app grid-renders these. */
+  images: z.array(z.string()),
+  /** The SELLER's Firestarter review aggregate (1dp) and its count. Null/0 when
+   *  the seller has no reviews — the widget's starsLabel renders nothing rather
+   *  than an empty state, so a zero must never be manufactured here. */
+  rating: z.number().nullable(),
+  rating_count: z.number().int(),
+  /** Delivered/completed non-test sales of this listing. 0 for external results. */
+  units_sold: z.number().int(),
   in_stock: z.boolean(),
   /** Checkout-capable through Firestarter (vs browse-only). */
   purchasable: z.boolean(),
@@ -136,6 +160,10 @@ export function toPreviewStructured(
       source: typeof o?.source === "string" ? o.source : "unknown",
       url: typeof o?.url === "string" ? o.url : null,
       image_url: typeof o?.image_url === "string" ? o.image_url : null,
+      images: httpsImages(o?.images),
+      rating: ratingOrNull(o?.seller_rating),
+      rating_count: Number(o?.seller_rating_count) || 0,
+      units_sold: Number(o?.units_sold) || 0,
       in_stock: o?.in_stock !== false,
       purchasable: !!o?.purchasable,
       eligible: !!o?.eligible,
@@ -194,6 +222,12 @@ const catalogListing = z.object({
   seller_rating: z.number().nullable(),
   /** Number of reviews behind seller_rating (0 when none). */
   seller_rating_count: z.number().int(),
+  /** The SELLER's Firestarter review aggregate (1dp) and its count. Null/0 when
+   *  the seller has no reviews — never a manufactured zero. */
+  rating: z.number().nullable(),
+  rating_count: z.number().int(),
+  /** Delivered/completed non-test sales of this listing. */
+  units_sold: z.number().int(),
   picked_by_community: z.boolean(),
   pick_note: z.string().nullable(),
 });
@@ -253,6 +287,9 @@ export function toCatalogStructured(
       seller_rating_count: Number.isFinite(Number(l?.seller_rating_count))
         ? Math.max(0, Math.trunc(Number(l.seller_rating_count)))
         : 0,
+      rating: ratingOrNull(l?.seller_rating),
+      rating_count: Number(l?.seller_rating_count) || 0,
+      units_sold: Number(l?.units_sold) || 0,
       picked_by_community: l?.picked_by_community === true,
       pick_note: sanitizeUntrustedOrNull(l?.pick_note),
     };

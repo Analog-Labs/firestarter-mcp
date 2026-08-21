@@ -2223,6 +2223,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // CALLING agent's context, which we neither own nor instruct (#599).
           text += `\n${i + 1}. **${sanitizeUntrusted(o.title)}** — ${price}${ship}`;
           if (o.seller) text += ` · ${sanitizeUntrusted(o.seller, 120)}`;
+          // Trust bits on their own line: the stars and the sold count are what
+          // a buyer asks about after price, and a text-only host sees ONLY this
+          // prose — structuredContent never reaches the model in many of them.
+          // stars() returns null with no reviews, so a new seller's row simply
+          // has no line rather than an "unrated" badge.
+          const starTxt = stars((o as any).seller_rating, (o as any).seller_rating_count);
+          // >= 3 matches SOLD_MIN on the web: below three sales a count is noise
+          // rather than social proof, and "1 sold" reads as a warning.
+          const soldTxt = Number((o as any).units_sold) >= 3 ? `${(o as any).units_sold} sold` : null;
+          const trustBits = [starTxt, soldTxt].filter(Boolean).join(" · ");
+          if (trustBits) text += `\n   ${trustBits}`;
           // A browse-only option's ONLY next action is opening the vendor page,
           // so that gets the click; a buyable option needs no link (it is bought
           // by id) and adding one per row would just dilute the real ones.
