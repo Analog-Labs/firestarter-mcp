@@ -1826,6 +1826,66 @@ function registerToolCompat(server: McpServer, name: string, config: any, handle
 }
 
 /**
+ * Human-readable country name from an ISO 3166-1 alpha-2 code, falling back
+ * to the code itself for anything Intl can't resolve (a reserved/unassigned
+ * code, or an unrecognized country the API already normalized to ""). An
+ * agent relaying "we can't pay out to PK" to a seller reads badly next to
+ * "...to Pakistan".
+ */
+const REGION_DISPLAY_NAMES = new Intl.DisplayNames(["en"], { type: "region" });
+function countryLabel(code: string): string {
+  if (!code) return code;
+  try {
+    return REGION_DISPLAY_NAMES.of(code.toUpperCase()) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+/** "A", "A and B", "A, B, and C" — for short rail-name lists. */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+/**
+ * The headline for a country where the top-level `supported` answer is
+ * false. Ported from apps/web's usePayoutEligibility.ts (firestarter-commerce
+ * #839) so the MCP tool and the seller dashboard derive the same sentence
+ * from the same per-rail verdicts, rather than drifting the way the flat
+ * "browse-only" copy did.
+ *
+ * Derived from each rail's VERDICT, never from the flattened `supported`
+ * boolean:
+ *  - `"unsupported"` (PayPal, which publishes its own payouts country list)
+ *    is named specifically — that absence is a real fact, not a guess.
+ *  - `"unknown"` (Stripe outside our best-effort seed) is NEVER folded into a
+ *    claim that Firestarter can't pay the country — Stripe decides
+ *    eligibility per seller at connect time and may well work. This is the
+ *    exact distinction #839's four countries (Pakistan, Bangladesh, Nigeria,
+ *    Egypt) sit in: PayPal unsupported, Stripe unknown.
+ *  - Only when EVERY enabled rail is definitively "unsupported" (nothing left
+ *    "unknown") does the confident "we can't pay out to X yet" sentence
+ *    appear.
+ */
+function unpaidCountryHeadline(rails: Array<{ provider: string; verdict: string }>, country: string): string {
+  const unsupportedNames = rails.filter((r) => r.verdict === "unsupported").map((r) => r.provider.toUpperCase());
+  const unknownNames = rails.filter((r) => r.verdict === "unknown").map((r) => r.provider.toUpperCase());
+
+  if (unknownNames.length === 0) {
+    return `We can't pay out to ${country} yet.`;
+  }
+
+  const decideVerb = unknownNames.length === 1 ? "decides" : "decide";
+  const unknownSentence = `${joinNames(unknownNames)} ${decideVerb} eligibility when the seller connects — worth trying.`;
+
+  if (unsupportedNames.length === 0) return unknownSentence;
+
+  return `${joinNames(unsupportedNames)} can't pay out to ${country} yet. ${unknownSentence}`;
+}
+
+/**
  * "Account:" line for firestarter_status — who the configured API key belongs
  * to (the org's owner user + the org), from GET /v1/me. Best-effort by design:
  * identity is garnish on a status check, and an older API without the endpoint
@@ -4072,6 +4132,69 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text: `Error managing payouts: ${msg}${hint}` }], isError: true };
       }
     }
+  );
+
+  // Tool: firestarter_payout_eligibility
+  server.tool(
+    "firestarter_payout_eligibility",
+    "Check whether Firestarter can pay a seller in a given country BEFORE they invest any effort — no seller account required. Takes an ISO 3166-1 alpha-2 country code and returns each payout rail's verdict for it. PayPal publishes its own payouts country list, so its 'unsupported' verdict is authoritative; Stripe decides eligibility per seller at connect time, so it comes back 'unknown' for any country outside a small documented snapshot — never treat 'unknown' as 'no'. Use this whenever someone asks 'can I sell on Firestarter from <country>' or before walking a seller through registration, so an unsupported country is caught up front instead of after earnings accrue that cannot be withdrawn. A seller in an unsupported (or still-undetermined) country can still register, list, and sell — earnings wait in escrow — but selling pauses once held earnings reach $1,000 or the oldest hold is 30 days old, which is exactly why checking first is worth it.",
+    {
+      country: z.string().length(2).describe("ISO 3166-1 alpha-2 country code, e.g. 'PK', 'NG', 'MY'."),
+    },
+    {
+      title: "Check Payout Eligibility",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async ({ country }) => {
+      try {
+        const res = await apiRequest("GET", `/v1/payouts/eligibility?country=${encodeURIComponent(country)}`);
+        const rails = (res?.rails ?? []) as Array<{
+          provider: string;
+          supported: boolean;
+          verdict: "supported" | "unsupported" | "unknown";
+          requirements: string[];
+        }>;
+        const label = countryLabel(res?.country || country);
+
+        const usable = rails.filter((r) => r.verdict === "supported");
+        if (usable.length > 0) {
+          const lines = usable
+            .map((r) => `- **${r.provider.toUpperCase()}** — needs: ${r.requirements.length ? r.requirements.map((x) => x.replace(/_/g, " ")).join(", ") : "no extra setup"}`)
+            .join("\n");
+          return {
+            content: [{
+              type: "text" as const,
+              text: `**We can pay sellers in ${label}.**\n\n${lines}\n\nSet one up with \`firestarter_payouts\`.`,
+            }],
+          };
+        }
+
+        // No rail confirmed yet. The headline is derived from each rail's
+        // VERDICT, never from the flattened `supported: false` — an "unknown"
+        // rail (Stripe, which decides per seller at connect time) must never
+        // be folded into "we can't pay this country". See unpaidCountryHeadline.
+        const parts = [unpaidCountryHeadline(rails, label)];
+        parts.push(`A seller can still register, list, and sell from ${label} right now — earnings wait safely in escrow — but selling pauses automatically once held earnings reach $1,000 or the oldest hold is 30 days old.`);
+        if (res?.waitlist_available) {
+          parts.push(`We're tracking demand for ${label}; ask the seller if they'd like to be notified when a confirmed rail opens.`);
+        }
+        return { content: [{ type: "text" as const, text: parts.join("\n\n") }] };
+      } catch (err: any) {
+        if (err instanceof ApiError && err.code === "INVALID_COUNTRY") {
+          return {
+            content: [{ type: "text" as const, text: "Pass a two-letter ISO country code, e.g. 'PK' or 'MY'." }],
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: `Couldn't check eligibility: ${toErrorMessage(err)}` }],
+          isError: true,
+        };
+      }
+    },
   );
 
   // Tool: firestarter_connect_shopify
