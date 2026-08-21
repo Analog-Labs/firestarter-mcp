@@ -1850,6 +1850,20 @@ function joinNames(names: string[]): string {
 }
 
 /**
+ * "<RAIL(S)> decide(s) eligibility at connect time — worth trying." The one
+ * sentence for naming a still-"unknown" rail, shared by unpaidCountryHeadline
+ * below (the no-rail-confirmed answer) and firestarter_payout_eligibility's
+ * supported-rail branch (naming an ALSO-unknown rail alongside one already
+ * confirmed) — hand-copying it into both, even with honest wording each
+ * time, is exactly the pattern that put this branch's original bug in five
+ * places. One source; both call sites read from it.
+ */
+function unknownRailNote(names: string[]): string {
+  const decideVerb = names.length === 1 ? "decides" : "decide";
+  return `${joinNames(names)} ${decideVerb} eligibility at connect time — worth trying.`;
+}
+
+/**
  * The headline for a country where the top-level `supported` answer is
  * false. Ported from apps/web's usePayoutEligibility.ts (firestarter-commerce
  * #839) so the MCP tool and the seller dashboard derive the same sentence
@@ -1877,8 +1891,7 @@ function unpaidCountryHeadline(rails: Array<{ provider: string; verdict: string 
     return `We can't pay out to ${country} yet.`;
   }
 
-  const decideVerb = unknownNames.length === 1 ? "decides" : "decide";
-  const unknownSentence = `${joinNames(unknownNames)} ${decideVerb} eligibility when the seller connects — worth trying.`;
+  const unknownSentence = unknownRailNote(unknownNames);
 
   if (unsupportedNames.length === 0) return unknownSentence;
 
@@ -4172,8 +4185,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // the exact distinction unpaidCountryHeadline exists to preserve.
           const maybe = rails.filter((r) => r.verdict === "unknown");
           if (maybe.length > 0) {
-            const decideVerb = maybe.length === 1 ? "decides" : "decide";
-            parts.push(`${joinNames(maybe.map((r) => r.provider.toUpperCase()))} ${decideVerb} eligibility for ${label} at connect time and isn't ruled out either — worth trying too.`);
+            parts.push(unknownRailNote(maybe.map((r) => r.provider.toUpperCase())));
           }
           parts.push(`Set one up with \`firestarter_payouts\`.`);
           return {
