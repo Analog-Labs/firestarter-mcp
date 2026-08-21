@@ -3,6 +3,7 @@
  * Used by both the stdio server (server.ts) and the HTTP route (route.ts).
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { marginCentsFor } from "../lib/margin.js";
 import { isRelevantMatch } from "../lib/relevance.js";
@@ -1880,7 +1881,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
 
-        const created = await apiRequest("POST", "/v1/executions", body);
+        // A timed-out create whose error text says "retry" is the double-buy
+        // vector (commerce 0018): the server dedupes per org on this header,
+        // but only a key that is STABLE across the agent's retry of the same
+        // intent dedupes anything — so it is a content hash of the request
+        // body, not a random value. The 10-minute time bucket keeps the window
+        // short: the server's unique index has no TTL, and the same buyer
+        // legitimately re-running an identical request later must still create
+        // a fresh execution.
+        const bucket = Math.floor(Date.now() / 600_000);
+        const idemKey = "exec-" + createHash("sha256")
+          .update(JSON.stringify(body)).update(`:${bucket}`).digest("hex").slice(0, 48);
+        const created = await apiRequest("POST", "/v1/executions", body, undefined, { "Idempotency-Key": idemKey });
         const defaultDelivery = created?.default_delivery?.masked || null;
         const exec = await pollExecution(apiRequest, created.id, 45_000);
         const blocks = await formatExecution(exec);
@@ -6509,7 +6521,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // retry loop) so a lost-response HTTP retry of THIS call reuses the same
         // key and dedupes server-side (services/owner-drop-wallet.ts) instead of
         // paying the owner out twice.
-        const idempotencyKey = crypto.randomUUID();
+        // node:crypto import, not the `crypto` global — the global does not
+        // exist on Node 18, which engines allows (audit 2026-08 #13).
+        const idempotencyKey = randomUUID();
         try {
           const res = await apiRequest(
             "POST",
