@@ -34,6 +34,11 @@ export interface ShoppingItem {
   /** Rating aggregate (phase 2 wiring): rendered ONLY when count > 0. */
   rating?: number | null;
   rating_count?: number | null;
+  /** Catalog rows carry the aggregate under seller_* names (the API's public
+   *  projection); preview/product payloads use the bare names. starsLabel
+   *  accepts both so the grid's stars match the text rows for every surface. */
+  seller_rating?: number | null;
+  seller_rating_count?: number | null;
 }
 
 export function firstImage(it: ShoppingItem): string | null {
@@ -91,8 +96,12 @@ export function badgeFor(it: ShoppingItem): { text: string; cls: string } | null
  * stars row collapses rather than showing an empty or zero state.
  */
 export function starsLabel(it: ShoppingItem): { stars: string; count: string } | null {
-  const rating = Number(it.rating);
-  const count = Number(it.rating_count);
+  // Bare names (preview/product payloads) win; catalog rows carry the same
+  // aggregate as seller_rating/seller_rating_count (the API's public
+  // projection) — without the fallback the grid showed no stars for exactly
+  // the rows whose TEXT rendering did.
+  const rating = Number(it.rating ?? it.seller_rating);
+  const count = Number(it.rating_count ?? it.seller_rating_count);
   if (!Number.isFinite(rating) || !Number.isFinite(count) || count <= 0) return null;
   return { stars: `★ ${rating.toFixed(1)}`, count: `(${count})` };
 }

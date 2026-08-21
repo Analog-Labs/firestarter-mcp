@@ -17,7 +17,7 @@
  * `_meta.ui.csp.resourceDomains`, so a photo on an un-allowlisted host shows the
  * placeholder rather than a broken image.
  */
-import { App } from "@modelcontextprotocol/ext-apps";
+import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { badgeFor, firstImage, priceLabel, starsLabel, type ShoppingItem } from "./shopping-item.js";
 
 const root = document.getElementById("root")!;
@@ -37,7 +37,12 @@ function render(items: ShoppingItem[]): void {
     .map((it) => {
       const img = firstImage(it);
       const title = esc(it.title || it.product_name || "Untitled");
-      const link = it.url || it.share_url;
+      // http(s) only: `url` on a preview option is third-party feed data, and
+      // a javascript:/data: scheme must never reach app.openLink — the host
+      // mediates, but the widget shouldn't emit it in the first place.
+      const link = [it.url, it.share_url].find(
+        (u): u is string => typeof u === "string" && /^https?:\/\//i.test(u),
+      );
       const badge = badgeFor(it);
       const media = img
         ? `<img src="${esc(img)}" alt="${title}" loading="lazy"
@@ -48,8 +53,10 @@ function render(items: ShoppingItem[]): void {
       // one meta row, badge PINNED to the bottom — so every card in a row has
       // identical bones and badges align regardless of title length.
       const stars = starsLabel(it);
+      // No image at all → the placeholder must show immediately; the onerror
+      // path only covers an image that EXISTS and fails to load.
       const card = `
-        <div class="media">${media}<span class="ph">No photo</span></div>
+        <div class="media${img ? "" : " noimg"}">${media}<span class="ph">No photo</span></div>
         <div class="body">
           <div class="title">${title}</div>
           <div class="stars">${stars ? `${esc(stars.stars)} <span class="count">${esc(stars.count)}</span>` : ""}</div>
@@ -65,7 +72,11 @@ function render(items: ShoppingItem[]): void {
         : `<div class="card">${card}</div>`;
     })
     .join("");
-  root.innerHTML = `<div class="grid">${cards}</div>`;
+  // When ANY card has a rating, every card reserves the stars line so prices
+  // and sellers stay row-aligned next to rated neighbours; when none do (a
+  // young catalog), the line collapses grid-wide and cards stay compact.
+  const anyStars = items.some((it) => starsLabel(it) !== null);
+  root.innerHTML = `<div class="grid${anyStars ? " has-stars" : ""}">${cards}</div>`;
 }
 
 function renderError(msg: string): void {
@@ -114,13 +125,13 @@ function renderDetail(p: Record<string, unknown>): void {
   const seller = p.seller ? `${esc(String(p.seller))}${(p as any).seller_verified ? " ✓" : ""}` : "";
   root.innerHTML = `
     <div class="detail">
-      <div class="media hero">${hero}<span class="ph">No photo</span></div>
+      <div class="media hero${imgs[0] ? "" : " noimg"}">${hero}<span class="ph">No photo</span></div>
       ${thumbs}
       <div class="dbody">
         <div class="dtitle">${title}</div>
         <div class="stars">${starsInfo ? `${esc(starsInfo.stars)} <span class="count">${esc(starsInfo.count)}</span>` : ""}${sold ? ` <span class="count">· ${esc(sold)}</span>` : ""}</div>
         <div class="meta"><span class="price">${esc(priceLabel(it))}</span> <span class="seller">${seller}</span></div>
-        ${(p as any).share_url ? `<div class="badgerow"><span class="badge ok link" data-url="${esc(String((p as any).share_url))}" role="link" tabindex="0" style="cursor:pointer">View listing page</span></div>` : ""}
+        ${typeof (p as any).share_url === "string" && /^https?:\/\//i.test((p as any).share_url) ? `<div class="badgerow"><span class="badge ok link" data-url="${esc(String((p as any).share_url))}" role="link" tabindex="0" style="cursor:pointer">View listing page</span></div>` : ""}
       </div>
     </div>`;
   root.querySelectorAll<HTMLElement>(".thumb").forEach((b) => b.addEventListener("click", (ev) => {
@@ -140,13 +151,30 @@ app.ontoolresult = (params) => {
       renderDetail(sc.product as Record<string, unknown>);
       return;
     }
-    const items = (Array.isArray(sc.options) ? sc.options
+    // One malformed row (null / non-object) must degrade to "that row is
+    // skipped", never to the WHOLE grid being replaced by an error card —
+    // which is what a TypeError mid-map did.
+    const items = ((Array.isArray(sc.options) ? sc.options
       : Array.isArray(sc.listings) ? sc.listings
-        : []) as ShoppingItem[];
+        : []) as unknown[])
+      .filter((it): it is ShoppingItem => !!it && typeof it === "object");
     render(items);
   } catch (e) {
     renderError(e instanceof Error ? e.message : String(e));
   }
 };
 
-app.connect().catch((e) => renderError(e instanceof Error ? e.message : String(e)));
+// Adopt the HOST's theme, not the OS's. The iframe's prefers-color-scheme
+// follows the system, but a Desktop user can run the app dark on a light
+// system (or vice versa) — hostContext.theme is the truth when the host
+// sends one, and applyDocumentTheme stamps it as [data-theme] + colorScheme
+// for the stylesheet's explicit-theme selectors. No theme in hostContext →
+// no stamp → the prefers-color-scheme fallback keeps working as before.
+function adoptHostTheme(theme: unknown): void {
+  if (theme === "dark" || theme === "light") applyDocumentTheme(theme);
+}
+app.addEventListener("hostcontextchanged", (ctx: any) => adoptHostTheme(ctx?.theme));
+
+app.connect()
+  .then(() => adoptHostTheme((app.getHostContext() as any)?.theme))
+  .catch((e) => renderError(e instanceof Error ? e.message : String(e)));

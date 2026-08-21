@@ -50,6 +50,24 @@ describe("toCatalogStructured", () => {
     expect(out.listings[0].price).toEqual({ currency: "USD", amount_minor: 2000 });
   });
 
+  // The mapper is a strip-list, not a passthrough: a field it doesn't name
+  // never reaches the widget. The stars fix in the client is therefore only
+  // half a fix — these pin the OTHER half, the structured row carrying the
+  // aggregate at all (commerce#850's projection).
+  it("passes the seller rating aggregate through to the structured row", () => {
+    const out = toCatalogStructured(API_DATA, [{ ...ROW, seller_rating: "4.6", seller_rating_count: 12 }], null);
+    expect(() => catalogOutputSchema.parse(out)).not.toThrow();
+    expect(out.listings[0].seller_rating).toBe(4.6);
+    expect(out.listings[0].seller_rating_count).toBe(12);
+  });
+
+  it("normalizes an unrated seller to null rating / zero count", () => {
+    const out = toCatalogStructured(API_DATA, [ROW], null);
+    expect(() => catalogOutputSchema.parse(out)).not.toThrow();
+    expect(out.listings[0].seller_rating).toBeNull();
+    expect(out.listings[0].seller_rating_count).toBe(0);
+  });
+
   it("counts only buyable rows in buyable_count", () => {
     const out = toCatalogStructured(API_DATA, [ROW, { ...ROW, id: "lst_w2", buyable: false }], null);
     expect(out.count).toBe(2);
