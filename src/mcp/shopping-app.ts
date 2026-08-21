@@ -20,7 +20,7 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // reinstalled — an updated widget silently renders with the OLD html/css until
 // the URI changes. Bump the segment whenever the generated HTML changes
 // meaningfully; hosts fetch the "new" resource and the stale cache is orphaned.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v2";
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v3";
 
 // Origins the sandboxed iframe may load product images from. By default an MCP
 // App iframe has NO network access; images load only from origins allowlisted

@@ -189,7 +189,9 @@ function formatCommunityShelf(community: any): string | null {
     lines.push(`…and ${picks.length - SHELF_RENDER_LIMIT} more.`);
   }
   lines.push(
-    `\nBuy any of these and ${name} earns a share of Firestarter's fee — at no extra cost to you. ` +
+    // Same sanitation as the header — the community name is owner-controlled
+    // text reaching a BUYER, and this footer previously interpolated it raw.
+    `\nBuy any of these and ${sanitizeUntrusted(name, 120) || "this community"} earns a share of Firestarter's fee — at no extra cost to you. ` +
     `Want one? I can price it for checkout: pass its listing_id to firestarter_execute.`,
   );
   return lines.join("\n");
@@ -207,9 +209,11 @@ export function formatCommunitySells(community: any): string | null {
   if (sells.length === 0) return null;
   const name =
     typeof community?.name === "string" && community.name.trim() ? community.name.trim() : "this community";
-  const lines: string[] = [`**What ${name} sells:**`];
+  // Same sanitation as the picks shelf: these names are seller-controlled
+  // text reaching a BUYER — the sells list previously rendered them raw.
+  const lines: string[] = [`**What ${sanitizeUntrusted(name, 120) || "this community"} sells:**`];
   for (const s of sells.slice(0, SHELF_RENDER_LIMIT)) {
-    const nm = typeof s?.product_name === "string" && s.product_name.trim() ? s.product_name.trim() : "Untitled";
+    const nm = sanitizeUntrusted(s?.product_name) || "Untitled";
     const price = Number.isFinite(Number(s?.price)) ? `$${Number(s.price).toFixed(2)}` : "price at checkout";
     const id = typeof s?.listing_id === "string" && s.listing_id ? ` (listing_id: \`${s.listing_id}\`)` : "";
     lines.push(`• ${nm} — ${price}${id}`);
@@ -337,7 +341,17 @@ function stars(rating: unknown, count: unknown): string | null {
  */
 function mdTable(headers: string[], rows: string[][], opts: { cap?: number; moreHint?: string } = {}): string {
   const cap = opts.cap ?? 20;
-  const esc = (v: string) => v.replace(/\|/g, "\|").replace(/\r?\n/g, " ");
+  // NB: the replacement needs a DOUBLE backslash in source — "\|" in a JS
+  // string literal is just "|", which made this a no-op: a | inside a cell
+  // (e.g. a buyer's request text "A | B") split its table row into extra
+  // columns. Cells that pass through sanitizeUntrusted were shielded by
+  // accident; raw cells (the buyer's own request text) were not.
+  //
+  // Backslashes are escaped FIRST: without that, cell text "a\|b" becomes
+  // "a\\|b" — an escaped backslash followed by a BARE pipe — which still
+  // splits the row. Escaping order makes both characters inert.
+  const esc = (v: string) =>
+    v.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r\n?|\n/g, " ");
   const line = (cells: string[]) => `| ${cells.map(esc).join(" | ")} |`;
   const out = [line(headers), `|${headers.map(() => " --- ").join("|")}|`];
   for (const r of rows.slice(0, cap)) out.push(line(r));
@@ -509,7 +523,16 @@ export function makeApiRequest(
       ) {
         onAuthError?.();
       }
-      throw new ApiError(data.error || `API request failed: ${res.status}`, res.status, data);
+      // data.error is a STRING on every commerce errorResponse, but anything
+      // nonstandard in front of the API (a proxy's JSON error page, a
+      // non-commerce upstream) can put an OBJECT there — which stringifies to
+      // "[object Object]" in the buyer-facing message. Normalize to prose.
+      const errText =
+        typeof data?.error === "string" && data.error.trim() ? data.error
+          : typeof data?.error?.message === "string" && data.error.message.trim() ? data.error.message
+            : typeof data?.message === "string" && data.message.trim() ? data.message
+              : `API request failed: ${res.status}`;
+      throw new ApiError(errText, res.status, data);
     }
     return data;
   };
@@ -2208,7 +2231,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // scan status/date/amount in columns instead of parsing prose per row.
         lines.push(mdTable(
           ["Order", "Status", "Request", "Date", "Total"],
-          executions.slice(0, 10).map((e: any) => [
+          // Full list — mdTable itself caps at 10 (opts.cap) and renders the
+          // "…and N more" hint. Pre-slicing here starved it of the overflow,
+          // so the hint was unreachable dead code.
+          executions.map((e: any) => [
             `\`${e.id}\``,
             String(e.status ?? ""),
             `${e.request_text?.slice(0, 48) || ""}${(e.request_text?.length ?? 0) > 48 ? "…" : ""}`,
