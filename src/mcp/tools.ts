@@ -3627,7 +3627,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
-    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts a photo URL already available in the conversation (e.g. one returned by firestarter_upload_image). The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
+    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts a photo URL already available in the conversation (e.g. one returned by firestarter_upload_image). The listing goes live instantly unless something blocks activation (e.g. no product photo yet — see allow_imageless), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
     {
       product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
       base_price: z.number().describe("REQUIRED. Sale price in USD, e.g. 49.99."),
@@ -3722,7 +3722,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Array.isArray(listing.activation_warnings) && listing.activation_warnings.length > 0) {
           for (const warn of listing.activation_warnings) {
             if (warn.code === "SELLER_PAYOUTS_RECOMMENDED") {
-              text += `\n\n⚠️ **Payouts not connected — buyers cannot purchase this listing yet.** The listing is visible in search, but checkout is blocked until Stripe payouts are set up. Call \`firestarter_payouts\` now to get a setup link (takes ~2 minutes).`;
+              text += `\n\n⚠️ **Payouts not connected.** The listing is live and sellable — earnings just wait in escrow until a payout method is connected (selling pauses only if held earnings reach $1,000 or the oldest hold is 30 days old). Call \`firestarter_payouts\` to connect one (~2 minutes), or \`firestarter_payout_eligibility\` to check a country first.`;
             }
           }
         }
@@ -4164,10 +4164,22 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const lines = usable
             .map((r) => `- **${r.provider.toUpperCase()}** — needs: ${r.requirements.length ? r.requirements.map((x) => x.replace(/_/g, " ")).join(", ") : "no extra setup"}`)
             .join("\n");
+          const parts = [`**We can pay sellers in ${label}.**\n\n${lines}`];
+          // A rail already confirmed does not make a still-"unknown" rail (e.g.
+          // Stripe outside our best-effort seed) worth hiding — the whole point
+          // of carrying "unknown" through this tool is that it can ALSO work,
+          // decided per seller at connect time. Dropping it here would flatten
+          // the exact distinction unpaidCountryHeadline exists to preserve.
+          const maybe = rails.filter((r) => r.verdict === "unknown");
+          if (maybe.length > 0) {
+            const decideVerb = maybe.length === 1 ? "decides" : "decide";
+            parts.push(`${joinNames(maybe.map((r) => r.provider.toUpperCase()))} ${decideVerb} eligibility for ${label} at connect time and isn't ruled out either — worth trying too.`);
+          }
+          parts.push(`Set one up with \`firestarter_payouts\`.`);
           return {
             content: [{
               type: "text" as const,
-              text: `**We can pay sellers in ${label}.**\n\n${lines}\n\nSet one up with \`firestarter_payouts\`.`,
+              text: parts.join("\n\n"),
             }],
           };
         }

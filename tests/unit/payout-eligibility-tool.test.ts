@@ -143,6 +143,31 @@ describe("firestarter_payout_eligibility (behaviour)", () => {
     expect(out).not.toMatch(/worth trying/i);
   });
 
+  it("mentions a still-unknown rail alongside a confirmed one, instead of dropping it (mixed: PayPal supported, Stripe unknown)", async () => {
+    // The whole point of carrying "unknown" through the API, the tool
+    // description and unpaidCountryHeadline is that an agent gets to relay
+    // "this one might work too" — dropping it here, in the one branch where a
+    // rail already came back confirmed, would silently flatten it right back.
+    vi.stubGlobal("fetch", vi.fn(async () => json({
+      country: "MY",
+      supported: true,
+      waitlist_available: false,
+      rails: [
+        { provider: "stripe", supported: false, verdict: "unknown", requirements: [] },
+        { provider: "paypal", supported: true, verdict: "supported", requirements: ["paypal_email"] },
+      ],
+    })));
+    const out = textOf(await captureTools().firestarter_payout_eligibility({ country: "MY" }));
+
+    expect(out).toContain("We can pay sellers in");
+    expect(out).toMatch(/PAYPAL/);
+    // The unknown rail is named too, not silently omitted.
+    expect(out).toMatch(/STRIPE/);
+    expect(out).toMatch(/worth trying/i);
+    // Never assert it's ruled OUT — that's the false claim on the other side.
+    expect(out).not.toMatch(/STRIPE.*can't pay/i);
+  });
+
   it("surfaces a friendly message on a malformed country code (INVALID_COUNTRY)", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({ code: "INVALID_COUNTRY", error: "country must be an ISO 3166-1 alpha-2 code" }, 400)));
     const res = await captureTools().firestarter_payout_eligibility({ country: "XX" });

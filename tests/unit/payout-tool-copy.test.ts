@@ -79,3 +79,37 @@ describe("firestarter_register_seller success copy", () => {
     expect(BLOCK).toMatch(/escrow/i);
   });
 });
+
+describe("firestarter_list copy", () => {
+  // A fourth instance of the same falsehood, found by re-sweeping tools.ts
+  // after the coordinator independently confirmed apps/api/src/routes/
+  // listings.ts never blocks activation on a missing payout method (only
+  // imports, a missing price, and possession verification do). Two separate
+  // strings in this one tool made the false claim: the description's
+  // activation-blocker example, and the hardcoded SELLER_PAYOUTS_RECOMMENDED
+  // warning renderer in the handler.
+  const BLOCK = toolBlock("// Tool: firestarter_list");
+
+  it("does not name payouts as an activation blocker in its own description", () => {
+    expect(BLOCK).not.toMatch(/payouts not connected\), in which case/i);
+  });
+
+  it("names a real activation blocker instead of inventing one", () => {
+    // allow_imageless is a real, already-documented param on this exact tool
+    // (the NEEDS_IMAGE gate) — not a fabricated mechanism. Anchored on the
+    // "blocks activation (e.g. ...)" clause itself, not just the block as a
+    // whole — allow_imageless's own param description always contains the
+    // word regardless of what the activation-blocker example says, so an
+    // unanchored check would pass whether or not this fix landed.
+    expect(BLOCK).toMatch(/blocks activation \(e\.g\.[^)]*allow_imageless[^)]*\)/i);
+  });
+
+  it("does not tell the agent buyers can't purchase a listing that's missing a payout method", () => {
+    expect(BLOCK).not.toMatch(/buyers cannot purchase this listing yet/i);
+    expect(BLOCK).not.toMatch(/checkout is blocked until stripe payouts/i);
+  });
+
+  it("says what a missing payout method actually costs the seller, in the SELLER_PAYOUTS_RECOMMENDED warning", () => {
+    expect(BLOCK).toMatch(/escrow/i);
+  });
+});
