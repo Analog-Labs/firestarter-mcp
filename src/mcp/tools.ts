@@ -523,7 +523,16 @@ export function makeApiRequest(
       ) {
         onAuthError?.();
       }
-      throw new ApiError(data.error || `API request failed: ${res.status}`, res.status, data);
+      // data.error is a STRING on every commerce errorResponse, but anything
+      // nonstandard in front of the API (a proxy's JSON error page, a
+      // non-commerce upstream) can put an OBJECT there — which stringifies to
+      // "[object Object]" in the buyer-facing message. Normalize to prose.
+      const errText =
+        typeof data?.error === "string" && data.error.trim() ? data.error
+          : typeof data?.error?.message === "string" && data.error.message.trim() ? data.error.message
+            : typeof data?.message === "string" && data.message.trim() ? data.message
+              : `API request failed: ${res.status}`;
+      throw new ApiError(errText, res.status, data);
     }
     return data;
   };

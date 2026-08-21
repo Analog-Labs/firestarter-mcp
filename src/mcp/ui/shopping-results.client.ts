@@ -37,7 +37,12 @@ function render(items: ShoppingItem[]): void {
     .map((it) => {
       const img = firstImage(it);
       const title = esc(it.title || it.product_name || "Untitled");
-      const link = it.url || it.share_url;
+      // http(s) only: `url` on a preview option is third-party feed data, and
+      // a javascript:/data: scheme must never reach app.openLink — the host
+      // mediates, but the widget shouldn't emit it in the first place.
+      const link = [it.url, it.share_url].find(
+        (u): u is string => typeof u === "string" && /^https?:\/\//i.test(u),
+      );
       const badge = badgeFor(it);
       const media = img
         ? `<img src="${esc(img)}" alt="${title}" loading="lazy"
@@ -126,7 +131,7 @@ function renderDetail(p: Record<string, unknown>): void {
         <div class="dtitle">${title}</div>
         <div class="stars">${starsInfo ? `${esc(starsInfo.stars)} <span class="count">${esc(starsInfo.count)}</span>` : ""}${sold ? ` <span class="count">· ${esc(sold)}</span>` : ""}</div>
         <div class="meta"><span class="price">${esc(priceLabel(it))}</span> <span class="seller">${seller}</span></div>
-        ${(p as any).share_url ? `<div class="badgerow"><span class="badge ok link" data-url="${esc(String((p as any).share_url))}" role="link" tabindex="0" style="cursor:pointer">View listing page</span></div>` : ""}
+        ${typeof (p as any).share_url === "string" && /^https?:\/\//i.test((p as any).share_url) ? `<div class="badgerow"><span class="badge ok link" data-url="${esc(String((p as any).share_url))}" role="link" tabindex="0" style="cursor:pointer">View listing page</span></div>` : ""}
       </div>
     </div>`;
   root.querySelectorAll<HTMLElement>(".thumb").forEach((b) => b.addEventListener("click", (ev) => {
@@ -146,9 +151,13 @@ app.ontoolresult = (params) => {
       renderDetail(sc.product as Record<string, unknown>);
       return;
     }
-    const items = (Array.isArray(sc.options) ? sc.options
+    // One malformed row (null / non-object) must degrade to "that row is
+    // skipped", never to the WHOLE grid being replaced by an error card —
+    // which is what a TypeError mid-map did.
+    const items = ((Array.isArray(sc.options) ? sc.options
       : Array.isArray(sc.listings) ? sc.listings
-        : []) as ShoppingItem[];
+        : []) as unknown[])
+      .filter((it): it is ShoppingItem => !!it && typeof it === "object");
     render(items);
   } catch (e) {
     renderError(e instanceof Error ? e.message : String(e));
