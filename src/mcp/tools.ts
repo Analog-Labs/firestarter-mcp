@@ -12,7 +12,7 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
 import { sanitizeUntrusted, neutralizeAuthority } from "./untrusted.js";
-import { safeVideos, videoLines } from "./media.js";
+import { safeVideos, videoLines, displayRating } from "./media.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
@@ -2229,7 +2229,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // prose — structuredContent never reaches the model in many of them.
           // stars() returns null with no reviews, so a new seller's row simply
           // has no line rather than an "unrated" badge.
-          const starTxt = stars((o as any).seller_rating, (o as any).seller_rating_count);
+          // Product-first with a LABELED fallback. 80 reviews of a seller's
+          // OTHER products is a real signal, but an agent must not relay it to
+          // a buyer as though it were about this item.
+          const dr = displayRating(o);
+          const starTxt0 = stars(dr.rating, dr.rating_count);
+          const starTxt = starTxt0 ? `${starTxt0}${dr.is_seller_level ? " seller rating" : ""}` : null;
           // >= 3 matches SOLD_MIN on the web: below three sales a count is noise
           // rather than social proof, and "1 sold" reads as a warning.
           const soldTxt = Number((o as any).units_sold) >= 3 ? `${(o as any).units_sold} sold` : null;
@@ -4661,9 +4666,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const name = sanitizeUntrusted(l.product_name) || "Untitled";
         const cur = l.currency;
         const lines: string[] = [`**${name}**`];
-        const starTxt = stars(l.seller_rating, l.seller_rating_count);
+        const dr = displayRating(l);
+        const starTxt = stars(dr.rating, dr.rating_count);
         const sold = Number(l.units_sold) > 0 ? `${l.units_sold} sold` : null;
-        const trustBits = [starTxt ? `${starTxt} seller rating` : null, sold].filter(Boolean).join(" · ");
+        // The label is the whole point of the fallback: unlabeled seller stars
+        // read as this product's, which is the misattribution product-first
+        // ratings exist to prevent.
+        const trustBits = [starTxt ? `${starTxt}${dr.is_seller_level ? " seller rating" : ""}` : null, sold].filter(Boolean).join(" · ");
         if (trustBits) lines.push(trustBits);
         lines.push(`${money(l.current_price, cur)}${l.condition ? ` · ${String(l.condition).replace(/_/g, " ")}` : ""}${l.category ? ` · ${sanitizeUntrusted(l.category, 60)}` : ""}`);
         if (l.inventory_qty != null) lines.push(l.inventory_qty > 0 ? `In stock: ${l.inventory_qty}` : "Out of stock");
@@ -4713,8 +4722,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               price: l.current_price ?? null, currency: cur ?? "USD",
               images: gallery, videos: vids, share_url: share ?? null,
               seller: l.seller_name ?? null, seller_verified: l.seller_verified === true,
-              rating: l.seller_rating != null ? Number(l.seller_rating) : null,
-              rating_count: Number(l.seller_rating_count) || 0,
+              rating: dr.rating,
+              rating_count: dr.rating_count,
+              rating_is_seller_level: dr.is_seller_level,
+              product_rating: l.product_rating != null ? Number(l.product_rating) : null,
+              product_rating_count: Number(l.product_rating_count) || 0,
+              seller_rating: l.seller_rating != null ? Number(l.seller_rating) : null,
+              seller_rating_count: Number(l.seller_rating_count) || 0,
               units_sold: Number(l.units_sold) || 0,
               in_stock: l.inventory_qty == null || l.inventory_qty > 0,
             },
@@ -4863,7 +4877,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const nameCell = mdLink(name, l.share_url) ?? name;
           // Phase 2 wiring: renders the moment the catalog API starts returning
           // rating aggregates; absent fields render nothing (never "0 reviews").
-          const starTxt = stars(l.seller_rating ?? l.rating, l.seller_rating_count ?? l.rating_count);
+          const cdr = displayRating(l);
+          const starTxt = stars(cdr.rating ?? l.rating, cdr.rating_count || l.rating_count);
           const shareText = l.share_url ? null : "sandbox-only, no public link yet";
           lines.push(
             `- ${picked ? "★ " : ""}**${nameCell}** — ${price} [${tag}]${l.category ? ` · ${sanitizeUntrusted(l.category, 80)}` : ""}` +

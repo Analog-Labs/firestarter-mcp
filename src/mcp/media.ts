@@ -54,3 +54,40 @@ export function safeVideos(raw: unknown): AgentVideo[] {
 export function videoLines(videos: unknown): string[] {
   return safeVideos(videos).map((v) => `▶ video: ${v.url}`);
 }
+
+// ─── Ratings ─────────────────────────────────────────────────────────────────
+
+/**
+ * The rating to show: this product's own stars when it has any, the seller's
+ * otherwise, flagged so the caller can label the fallback.
+ *
+ * The API ships product_rating and seller_rating as separate explicit fields
+ * (D1) precisely so it never has to guess which one a surface means. Choosing
+ * between them is a client concern, and this is the agent surface's copy of the
+ * rule apps/web states in lib/trustDisplay.ts.
+ *
+ * Restated rather than shared: the two repos ship independently, and a silent
+ * drift between them is the failure this whole change set exists to end — so
+ * each side states it explicitly and the cross-surface QA pass checks they
+ * agree.
+ *
+ * Never a fabricated zero. A rating with a zero count is treated as absent: it
+ * is unreachable from AVG/COUNT, but a stale cache or a hand-built payload can
+ * produce it, and "4.0 (0)" describes reviews that do not exist.
+ */
+export function displayRating(o: unknown): { rating: number | null; rating_count: number; is_seller_level: boolean } {
+  const src = (o ?? {}) as Record<string, unknown>;
+  const num = (v: unknown): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const pr = num(src.product_rating);
+  const pc = num(src.product_rating_count) ?? 0;
+  if (pr != null && pc >= 1) return { rating: pr, rating_count: pc, is_seller_level: false };
+
+  const sr = num(src.seller_rating);
+  const sc = num(src.seller_rating_count) ?? 0;
+  if (sr != null && sc >= 1) return { rating: sr, rating_count: sc, is_seller_level: true };
+
+  return { rating: null, rating_count: 0, is_seller_level: false };
+}
