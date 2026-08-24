@@ -10,6 +10,7 @@
  * See MCP_P1_STRUCTURED_OUTPUTS.html for the audit + rollout plan.
  */
 import { z } from "zod";
+import { safeVideos } from "./media.js";
 import { sanitizeUntrusted, sanitizeUntrustedOrNull } from "./untrusted.js";
 import { toMinorUnits } from "./ucp-schema.js";
 import { listingShareUrl } from "../lib/share-link.js";
@@ -85,6 +86,9 @@ const previewOption = z.object({
   image_url: z.string().nullable(),
   /** Full https photo set; the shopping-results app grid-renders these. */
   images: z.array(z.string()),
+  /** Playable video: url + optional poster. Deliberately not content type or
+   *  byte size — an agent relays or links these, it does not decode them. */
+  videos: z.array(z.object({ url: z.string(), poster_url: z.string().nullable() })),
   /** The SELLER's Firestarter review aggregate (1dp) and its count. Null/0 when
    *  the seller has no reviews — the widget's starsLabel renders nothing rather
    *  than an empty state, so a zero must never be manufactured here. */
@@ -161,6 +165,7 @@ export function toPreviewStructured(
       url: typeof o?.url === "string" ? o.url : null,
       image_url: typeof o?.image_url === "string" ? o.image_url : null,
       images: httpsImages(o?.images),
+      videos: safeVideos(o?.videos),
       rating: ratingOrNull(o?.seller_rating),
       rating_count: Number(o?.seller_rating_count) || 0,
       units_sold: Number(o?.units_sold) || 0,
@@ -214,6 +219,9 @@ const catalogListing = z.object({
   share_url: z.string().nullable(),
   /** http(s) product photo URLs; the shopping-results app renders images[0]. */
   images: z.array(z.string()),
+  /** Playable video: url + optional poster. Deliberately not content type or
+   *  byte size — an agent relays or links these, it does not decode them. */
+  videos: z.array(z.object({ url: z.string(), poster_url: z.string().nullable() })),
   /** Seller's average review rating (1 decimal), null until they have reviews.
    *  Same aggregate the listing-detail endpoint returns. The shopping widget
    *  renders it as the card's stars row — without these two fields in the
@@ -281,6 +289,7 @@ export function toCatalogStructured(
       images: Array.isArray(l?.images)
         ? l.images.filter((u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
         : [],
+      videos: safeVideos(l?.videos),
       // Aggregate-only social proof, normalized like the API detail view:
       // rating null until reviews exist, count coerced to a non-negative int.
       seller_rating: toPriceOrNull(l?.seller_rating),
@@ -341,6 +350,9 @@ const sellerListing = z.object({
   share_url: z.string().nullable(),
   /** http(s) product photo URLs; the shopping-results app renders images[0]. */
   images: z.array(z.string()),
+  /** Playable video: url + optional poster. Deliberately not content type or
+   *  byte size — an agent relays or links these, it does not decode them. */
+  videos: z.array(z.object({ url: z.string(), poster_url: z.string().nullable() })),
 });
 
 /** Raw shape advertised as `firestarter_listings`'s `outputSchema`. */
@@ -381,6 +393,7 @@ export function toSellerListingsStructured(listings: any[]): SellerListingsStruc
       created_at: typeof l?.created_at === "string" ? l.created_at : null,
       share_url: listingShareUrl(l),
       images: httpImages(l?.images),
+      videos: safeVideos(l?.videos),
     };
   });
   return {
