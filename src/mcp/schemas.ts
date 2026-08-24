@@ -187,9 +187,15 @@ export function toPreviewStructured(
       product_rating_count: Number(o?.product_rating_count) || 0,
       seller_rating: ratingOf(o?.seller_rating),
       seller_rating_count: Number(o?.seller_rating_count) || 0,
+      // DISPLAY rating: product-first, seller fallback. 2.10.0 fixed exactly
+      // this in toCatalogStructured and missed the identical line here, so
+      // firestarter_preview — the keyless, first-contact agent surface — served
+      // the seller's stars under the display field's name while asserting
+      // is_seller_level=false. Worse than showing nothing: it claimed the
+      // number was about the product.
+      rating: displayRating(o).rating,
+      rating_count: displayRating(o).rating_count,
       rating_is_seller_level: displayRating(o).is_seller_level,
-      rating: ratingOrNull(o?.seller_rating),
-      rating_count: Number(o?.seller_rating_count) || 0,
       units_sold: Number(o?.units_sold) || 0,
       in_stock: o?.in_stock !== false,
       purchasable: !!o?.purchasable,
@@ -395,10 +401,11 @@ const sellerListing = z.object({
   /** The seller's aggregate across all their products. */
   seller_rating: z.number().nullable(),
   seller_rating_count: z.number().int(),
-  /** True when `rating` above is the SELLER's, standing in for a product with
-   *  no reviews yet — renderers must label it rather than imply it is this
-   *  item's. */
-  rating_is_seller_level: z.boolean(),
+  // No rating_is_seller_level here, deliberately: this shape carries no
+  // combined `rating` field for the flag to qualify. A seller looking at their
+  // OWN listings gets both aggregates explicitly and needs no display rule —
+  // 2.10.0 added the flag to all three shapes uniformly, which left a dangling
+  // qualifier on the one shape that has nothing to qualify.
 });
 
 /** Raw shape advertised as `firestarter_listings`'s `outputSchema`. */
@@ -444,7 +451,6 @@ export function toSellerListingsStructured(listings: any[]): SellerListingsStruc
       product_rating_count: Number(l?.product_rating_count) || 0,
       seller_rating: ratingOf(l?.seller_rating),
       seller_rating_count: Number(l?.seller_rating_count) || 0,
-      rating_is_seller_level: displayRating(l).is_seller_level,
     };
   });
   return {
