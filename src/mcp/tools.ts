@@ -13,6 +13,7 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
 import { sanitizeUntrusted, neutralizeAuthority } from "./untrusted.js";
+import { safeVideos, videoLines, displayRating } from "./media.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
@@ -190,7 +191,9 @@ function formatCommunityShelf(community: any): string | null {
     lines.push(`…and ${picks.length - SHELF_RENDER_LIMIT} more.`);
   }
   lines.push(
-    `\nBuy any of these and ${name} earns a share of Firestarter's fee — at no extra cost to you. ` +
+    // Same sanitation as the header — the community name is owner-controlled
+    // text reaching a BUYER, and this footer previously interpolated it raw.
+    `\nBuy any of these and ${sanitizeUntrusted(name, 120) || "this community"} earns a share of Firestarter's fee — at no extra cost to you. ` +
     `Want one? I can price it for checkout: pass its listing_id to firestarter_execute.`,
   );
   return lines.join("\n");
@@ -208,9 +211,11 @@ export function formatCommunitySells(community: any): string | null {
   if (sells.length === 0) return null;
   const name =
     typeof community?.name === "string" && community.name.trim() ? community.name.trim() : "this community";
-  const lines: string[] = [`**What ${name} sells:**`];
+  // Same sanitation as the picks shelf: these names are seller-controlled
+  // text reaching a BUYER — the sells list previously rendered them raw.
+  const lines: string[] = [`**What ${sanitizeUntrusted(name, 120) || "this community"} sells:**`];
   for (const s of sells.slice(0, SHELF_RENDER_LIMIT)) {
-    const nm = typeof s?.product_name === "string" && s.product_name.trim() ? s.product_name.trim() : "Untitled";
+    const nm = sanitizeUntrusted(s?.product_name) || "Untitled";
     const price = Number.isFinite(Number(s?.price)) ? `$${Number(s.price).toFixed(2)}` : "price at checkout";
     const id = typeof s?.listing_id === "string" && s.listing_id ? ` (listing_id: \`${s.listing_id}\`)` : "";
     lines.push(`• ${nm} — ${price}${id}`);
@@ -338,7 +343,17 @@ function stars(rating: unknown, count: unknown): string | null {
  */
 function mdTable(headers: string[], rows: string[][], opts: { cap?: number; moreHint?: string } = {}): string {
   const cap = opts.cap ?? 20;
-  const esc = (v: string) => v.replace(/\|/g, "\|").replace(/\r?\n/g, " ");
+  // NB: the replacement needs a DOUBLE backslash in source — "\|" in a JS
+  // string literal is just "|", which made this a no-op: a | inside a cell
+  // (e.g. a buyer's request text "A | B") split its table row into extra
+  // columns. Cells that pass through sanitizeUntrusted were shielded by
+  // accident; raw cells (the buyer's own request text) were not.
+  //
+  // Backslashes are escaped FIRST: without that, cell text "a\|b" becomes
+  // "a\\|b" — an escaped backslash followed by a BARE pipe — which still
+  // splits the row. Escaping order makes both characters inert.
+  const esc = (v: string) =>
+    v.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r\n?|\n/g, " ");
   const line = (cells: string[]) => `| ${cells.map(esc).join(" | ")} |`;
   const out = [line(headers), `|${headers.map(() => " --- ").join("|")}|`];
   for (const r of rows.slice(0, cap)) out.push(line(r));
@@ -510,7 +525,16 @@ export function makeApiRequest(
       ) {
         onAuthError?.();
       }
-      throw new ApiError(data.error || `API request failed: ${res.status}`, res.status, data);
+      // data.error is a STRING on every commerce errorResponse, but anything
+      // nonstandard in front of the API (a proxy's JSON error page, a
+      // non-commerce upstream) can put an OBJECT there — which stringifies to
+      // "[object Object]" in the buyer-facing message. Normalize to prose.
+      const errText =
+        typeof data?.error === "string" && data.error.trim() ? data.error
+          : typeof data?.error?.message === "string" && data.error.message.trim() ? data.error.message
+            : typeof data?.message === "string" && data.message.trim() ? data.message
+              : `API request failed: ${res.status}`;
+      throw new ApiError(errText, res.status, data);
     }
     return data;
   };
@@ -604,6 +628,59 @@ function regateNoticeText(listing: unknown): string {
     `\n**This listing is no longer buyer-visible.** The new price/category needs possession verification${why}, ` +
     `so it has been moved back to draft.${steps}`
   );
+}
+
+/**
+ * commerce#775/#858: photos the API refused, named.
+ *
+ * Four commerce producers set `rejected_images` — listing-create.ts, the
+ * listings PATCH, and two seller-dashboard routes — and until this function
+ * existed the field appeared nowhere in this file. A create that stored 2 of 3
+ * photos printed "Photos: 2 attached" and the agent reported success; one that
+ * stored 0 of 1 printed the NEEDS_IMAGE block, which reads as "you didn't send
+ * a photo" to a seller who did.
+ *
+ * Not an error: the write succeeded and the listing may well be live. This says
+ * what did not make it and why, so the agent can offer the photo again instead
+ * of asking the seller to re-send something already in the conversation.
+ */
+function rejectedPhotosText(listing: unknown): string {
+  const rejected = (listing as any)?.rejected_images;
+  if (!Array.isArray(rejected) || rejected.length === 0) return "";
+
+  const lines = rejected
+    .map((r: any) => {
+      // The API pairs every entry with a seller-readable reason. Degrading to
+      // the bare URL is still better than silence — the point is that the
+      // seller learns a photo is missing at all.
+      const url = typeof r?.url === "string" && r.url ? r.url : "a photo";
+      const reason = typeof r?.reason === "string" && r.reason ? ` — ${r.reason}` : "";
+      return `- ${url}${reason}`;
+    })
+    .join("\n");
+
+  const n = rejected.length;
+  return (
+    `\n**${n} photo${n === 1 ? "" : "s"} could not be added:**\n${lines}\n` +
+    `\nThe rest of the listing saved normally. Offer to try ${n === 1 ? "it" : "them"} again — if the ` +
+    `seller attached the photo in this conversation, call firestarter_upload_image first and pass the ` +
+    `hosted URL, rather than asking them to re-send it.\n`
+  );
+}
+
+/**
+ * commerce#858/7: a restock the API accepted but did not republish.
+ *
+ * `PATCH /v1/listings/:id` answers 200 with `restock_blocked` when stock was
+ * written while the listing is held — behind possession verification, or on a
+ * moderation hold (#751). It used to read as a plain "Listing updated", so a
+ * seller restocking a held listing believed they were back on sale and had no
+ * way to find out why no orders came.
+ */
+function blockedRestockText(listing: unknown): string {
+  const message = (listing as any)?.restock_blocked?.message;
+  if (typeof message !== "string" || !message) return "";
+  return `\n**The stock change saved, but the listing did not go back on sale.** ${message}\n`;
 }
 
 
@@ -1774,6 +1851,79 @@ function registerToolCompat(server: McpServer, name: string, config: any, handle
 }
 
 /**
+ * Human-readable country name from an ISO 3166-1 alpha-2 code, falling back
+ * to the code itself for anything Intl can't resolve (a reserved/unassigned
+ * code, or an unrecognized country the API already normalized to ""). An
+ * agent relaying "we can't pay out to PK" to a seller reads badly next to
+ * "...to Pakistan".
+ */
+const REGION_DISPLAY_NAMES = new Intl.DisplayNames(["en"], { type: "region" });
+function countryLabel(code: string): string {
+  if (!code) return code;
+  try {
+    return REGION_DISPLAY_NAMES.of(code.toUpperCase()) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+/** "A", "A and B", "A, B, and C" — for short rail-name lists. */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+/**
+ * "<RAIL(S)> decide(s) eligibility at connect time — worth trying." The one
+ * sentence for naming a still-"unknown" rail, shared by unpaidCountryHeadline
+ * below (the no-rail-confirmed answer) and firestarter_payout_eligibility's
+ * supported-rail branch (naming an ALSO-unknown rail alongside one already
+ * confirmed) — hand-copying it into both, even with honest wording each
+ * time, is exactly the pattern that put this branch's original bug in five
+ * places. One source; both call sites read from it.
+ */
+function unknownRailNote(names: string[]): string {
+  const decideVerb = names.length === 1 ? "decides" : "decide";
+  return `${joinNames(names)} ${decideVerb} eligibility at connect time — worth trying.`;
+}
+
+/**
+ * The headline for a country where the top-level `supported` answer is
+ * false. Ported from apps/web's usePayoutEligibility.ts (firestarter-commerce
+ * #839) so the MCP tool and the seller dashboard derive the same sentence
+ * from the same per-rail verdicts, rather than drifting the way the flat
+ * "browse-only" copy did.
+ *
+ * Derived from each rail's VERDICT, never from the flattened `supported`
+ * boolean:
+ *  - `"unsupported"` (PayPal, which publishes its own payouts country list)
+ *    is named specifically — that absence is a real fact, not a guess.
+ *  - `"unknown"` (Stripe outside our best-effort seed) is NEVER folded into a
+ *    claim that Firestarter can't pay the country — Stripe decides
+ *    eligibility per seller at connect time and may well work. This is the
+ *    exact distinction #839's four countries (Pakistan, Bangladesh, Nigeria,
+ *    Egypt) sit in: PayPal unsupported, Stripe unknown.
+ *  - Only when EVERY enabled rail is definitively "unsupported" (nothing left
+ *    "unknown") does the confident "we can't pay out to X yet" sentence
+ *    appear.
+ */
+function unpaidCountryHeadline(rails: Array<{ provider: string; verdict: string }>, country: string): string {
+  const unsupportedNames = rails.filter((r) => r.verdict === "unsupported").map((r) => r.provider.toUpperCase());
+  const unknownNames = rails.filter((r) => r.verdict === "unknown").map((r) => r.provider.toUpperCase());
+
+  if (unknownNames.length === 0) {
+    return `We can't pay out to ${country} yet.`;
+  }
+
+  const unknownSentence = unknownRailNote(unknownNames);
+
+  if (unsupportedNames.length === 0) return unknownSentence;
+
+  return `${joinNames(unsupportedNames)} can't pay out to ${country} yet. ${unknownSentence}`;
+}
+
+/**
  * "Account:" line for firestarter_status — who the configured API key belongs
  * to (the org's owner user + the org), from GET /v1/me. Best-effort by design:
  * identity is garnish on a status check, and an older API without the endpoint
@@ -2086,6 +2236,22 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // CALLING agent's context, which we neither own nor instruct (#599).
           text += `\n${i + 1}. **${sanitizeUntrusted(o.title)}** — ${price}${ship}`;
           if (o.seller) text += ` · ${sanitizeUntrusted(o.seller, 120)}`;
+          // Trust bits on their own line: the stars and the sold count are what
+          // a buyer asks about after price, and a text-only host sees ONLY this
+          // prose — structuredContent never reaches the model in many of them.
+          // stars() returns null with no reviews, so a new seller's row simply
+          // has no line rather than an "unrated" badge.
+          // Product-first with a LABELED fallback. 80 reviews of a seller's
+          // OTHER products is a real signal, but an agent must not relay it to
+          // a buyer as though it were about this item.
+          const dr = displayRating(o);
+          const starTxt0 = stars(dr.rating, dr.rating_count);
+          const starTxt = starTxt0 ? `${starTxt0}${dr.is_seller_level ? " seller rating" : ""}` : null;
+          // >= 3 matches SOLD_MIN on the web: below three sales a count is noise
+          // rather than social proof, and "1 sold" reads as a warning.
+          const soldTxt = Number((o as any).units_sold) >= 3 ? `${(o as any).units_sold} sold` : null;
+          const trustBits = [starTxt, soldTxt].filter(Boolean).join(" · ");
+          if (trustBits) text += `\n   ${trustBits}`;
           // A browse-only option's ONLY next action is opening the vendor page,
           // so that gets the click; a buyable option needs no link (it is bought
           // by id) and adding one per row would just dilute the real ones.
@@ -2167,7 +2333,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // scan status/date/amount in columns instead of parsing prose per row.
         lines.push(mdTable(
           ["Order", "Status", "Request", "Date", "Total"],
-          executions.slice(0, 10).map((e: any) => [
+          // Full list — mdTable itself caps at 10 (opts.cap) and renders the
+          // "…and N more" hint. Pre-slicing here starved it of the overflow,
+          // so the hint was unreachable dead code.
+          executions.map((e: any) => [
             `\`${e.id}\``,
             String(e.status ?? ""),
             `${e.request_text?.slice(0, 48) || ""}${(e.request_text?.length ?? 0) > 48 ? "…" : ""}`,
@@ -3498,7 +3667,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `- Create listings with \`firestarter_list\` (just product_name + base_price)\n`;
         text += `- Import existing listings with \`firestarter_import\`\n`;
         text += `- Connect a Shopify store with \`firestarter_connect_shopify\`\n`;
-        text += `\n**Important:** Connect Stripe payouts with \`firestarter_payouts\` so buyers can actually purchase your listings. Without it, listings are visible but show as "browse-only" (checkout blocked). Takes ~2 minutes.\n`;
+        text += `\n**Payouts:** Not required to start selling — connect one later with \`firestarter_payouts\` when ready to receive money. Until then, listings go live and sell normally; earnings wait safely in escrow (selling pauses only if held earnings reach $1,000 or the oldest hold is 30 days old). Not sure a country is payable? Check first with \`firestarter_payout_eligibility\`.\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -3526,7 +3695,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_list
   server.tool(
     "firestarter_list",
-    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts a photo URL already available in the conversation (e.g. one returned by firestarter_upload_image). The listing goes live instantly unless something blocks activation (e.g. payouts not connected), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
+    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts a photo URL already available in the conversation (e.g. one returned by firestarter_upload_image). The listing goes live instantly unless something blocks activation (e.g. no product photo yet — see allow_imageless), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
     {
       product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
       base_price: z.number().describe("REQUIRED. Sale price in USD, e.g. 49.99."),
@@ -3536,6 +3705,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
       image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
       source_url: z.string().url().optional().describe("Optional. If the seller mentions or pastes a link to their OWN existing listing for this product elsewhere (their Etsy/eBay/Shopify page, etc.), pass it here. Firestarter will fetch it once and fill in whatever descriptive details (description, category, brand, materials, tags, condition) the seller didn't already give you — it never overwrites anything you explicitly set. Best-effort: if the fetch fails or finds nothing, the listing is still created normally."),
       shipping: z.number().optional().describe("Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."),
       ship_from: z.object({
@@ -3557,7 +3727,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       ...listingDetailFields,
     },
     { title: "Create Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, source_url, shipping, ship_from, shipping_policy, fulfillment_mode, allow_imageless, allow_duplicate, ...details }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, video_urls, source_url, shipping, ship_from, shipping_policy, fulfillment_mode, allow_imageless, allow_duplicate, ...details }) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -3566,6 +3736,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (image_urls?.length) body.images = image_urls;
+        if (video_urls?.length) body.video_urls = video_urls;
         if (source_url) body.source_url = source_url;
         // `shipping` is deprecated/ignored (always estimated live) — not forwarded.
         void shipping;
@@ -3586,6 +3757,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `Shipping: estimated at checkout by the delivery provider, based on the buyer's destination\n`;
         if (listing.fulfillment_mode === "seller_managed") text += `Fulfillment: seller-managed — each paid order holds in awaiting_shipment until you ship it and add tracking with firestarter_ship_order\n`;
         if (Array.isArray(listing.images) && listing.images.length) text += `Photos: ${listing.images.length} attached\n`;
+        // ...and the ones that did NOT attach. "Photos: 2 attached" on a
+        // 3-photo create is true and still leaves the seller believing all
+        // three landed (commerce#858/3).
+        text += rejectedPhotosText(listing);
         // Surface activation blocks so the seller knows WHY the listing is a
         // draft and what to do about it — without this the agent just says
         // "Status: draft" and the seller is stuck.
@@ -3617,7 +3792,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Array.isArray(listing.activation_warnings) && listing.activation_warnings.length > 0) {
           for (const warn of listing.activation_warnings) {
             if (warn.code === "SELLER_PAYOUTS_RECOMMENDED") {
-              text += `\n\n⚠️ **Payouts not connected — buyers cannot purchase this listing yet.** The listing is visible in search, but checkout is blocked until Stripe payouts are set up. Call \`firestarter_payouts\` now to get a setup link (takes ~2 minutes).`;
+              text += `\n\n⚠️ **Payouts not connected.** The listing is live and sellable — earnings just wait in escrow until a payout method is connected (selling pauses only if held earnings reach $1,000 or the oldest hold is 30 days old). Call \`firestarter_payouts\` to connect one (~2 minutes), or \`firestarter_payout_eligibility\` to check a country first.`;
             }
           }
         }
@@ -3923,16 +4098,20 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Manage seller payout method — REQUIRED for listings to be purchasable by buyers. Without a payout method, listings appear in search but show as 'browse-only'. Two providers: Stripe (wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (200+ countries). Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list — and PayPal covers sellers whose country Stripe declines, or who prefer it.",
+    "Manage seller payout method — this is how a seller RECEIVES money, not permission to sell. A seller with no payout method lists and sells normally; earnings wait in escrow, and selling pauses automatically only once held earnings reach $1,000 or the oldest hold is 30 days old. Two providers, and NEITHER reaches everywhere: Stripe pays into bank accounts in ~44 documented recipient countries (incl. much of Europe, JP, SG, HK, MY, TH, IN) and its reach is UNKNOWN — not necessarily no — outside that list; PayPal covers more (~92) but excludes Pakistan, Bangladesh, Nigeria and Egypt among others. Do not promise either rail for a country without checking. Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list. To check a specific country before the seller invests any effort, call firestarter_payout_eligibility.",
     {
       // Wise/Payoneer are implemented but not selectable — neither connect flow
-      // yields a destination its adapter can spend. Narrowing the enum stops an
-      // agent proposing a rail the API will refuse. See services/payouts/providers.ts.
+      // yields a destination its adapter can spend, and the API answers 501
+      // PROVIDER_NOT_AVAILABLE for both. See services/payouts/providers.ts.
+      //
+      // Both manifests advertised all four here long after this enum narrowed,
+      // and firestarter-commerce's /discovery route serves mcp.json verbatim —
+      // so the live .well-known manifest offered two rails whose follow-up call
+      // this very enum then rejected. mcp-manifest-parity.test.ts now compares
+      // enum VALUES, not just parameter names, so that cannot drift again.
       provider: z.enum(["stripe", "paypal"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (eligibility is Stripe's call, not a fixed list), 'paypal' = PayPal email (global, needs only the account email)."),
       country: z.string().optional().describe("ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'SG', 'US'. REQUIRED for provider='stripe' unless the seller recorded one at registration: the API refuses to guess, because Stripe locks the country permanently at account creation and a wrong one can only be fixed by discarding the account. If Stripe does not support it you get a clear 422 naming the country — do not pre-filter on the seller's behalf. Irrelevant for PayPal."),
       paypal_email: z.string().optional().describe("PayPal email for receiving payouts. Required when provider='paypal'."),
-      wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
-      payoneer_email: z.string().optional().describe("Payoneer account email. Required when provider='payoneer'."),
     },
     // Sets where every future payout for this seller is sent. That makes it the
     // most attractive target on the surface for a prompt-injected agent, and it
@@ -3943,7 +4122,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // worst it can do. The cost is a host confirmation on the read path too;
     // that is the right trade against an unprompted refund/payout change.
     { title: "View Payouts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    async ({ provider, country, paypal_email, wise_recipient_id, payoneer_email }) => {
+    async ({ provider, country, paypal_email }) => {
       try {
         // If no provider specified, check current status
         if (!provider) {
@@ -3962,7 +4141,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             // API allowlist that no longer exists — eligibility is Stripe's
             // call now, so quoting a country list here only talks sellers out of
             // the rail that would have worked.
-            text = `**No payout method configured.** Listings are visible but buyers cannot checkout.\n\nAvailable providers:\n- **Stripe** — bank payouts wherever Stripe Connect operates, incl. much of Asia-Pacific; ~5 min setup. Needs the country the business banks in (locked permanently once connected).\n- **PayPal** — 200+ countries, ~2 min setup (just an email)\n\nIf unsure whether Stripe covers a country, try it — you get a clear answer naming the country, and PayPal remains available either way.\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
+            text = `**No payout method configured.** You can still list and sell — earnings wait safely in escrow — but selling pauses automatically once held earnings reach $1,000 or the oldest hold is 30 days old.\n\nAvailable providers:\n- **Stripe** — bank payouts wherever Stripe Connect operates, incl. much of Asia-Pacific; ~5 min setup. Needs the country the business banks in (locked permanently once connected).\n- **PayPal** — ~2 min setup (just an email), but its payouts list does not cover every country.\n\nNot sure we can pay your country? Call \`firestarter_payout_eligibility\` first.\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
           }
           return { content: [{ type: "text" as const, text }] };
         }
@@ -4002,22 +4181,6 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           return { content: [{ type: "text" as const, text }] };
         }
 
-        if (provider === "wise") {
-          if (!wise_recipient_id) {
-            return { content: [{ type: "text" as const, text: "To set up Wise payouts:\n1. Seller logs into wise.com and creates a recipient (their own bank account)\n2. Get the recipient ID from Wise\n3. Call `firestarter_payouts` with `provider: \"wise\"` and `wise_recipient_id: \"<id>\"`\n\nWise supports 80+ currencies with low fees — ideal for APAC sellers." }] };
-          }
-          const result = await apiRequest("POST", "/v1/sellers/payout-method/wise", { recipient_id: wise_recipient_id });
-          return { content: [{ type: "text" as const, text: `**Wise payouts configured!**\nRecipient: ${wise_recipient_id}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
-        }
-
-        if (provider === "payoneer") {
-          if (!payoneer_email) {
-            return { content: [{ type: "text" as const, text: "To set up Payoneer payouts, call `firestarter_payouts` with `provider: \"payoneer\"` and `payoneer_email: \"seller@email.com\"`. Many TikTok Shop and Amazon sellers already have a Payoneer account — use the same email. Covers 190+ countries." }] };
-          }
-          const result = await apiRequest("POST", "/v1/sellers/payout-method/payoneer", { email: payoneer_email });
-          return { content: [{ type: "text" as const, text: `**Payoneer payouts configured!**\nEmail: ${payoneer_email}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
-        }
-
         return { content: [{ type: "text" as const, text: "Unknown provider." }], isError: true };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -4027,6 +4190,80 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text: `Error managing payouts: ${msg}${hint}` }], isError: true };
       }
     }
+  );
+
+  // Tool: firestarter_payout_eligibility
+  server.tool(
+    "firestarter_payout_eligibility",
+    "Check whether Firestarter can pay a seller in a given country BEFORE they invest any effort — no seller account required. Takes an ISO 3166-1 alpha-2 country code and returns each payout rail's verdict for it. PayPal publishes its own payouts country list, so its 'unsupported' verdict is authoritative; Stripe decides eligibility per seller at connect time, so it comes back 'unknown' for any country outside a small documented snapshot — never treat 'unknown' as 'no'. Use this whenever someone asks 'can I sell on Firestarter from <country>' or before walking a seller through registration, so an unsupported country is caught up front instead of after earnings accrue that cannot be withdrawn. A seller in an unsupported (or still-undetermined) country can still register, list, and sell — earnings wait in escrow — but selling pauses once held earnings reach $1,000 or the oldest hold is 30 days old, which is exactly why checking first is worth it.",
+    {
+      country: z.string().length(2).describe("ISO 3166-1 alpha-2 country code, e.g. 'PK', 'NG', 'MY'."),
+    },
+    {
+      title: "Check Payout Eligibility",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async ({ country }) => {
+      try {
+        const res = await apiRequest("GET", `/v1/payouts/eligibility?country=${encodeURIComponent(country)}`);
+        const rails = (res?.rails ?? []) as Array<{
+          provider: string;
+          supported: boolean;
+          verdict: "supported" | "unsupported" | "unknown";
+          requirements: string[];
+        }>;
+        const label = countryLabel(res?.country || country);
+
+        const usable = rails.filter((r) => r.verdict === "supported");
+        if (usable.length > 0) {
+          const lines = usable
+            .map((r) => `- **${r.provider.toUpperCase()}** — needs: ${r.requirements.length ? r.requirements.map((x) => x.replace(/_/g, " ")).join(", ") : "no extra setup"}`)
+            .join("\n");
+          const parts = [`**We can pay sellers in ${label}.**\n\n${lines}`];
+          // A rail already confirmed does not make a still-"unknown" rail (e.g.
+          // Stripe outside our best-effort seed) worth hiding — the whole point
+          // of carrying "unknown" through this tool is that it can ALSO work,
+          // decided per seller at connect time. Dropping it here would flatten
+          // the exact distinction unpaidCountryHeadline exists to preserve.
+          const maybe = rails.filter((r) => r.verdict === "unknown");
+          if (maybe.length > 0) {
+            parts.push(unknownRailNote(maybe.map((r) => r.provider.toUpperCase())));
+          }
+          parts.push(`Set one up with \`firestarter_payouts\`.`);
+          return {
+            content: [{
+              type: "text" as const,
+              text: parts.join("\n\n"),
+            }],
+          };
+        }
+
+        // No rail confirmed yet. The headline is derived from each rail's
+        // VERDICT, never from the flattened `supported: false` — an "unknown"
+        // rail (Stripe, which decides per seller at connect time) must never
+        // be folded into "we can't pay this country". See unpaidCountryHeadline.
+        const parts = [unpaidCountryHeadline(rails, label)];
+        parts.push(`A seller can still register, list, and sell from ${label} right now — earnings wait safely in escrow — but selling pauses automatically once held earnings reach $1,000 or the oldest hold is 30 days old.`);
+        if (res?.waitlist_available) {
+          parts.push(`We're tracking demand for ${label}; ask the seller if they'd like to be notified when a confirmed rail opens.`);
+        }
+        return { content: [{ type: "text" as const, text: parts.join("\n\n") }] };
+      } catch (err: any) {
+        if (err instanceof ApiError && err.code === "INVALID_COUNTRY") {
+          return {
+            content: [{ type: "text" as const, text: "Pass a two-letter ISO country code, e.g. 'PK' or 'MY'." }],
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: "text" as const, text: `Couldn't check eligibility: ${toErrorMessage(err)}` }],
+          isError: true,
+        };
+      }
+    },
   );
 
   // Tool: firestarter_connect_shopify
@@ -4441,9 +4678,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const name = sanitizeUntrusted(l.product_name) || "Untitled";
         const cur = l.currency;
         const lines: string[] = [`**${name}**`];
-        const starTxt = stars(l.seller_rating, l.seller_rating_count);
+        const dr = displayRating(l);
+        const starTxt = stars(dr.rating, dr.rating_count);
         const sold = Number(l.units_sold) > 0 ? `${l.units_sold} sold` : null;
-        const trustBits = [starTxt ? `${starTxt} seller rating` : null, sold].filter(Boolean).join(" · ");
+        // The label is the whole point of the fallback: unlabeled seller stars
+        // read as this product's, which is the misattribution product-first
+        // ratings exist to prevent.
+        const trustBits = [starTxt ? `${starTxt}${dr.is_seller_level ? " seller rating" : ""}` : null, sold].filter(Boolean).join(" · ");
         if (trustBits) lines.push(trustBits);
         lines.push(`${money(l.current_price, cur)}${l.condition ? ` · ${String(l.condition).replace(/_/g, " ")}` : ""}${l.category ? ` · ${sanitizeUntrusted(l.category, 60)}` : ""}`);
         if (l.inventory_qty != null) lines.push(l.inventory_qty > 0 ? `In stock: ${l.inventory_qty}` : "Out of stock");
@@ -4471,19 +4712,56 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           lines.push(`\nPhotos (${gallery.length}):`);
           for (const img of gallery.slice(0, 8)) lines.push(`  ${img}`);
         }
+        // Video, when the listing has any. A bare URL rather than an embed:
+        // the calling agent decides how to present it, and several hosts
+        // already render a media URL as a player. Silent when there is none —
+        // "0 videos" would be noise on the vast majority of listings.
+        const vids = safeVideos(l.videos);
+        if (vids.length > 0) lines.push("", ...videoLines(l.videos));
+        // Review text. Buyer-authored free text bound for a CALLING agent's
+        // context window — an agent we neither own nor instruct — so every
+        // quote goes through sanitizeUntrusted, is capped so one review cannot
+        // own the response, and is flattened to a single line. Only rating,
+        // comment and date are read: the API never sends a buyer identity, and
+        // this would not relay one if that ever changed upstream.
+        const quotes = Array.isArray(l?.reviews?.top) ? l.reviews.top.slice(0, 3) : [];
+        const reviewOut = quotes.map((r: any) => ({
+          rating: Number(r?.rating) || 0,
+          comment: sanitizeUntrusted(String(r?.comment ?? "").replace(/\s+/g, " "), 200),
+          created_at: typeof r?.created_at === "string" ? r.created_at : null,
+        })).filter((r: any) => r.comment);
+        if (reviewOut.length > 0) {
+          const n = Number(l?.reviews?.count) || reviewOut.length;
+          lines.push(`\n**What buyers say** (${n} review${n === 1 ? "" : "s"})`);
+          for (const r of reviewOut) {
+            const stars0 = "\u2605".repeat(Math.max(1, Math.min(5, Math.round(r.rating))));
+            lines.push(`- ${stars0} _"${r.comment}"_ — verified buyer`);
+          }
+        }
         const share = listingShareUrl(l);
         if (share) lines.push(`\nShare: ${mdUrlLink(share) ?? share}`);
         lines.push(`\nTo buy: \`firestarter_execute\` with listing_id \`${l.id}\`. Shipping quote first: \`firestarter_shipping_estimate\`.`);
+        // The zoom-in is THE "show me this product" surface and was the only
+        // image surface that never inlined: preview, catalog and listings all
+        // call this, so a text-only host got bare URLs here and pictures
+        // everywhere else. Capped by MAX_EMBED_IMAGES and the response budget.
+        const productImages = await inlineImageBlocks(gallery);
         return {
-          content: [{ type: "text" as const, text: lines.join("\n") }],
+          content: [{ type: "text" as const, text: lines.join("\n") }, ...productImages],
           structuredContent: {
             product: {
               id: l.id, title: l.product_name ?? null, description: l.description ?? null,
               price: l.current_price ?? null, currency: cur ?? "USD",
-              images: gallery, share_url: share ?? null,
+              images: gallery, videos: vids, share_url: share ?? null,
+              reviews: { count: Number(l?.reviews?.count) || 0, top: reviewOut },
               seller: l.seller_name ?? null, seller_verified: l.seller_verified === true,
-              rating: l.seller_rating != null ? Number(l.seller_rating) : null,
-              rating_count: Number(l.seller_rating_count) || 0,
+              rating: dr.rating,
+              rating_count: dr.rating_count,
+              rating_is_seller_level: dr.is_seller_level,
+              product_rating: l.product_rating != null ? Number(l.product_rating) : null,
+              product_rating_count: Number(l.product_rating_count) || 0,
+              seller_rating: l.seller_rating != null ? Number(l.seller_rating) : null,
+              seller_rating_count: Number(l.seller_rating_count) || 0,
               units_sold: Number(l.units_sold) || 0,
               in_stock: l.inventory_qty == null || l.inventory_qty > 0,
             },
@@ -4632,7 +4910,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const nameCell = mdLink(name, l.share_url) ?? name;
           // Phase 2 wiring: renders the moment the catalog API starts returning
           // rating aggregates; absent fields render nothing (never "0 reviews").
-          const starTxt = stars(l.seller_rating ?? l.rating, l.seller_rating_count ?? l.rating_count);
+          const cdr = displayRating(l);
+          const starTxt = stars(cdr.rating ?? l.rating, cdr.rating_count || l.rating_count);
           const shareText = l.share_url ? null : "sandbox-only, no public link yet";
           lines.push(
             `- ${picked ? "★ " : ""}**${nameCell}** — ${price} [${tag}]${l.category ? ` · ${sanitizeUntrusted(l.category, 80)}` : ""}` +
@@ -5071,12 +5350,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
       image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
       fulfillment_mode: z.enum(["platform", "seller_managed"]).nullable().optional().describe("How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Pass null to clear back to auto (platform label when a carrier-ratable ship-from exists, otherwise seller-managed)."),
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       ...listingDetailFields,
     },
     { title: "Update Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, fulfillment_mode, allow_imageless, ...details }) => {
+    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, video_urls, fulfillment_mode, allow_imageless, ...details }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
@@ -5086,6 +5366,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (status !== undefined) body.status = status;
         if (image_urls !== undefined) body.images = image_urls;
+        // undefined vs [] is load-bearing on the API: absent leaves the column
+        // alone, empty removes the videos. Forward the distinction, do not
+        // collapse it with a truthiness check.
+        if (video_urls !== undefined) body.video_urls = video_urls;
         if (fulfillment_mode !== undefined) body.fulfillment_mode = fulfillment_mode;
         if (allow_imageless !== undefined) body.allow_imageless = allow_imageless;
         for (const [key, value] of Object.entries(details)) {
@@ -5101,6 +5385,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.category) text += `Category: ${listing.category}\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
         if (listing.status) text += `Status: ${listing.status}\n`;
+        // An edit replaces the gallery wholesale, so a refused photo here can
+        // mean the seller ended up with FEWER photos than they started with
+        // (commerce#775). Never report that as a clean update.
+        text += rejectedPhotosText(listing);
+        // commerce#858/7: stock written on a held listing answers 200. Without
+        // this the seller thinks they are back on sale.
+        text += blockedRestockText(listing);
         // commerce#768: a category change can trip the possession gate on a
         // live listing, which succeeds AND takes the listing offline.
         text += regateNoticeText(listing);

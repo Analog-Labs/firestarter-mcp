@@ -1,6 +1,6 @@
 {
   "name": "@analog-labs/firestarter-mcp",
-  "version": "2.6.0",
+  "version": "2.11.0",
   "description": "Firestarter MCP server — AI-native commerce execution: search products, buy with approval, track orders, manage listings, connect Shopify, and monitor prices.",
   "license": "MIT",
   "type": "module",

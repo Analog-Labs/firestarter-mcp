@@ -223,6 +223,12 @@
     "destructiveHint": false,
     "openWorldHint": false
   },
+  "firestarter_payout_eligibility": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+  },
   "firestarter_payouts": {
     "readOnlyHint": false,
     "destructiveHint": true,

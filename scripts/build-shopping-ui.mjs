@@ -76,6 +76,9 @@ const css = `
   .stars { font-size: 12px; color: #f59e0b; }
   .stars .count { color: #71717a; }
   .stars:empty { display: none; }
+  /* Mixed-rating rows: when the grid has ANY stars, unrated cards keep an
+     empty stars line so price/seller rows align across the row. */
+  .grid.has-stars .stars:empty { display: block; min-height: 1.4em; }
   .meta { display: flex; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; }
   .price { font-weight: 700; flex: none; }
   .seller { color: #71717a; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
@@ -90,6 +93,13 @@ const css = `
   .detail { max-width: 460px; margin: 0 auto; padding: 4px; }
   .media.hero { border: 1px solid #e4e4e7; border-radius: 12px; }
   .thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+  /* Video: poster + play chip, no inline <video>. The widget is a sandboxed
+     iframe in someone else's client; embedding seller-supplied media there is
+     not ours to decide (#774 D11). */
+  .vids { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+  .vid { position: relative; flex: 0 0 auto; width: 96px; height: 64px; border-radius: 8px; overflow: hidden; background: #11131a; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .vid img { width: 100%; height: 100%; object-fit: cover; }
+  .playchip { position: absolute; bottom: 4px; left: 4px; font-size: 10px; padding: 1px 5px; border-radius: 999px; background: rgba(0,0,0,.72); color: #fff; }
   .thumb { flex: none; width: 52px; height: 52px; padding: 0; background: #f4f4f5;
     border: 1px solid #e4e4e7; border-radius: 8px; cursor: pointer; overflow: hidden; }
   .thumb img { width: 100%; height: 100%; object-fit: cover; }
@@ -97,16 +107,30 @@ const css = `
   .dbody { padding: 10px 2px; display: flex; flex-direction: column; gap: 6px; }
   .dtitle { font-weight: 600; font-size: 15px; line-height: 1.3; }
 
+  /* Dark theme, two triggers with one palette:
+     1. the HOST's explicit choice — the client stamps hostContext.theme as
+        [data-theme] on :root (applyDocumentTheme), which must win in BOTH
+        directions (dark app on light OS, light app on dark OS);
+     2. the OS preference as fallback, guarded so an explicit light stamp
+        beats a dark OS. */
   @media (prefers-color-scheme: dark) {
-    body { color: #f4f4f5; }
-    .card { background: #18181b; border-color: #3f3f46; }
-    a.card:hover, .card.link:hover { border-color: #71717a; }
-    .media { background: #27272a; }
-    .badge.ok { background: #14532d; color: #bbf7d0; }
-    .badge.muted { background: #27272a; color: #a1a1aa; }
-    .media.hero, .thumb { border-color: #3f3f46; }
-    .thumb { background: #27272a; }
+    :root:not([data-theme="light"]) body { color: #f4f4f5; }
+    :root:not([data-theme="light"]) .card { background: #18181b; border-color: #3f3f46; }
+    :root:not([data-theme="light"]) a.card:hover, :root:not([data-theme="light"]) .card.link:hover { border-color: #71717a; }
+    :root:not([data-theme="light"]) .media { background: #27272a; }
+    :root:not([data-theme="light"]) .badge.ok { background: #14532d; color: #bbf7d0; }
+    :root:not([data-theme="light"]) .badge.muted { background: #27272a; color: #a1a1aa; }
+    :root:not([data-theme="light"]) .media.hero, :root:not([data-theme="light"]) .thumb { border-color: #3f3f46; }
+    :root:not([data-theme="light"]) .thumb { background: #27272a; }
   }
+  :root[data-theme="dark"] body { color: #f4f4f5; }
+  :root[data-theme="dark"] .card { background: #18181b; border-color: #3f3f46; }
+  :root[data-theme="dark"] a.card:hover, :root[data-theme="dark"] .card.link:hover { border-color: #71717a; }
+  :root[data-theme="dark"] .media { background: #27272a; }
+  :root[data-theme="dark"] .badge.ok { background: #14532d; color: #bbf7d0; }
+  :root[data-theme="dark"] .badge.muted { background: #27272a; color: #a1a1aa; }
+  :root[data-theme="dark"] .media.hero, :root[data-theme="dark"] .thumb { border-color: #3f3f46; }
+  :root[data-theme="dark"] .thumb { background: #27272a; }
 `;
 
 const html = `<!doctype html>
