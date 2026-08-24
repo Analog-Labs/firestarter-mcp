@@ -10,7 +10,14 @@
  * See MCP_P1_STRUCTURED_OUTPUTS.html for the audit + rollout plan.
  */
 import { z } from "zod";
-import { safeVideos } from "./media.js";
+import { safeVideos, displayRating } from "./media.js";
+
+/** A rating as a finite number, or null. Never NaN — a JSON payload can carry
+ *  a string, and Number("") is 0, which would render as a real zero rating. */
+function ratingOf(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) && v !== null && v !== "" ? n : null;
+}
 import { sanitizeUntrusted, sanitizeUntrustedOrNull } from "./untrusted.js";
 import { toMinorUnits } from "./ucp-schema.js";
 import { listingShareUrl } from "../lib/share-link.js";
@@ -89,6 +96,16 @@ const previewOption = z.object({
   /** Playable video: url + optional poster. Deliberately not content type or
    *  byte size — an agent relays or links these, it does not decode them. */
   videos: z.array(z.object({ url: z.string(), poster_url: z.string().nullable() })),
+  /** THIS product's own aggregate. Null until it has a review of its own. */
+  product_rating: z.number().nullable(),
+  product_rating_count: z.number().int(),
+  /** The seller's aggregate across all their products. */
+  seller_rating: z.number().nullable(),
+  seller_rating_count: z.number().int(),
+  /** True when `rating` above is the SELLER's, standing in for a product with
+   *  no reviews yet — renderers must label it rather than imply it is this
+   *  item's. */
+  rating_is_seller_level: z.boolean(),
   /** The SELLER's Firestarter review aggregate (1dp) and its count. Null/0 when
    *  the seller has no reviews — the widget's starsLabel renders nothing rather
    *  than an empty state, so a zero must never be manufactured here. */
@@ -166,6 +183,11 @@ export function toPreviewStructured(
       image_url: typeof o?.image_url === "string" ? o.image_url : null,
       images: httpsImages(o?.images),
       videos: safeVideos(o?.videos),
+      product_rating: ratingOf(o?.product_rating),
+      product_rating_count: Number(o?.product_rating_count) || 0,
+      seller_rating: ratingOf(o?.seller_rating),
+      seller_rating_count: Number(o?.seller_rating_count) || 0,
+      rating_is_seller_level: displayRating(o).is_seller_level,
       rating: ratingOrNull(o?.seller_rating),
       rating_count: Number(o?.seller_rating_count) || 0,
       units_sold: Number(o?.units_sold) || 0,
@@ -222,6 +244,13 @@ const catalogListing = z.object({
   /** Playable video: url + optional poster. Deliberately not content type or
    *  byte size — an agent relays or links these, it does not decode them. */
   videos: z.array(z.object({ url: z.string(), poster_url: z.string().nullable() })),
+  /** THIS product's own aggregate. Null until it has a review of its own. */
+  product_rating: z.number().nullable(),
+  product_rating_count: z.number().int(),
+  /** True when `rating` above is the SELLER's, standing in for a product with
+   *  no reviews yet — renderers must label it rather than imply it is this
+   *  item's. */
+  rating_is_seller_level: z.boolean(),
   /** Seller's average review rating (1 decimal), null until they have reviews.
    *  Same aggregate the listing-detail endpoint returns. The shopping widget
    *  renders it as the card's stars row — without these two fields in the
@@ -230,8 +259,9 @@ const catalogListing = z.object({
   seller_rating: z.number().nullable(),
   /** Number of reviews behind seller_rating (0 when none). */
   seller_rating_count: z.number().int(),
-  /** The SELLER's Firestarter review aggregate (1dp) and its count. Null/0 when
-   *  the seller has no reviews — never a manufactured zero. */
+  /** DISPLAY rating: this product's own stars when it has any, the seller's
+   *  otherwise (rating_is_seller_level says which). Null/0 when neither exists
+   *  — never a manufactured zero. The widget reads these two. */
   rating: z.number().nullable(),
   rating_count: z.number().int(),
   /** Delivered/completed non-test sales of this listing. */
@@ -290,14 +320,20 @@ export function toCatalogStructured(
         ? l.images.filter((u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
         : [],
       videos: safeVideos(l?.videos),
+      product_rating: ratingOf(l?.product_rating),
+      product_rating_count: Number(l?.product_rating_count) || 0,
+      rating_is_seller_level: displayRating(l).is_seller_level,
       // Aggregate-only social proof, normalized like the API detail view:
       // rating null until reviews exist, count coerced to a non-negative int.
       seller_rating: toPriceOrNull(l?.seller_rating),
       seller_rating_count: Number.isFinite(Number(l?.seller_rating_count))
         ? Math.max(0, Math.trunc(Number(l.seller_rating_count)))
         : 0,
-      rating: ratingOrNull(l?.seller_rating),
-      rating_count: Number(l?.seller_rating_count) || 0,
+      // THE fix: `rating` was the SELLER's aggregate wearing the display
+      // field's name, so an agent saw seller stars where apps/web showed
+      // product stars for the same listing.
+      rating: displayRating(l).rating,
+      rating_count: displayRating(l).rating_count,
       units_sold: Number(l?.units_sold) || 0,
       picked_by_community: l?.picked_by_community === true,
       pick_note: sanitizeUntrustedOrNull(l?.pick_note),
@@ -353,6 +389,16 @@ const sellerListing = z.object({
   /** Playable video: url + optional poster. Deliberately not content type or
    *  byte size — an agent relays or links these, it does not decode them. */
   videos: z.array(z.object({ url: z.string(), poster_url: z.string().nullable() })),
+  /** THIS product's own aggregate. Null until it has a review of its own. */
+  product_rating: z.number().nullable(),
+  product_rating_count: z.number().int(),
+  /** The seller's aggregate across all their products. */
+  seller_rating: z.number().nullable(),
+  seller_rating_count: z.number().int(),
+  /** True when `rating` above is the SELLER's, standing in for a product with
+   *  no reviews yet — renderers must label it rather than imply it is this
+   *  item's. */
+  rating_is_seller_level: z.boolean(),
 });
 
 /** Raw shape advertised as `firestarter_listings`'s `outputSchema`. */
@@ -394,6 +440,11 @@ export function toSellerListingsStructured(listings: any[]): SellerListingsStruc
       share_url: listingShareUrl(l),
       images: httpImages(l?.images),
       videos: safeVideos(l?.videos),
+      product_rating: ratingOf(l?.product_rating),
+      product_rating_count: Number(l?.product_rating_count) || 0,
+      seller_rating: ratingOf(l?.seller_rating),
+      seller_rating_count: Number(l?.seller_rating_count) || 0,
+      rating_is_seller_level: displayRating(l).is_seller_level,
     };
   });
   return {
