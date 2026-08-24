@@ -4082,13 +4082,17 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "Manage seller payout method — this is how a seller RECEIVES money, not permission to sell. A seller with no payout method lists and sells normally; earnings wait in escrow, and selling pauses automatically only once held earnings reach $1,000 or the oldest hold is 30 days old. Two providers: Stripe (bank payouts wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (many countries, but NOT all — its payouts list excludes Pakistan, Bangladesh, Nigeria and Egypt among others). Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list. To check a specific country before the seller invests any effort, call firestarter_payout_eligibility.",
     {
       // Wise/Payoneer are implemented but not selectable — neither connect flow
-      // yields a destination its adapter can spend. Narrowing the enum stops an
-      // agent proposing a rail the API will refuse. See services/payouts/providers.ts.
+      // yields a destination its adapter can spend, and the API answers 501
+      // PROVIDER_NOT_AVAILABLE for both. See services/payouts/providers.ts.
+      //
+      // Both manifests advertised all four here long after this enum narrowed,
+      // and firestarter-commerce's /discovery route serves mcp.json verbatim —
+      // so the live .well-known manifest offered two rails whose follow-up call
+      // this very enum then rejected. mcp-manifest-parity.test.ts now compares
+      // enum VALUES, not just parameter names, so that cannot drift again.
       provider: z.enum(["stripe", "paypal"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (eligibility is Stripe's call, not a fixed list), 'paypal' = PayPal email (global, needs only the account email)."),
       country: z.string().optional().describe("ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'SG', 'US'. REQUIRED for provider='stripe' unless the seller recorded one at registration: the API refuses to guess, because Stripe locks the country permanently at account creation and a wrong one can only be fixed by discarding the account. If Stripe does not support it you get a clear 422 naming the country — do not pre-filter on the seller's behalf. Irrelevant for PayPal."),
       paypal_email: z.string().optional().describe("PayPal email for receiving payouts. Required when provider='paypal'."),
-      wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
-      payoneer_email: z.string().optional().describe("Payoneer account email. Required when provider='payoneer'."),
     },
     // Sets where every future payout for this seller is sent. That makes it the
     // most attractive target on the surface for a prompt-injected agent, and it
@@ -4099,7 +4103,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // worst it can do. The cost is a host confirmation on the read path too;
     // that is the right trade against an unprompted refund/payout change.
     { title: "View Payouts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    async ({ provider, country, paypal_email, wise_recipient_id, payoneer_email }) => {
+    async ({ provider, country, paypal_email }) => {
       try {
         // If no provider specified, check current status
         if (!provider) {
@@ -4156,22 +4160,6 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             ? `**PayPal payouts confirmed!**\nEmail: ${paypal_email}\nStatus: confirmed — this is the account earnings pay out to\n\n${result.message}\n\nListings are purchasable by buyers.`
             : `**PayPal address submitted — confirmation required.**\nEmail: ${paypal_email}\nStatus: pending confirmation — nothing pays out here until the seller clicks the emailed link\n\n${result.message}\n\nListings are purchasable by buyers now; earnings wait safely in escrow until the address is confirmed.`;
           return { content: [{ type: "text" as const, text }] };
-        }
-
-        if (provider === "wise") {
-          if (!wise_recipient_id) {
-            return { content: [{ type: "text" as const, text: "To set up Wise payouts:\n1. Seller logs into wise.com and creates a recipient (their own bank account)\n2. Get the recipient ID from Wise\n3. Call `firestarter_payouts` with `provider: \"wise\"` and `wise_recipient_id: \"<id>\"`\n\nWise supports 80+ currencies with low fees — ideal for APAC sellers." }] };
-          }
-          const result = await apiRequest("POST", "/v1/sellers/payout-method/wise", { recipient_id: wise_recipient_id });
-          return { content: [{ type: "text" as const, text: `**Wise payouts configured!**\nRecipient: ${wise_recipient_id}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
-        }
-
-        if (provider === "payoneer") {
-          if (!payoneer_email) {
-            return { content: [{ type: "text" as const, text: "To set up Payoneer payouts, call `firestarter_payouts` with `provider: \"payoneer\"` and `payoneer_email: \"seller@email.com\"`. Many TikTok Shop and Amazon sellers already have a Payoneer account — use the same email. Covers 190+ countries." }] };
-          }
-          const result = await apiRequest("POST", "/v1/sellers/payout-method/payoneer", { email: payoneer_email });
-          return { content: [{ type: "text" as const, text: `**Payoneer payouts configured!**\nEmail: ${payoneer_email}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
         }
 
         return { content: [{ type: "text" as const, text: "Unknown provider." }], isError: true };

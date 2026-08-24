@@ -1327,9 +1327,7 @@
             "type": "string",
             "enum": [
               "stripe",
-              "paypal",
-              "wise",
-              "payoneer"
+              "paypal"
             ],
             "description": "Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (eligibility is Stripe's call, not a fixed list), 'paypal' = PayPal email (global, needs only the account email)."
           },
@@ -1340,14 +1338,6 @@
           "paypal_email": {
             "type": "string",
             "description": "PayPal email for receiving payouts. Required when provider='paypal'."
-          },
-          "wise_recipient_id": {
-            "type": "string",
-            "description": "Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."
-          },
-          "payoneer_email": {
-            "type": "string",
-            "description": "Payoneer account email. Required when provider='payoneer'."
           }
         }
       }
