@@ -93,6 +93,13 @@ const css = `
   .detail { max-width: 460px; margin: 0 auto; padding: 4px; }
   .media.hero { border: 1px solid #e4e4e7; border-radius: 12px; }
   .thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+  /* Video: poster + play chip, no inline <video>. The widget is a sandboxed
+     iframe in someone else's client; embedding seller-supplied media there is
+     not ours to decide (#774 D11). */
+  .vids { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+  .vid { position: relative; flex: 0 0 auto; width: 96px; height: 64px; border-radius: 8px; overflow: hidden; background: #11131a; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .vid img { width: 100%; height: 100%; object-fit: cover; }
+  .playchip { position: absolute; bottom: 4px; left: 4px; font-size: 10px; padding: 1px 5px; border-radius: 999px; background: rgba(0,0,0,.72); color: #fff; }
   .thumb { flex: none; width: 52px; height: 52px; padding: 0; background: #f4f4f5;
     border: 1px solid #e4e4e7; border-radius: 8px; cursor: pointer; overflow: hidden; }
   .thumb img { width: 100%; height: 100%; object-fit: cover; }

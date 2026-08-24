@@ -119,6 +119,21 @@ function renderDetail(p: Record<string, unknown>): void {
     ? `<div class="thumbs">${imgs.slice(0, 8).map((u, i) =>
         `<button class="thumb${i === 0 ? " sel" : ""}" data-src="${esc(u)}"><img src="${esc(u)}" alt="" /></button>`).join("")}</div>`
     : "";
+  // Video: poster + a play chip that opens the file, never an inline <video>.
+  // This widget runs in a sandboxed iframe inside someone else's chat client;
+  // autoplaying or embedding a 25MB seller-supplied file there is not ours to
+  // decide, and the sandbox may block it anyway.
+  const vids = (Array.isArray((p as any).videos) ? (p as any).videos : []).filter(
+    (v: any) => v && typeof v.url === "string" && /^https:\/\//i.test(v.url),
+  );
+  const videoStrip = vids.length
+    ? `<div class="vids">${vids.slice(0, 3).map((v: any) => {
+        const poster = typeof v.poster_url === "string" && /^https:\/\//i.test(v.poster_url) ? v.poster_url : "";
+        return `<span class="vid link" data-url="${esc(String(v.url))}" role="link" tabindex="0">${
+          poster ? `<img src="${esc(poster)}" alt="" />` : ""
+        }<span class="playchip">▶ video</span></span>`;
+      }).join("")}</div>`
+    : "";
   const it = p as ShoppingItem;
   const starsInfo = starsLabel({ rating: (p as any).rating, rating_count: (p as any).rating_count });
   const sold = Number((p as any).units_sold) > 0 ? `${(p as any).units_sold} sold` : "";
@@ -127,6 +142,7 @@ function renderDetail(p: Record<string, unknown>): void {
     <div class="detail">
       <div class="media hero${imgs[0] ? "" : " noimg"}">${hero}<span class="ph">No photo</span></div>
       ${thumbs}
+      ${videoStrip}
       <div class="dbody">
         <div class="dtitle">${title}</div>
         <div class="stars">${starsInfo ? `${esc(starsInfo.stars)} <span class="count">${esc(starsInfo.count)}</span>` : ""}${sold ? ` <span class="count">· ${esc(sold)}</span>` : ""}</div>

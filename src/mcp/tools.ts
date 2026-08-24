@@ -12,6 +12,7 @@ import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
 import { sanitizeUntrusted, neutralizeAuthority } from "./untrusted.js";
+import { safeVideos, videoLines } from "./media.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
@@ -4700,16 +4701,27 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           lines.push(`\nPhotos (${gallery.length}):`);
           for (const img of gallery.slice(0, 8)) lines.push(`  ${img}`);
         }
+        // Video, when the listing has any. A bare URL rather than an embed:
+        // the calling agent decides how to present it, and several hosts
+        // already render a media URL as a player. Silent when there is none —
+        // "0 videos" would be noise on the vast majority of listings.
+        const vids = safeVideos(l.videos);
+        if (vids.length > 0) lines.push("", ...videoLines(l.videos));
         const share = listingShareUrl(l);
         if (share) lines.push(`\nShare: ${mdUrlLink(share) ?? share}`);
         lines.push(`\nTo buy: \`firestarter_execute\` with listing_id \`${l.id}\`. Shipping quote first: \`firestarter_shipping_estimate\`.`);
+        // The zoom-in is THE "show me this product" surface and was the only
+        // image surface that never inlined: preview, catalog and listings all
+        // call this, so a text-only host got bare URLs here and pictures
+        // everywhere else. Capped by MAX_EMBED_IMAGES and the response budget.
+        const productImages = await inlineImageBlocks(gallery);
         return {
-          content: [{ type: "text" as const, text: lines.join("\n") }],
+          content: [{ type: "text" as const, text: lines.join("\n") }, ...productImages],
           structuredContent: {
             product: {
               id: l.id, title: l.product_name ?? null, description: l.description ?? null,
               price: l.current_price ?? null, currency: cur ?? "USD",
-              images: gallery, share_url: share ?? null,
+              images: gallery, videos: vids, share_url: share ?? null,
               seller: l.seller_name ?? null, seller_verified: l.seller_verified === true,
               rating: l.seller_rating != null ? Number(l.seller_rating) : null,
               rating_count: Number(l.seller_rating_count) || 0,
