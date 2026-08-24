@@ -539,6 +539,40 @@ export function makeApiRequest(
   };
 }
 
+/**
+ * #896: render a terminal dispute state as an outcome rather than an error.
+ *
+ * These mean the order's money has finished moving — escrow paid out, already
+ * refunded, or the dispute already settled — so opening a dispute is not
+ * "temporarily unavailable", it is over. Returns null for everything else, so a
+ * real failure (a 500, a malformed request, an unknown order) keeps reading as
+ * a failure and keeps its retry.
+ *
+ * The fallbacks are named because a buyer in this position is not out of
+ * options — they are out of THIS option, and the difference is the whole point
+ * of the report.
+ */
+const DISPUTE_WINDOW_CLOSED_CODES = new Set([
+  "ALREADY_RELEASED",
+  "ALREADY_REFUNDED",
+  "ALREADY_RESOLVED",
+  "ALREADY_DECIDED",
+  "ALREADY_ADJUDICATED",
+  "HOLD_ALREADY_RELEASED",
+]);
+
+function disputeWindowClosedText(err: unknown): string | null {
+  if (!(err instanceof ApiError) || !err.code || !DISPUTE_WINDOW_CLOSED_CODES.has(err.code)) return null;
+  return (
+    `**The dispute window for this order has closed.** ${toErrorMessage(err)}\n\n` +
+    `That is not an error on your side and retrying will not change it — once escrow has paid out or the order has been refunded, Firestarter can no longer hold the funds.\n\n` +
+    `What you can still do:\n` +
+    `- **Message the seller directly** — most problems get resolved this way, and they may refund voluntarily.\n` +
+    `- **Ask your bank or card issuer for a chargeback**, if the item never arrived or was materially not as described.\n` +
+    `- **Contact Firestarter support** with the order id, and a human can look at the case.`
+  );
+}
+
 /** Plain-language cause for a possession-verification requirement. */
 function verificationWhy(reason: unknown): string {
   return reason === "source_conflict"
@@ -6096,6 +6130,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           outLines.push(`\nSee one in full: firestarter_disputes with its dispute_id (or the order's execution_id).`);
           return textBlock(outLines.join("\n"));
         } catch (err: any) {
+          // #896: a closed dispute window is a business RULE, not a failure.
+          //
+          // A buyer whose escrow had already paid out got a red "Failed" — with
+          // the correct advice printed underneath it. The tool knew the right
+          // answer and presented it as a system error, which invites a retry
+          // that can never work.
+          //
+          // Only terminal states qualify: the order's money has finished
+          // moving, so no amount of retrying opens a dispute. A 500, a
+          // malformed request and an unknown order all stay errors.
+          const closed = disputeWindowClosedText(err);
+          if (closed) return textBlock(closed);
           return textBlock(`Error with disputes: ${toErrorMessage(err)}`, true);
         }
       }
