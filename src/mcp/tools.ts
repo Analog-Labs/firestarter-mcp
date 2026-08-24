@@ -4706,6 +4706,26 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // "0 videos" would be noise on the vast majority of listings.
         const vids = safeVideos(l.videos);
         if (vids.length > 0) lines.push("", ...videoLines(l.videos));
+        // Review text. Buyer-authored free text bound for a CALLING agent's
+        // context window — an agent we neither own nor instruct — so every
+        // quote goes through sanitizeUntrusted, is capped so one review cannot
+        // own the response, and is flattened to a single line. Only rating,
+        // comment and date are read: the API never sends a buyer identity, and
+        // this would not relay one if that ever changed upstream.
+        const quotes = Array.isArray(l?.reviews?.top) ? l.reviews.top.slice(0, 3) : [];
+        const reviewOut = quotes.map((r: any) => ({
+          rating: Number(r?.rating) || 0,
+          comment: sanitizeUntrusted(String(r?.comment ?? "").replace(/\s+/g, " "), 200),
+          created_at: typeof r?.created_at === "string" ? r.created_at : null,
+        })).filter((r: any) => r.comment);
+        if (reviewOut.length > 0) {
+          const n = Number(l?.reviews?.count) || reviewOut.length;
+          lines.push(`\n**What buyers say** (${n} review${n === 1 ? "" : "s"})`);
+          for (const r of reviewOut) {
+            const stars0 = "\u2605".repeat(Math.max(1, Math.min(5, Math.round(r.rating))));
+            lines.push(`- ${stars0} _"${r.comment}"_ — verified buyer`);
+          }
+        }
         const share = listingShareUrl(l);
         if (share) lines.push(`\nShare: ${mdUrlLink(share) ?? share}`);
         lines.push(`\nTo buy: \`firestarter_execute\` with listing_id \`${l.id}\`. Shipping quote first: \`firestarter_shipping_estimate\`.`);
@@ -4721,6 +4741,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               id: l.id, title: l.product_name ?? null, description: l.description ?? null,
               price: l.current_price ?? null, currency: cur ?? "USD",
               images: gallery, videos: vids, share_url: share ?? null,
+              reviews: { count: Number(l?.reviews?.count) || 0, top: reviewOut },
               seller: l.seller_name ?? null, seller_verified: l.seller_verified === true,
               rating: dr.rating,
               rating_count: dr.rating_count,
