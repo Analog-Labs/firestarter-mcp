@@ -93,6 +93,14 @@ const css = `
   .detail { max-width: 460px; margin: 0 auto; padding: 4px; }
   .media.hero { border: 1px solid #e4e4e7; border-radius: 12px; }
   .thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+  /* Multi-photo grid cards. Dots, not a thumb strip: a strip inside a grid
+     card competes with the card itself for the tap. Pinned bottom-centre over
+     the image so they never shift the fixed card anatomy. */
+  .media { position: relative; }
+  .dots { position: absolute; bottom: 6px; left: 0; right: 0; display: flex; gap: 4px; justify-content: center; }
+  .dot { width: 6px; height: 6px; padding: 0; border: 0; border-radius: 999px;
+    background: rgba(255,255,255,.55); box-shadow: 0 0 0 1px rgba(0,0,0,.25); cursor: pointer; }
+  .dot.on { background: #fff; }
   /* Video: poster + play chip, no inline <video>. The widget is a sandboxed
      iframe in someone else's client; embedding seller-supplied media there is
      not ours to decide (#774 D11). */
