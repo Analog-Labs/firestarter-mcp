@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderGrid, showShotFromBar, stopCarousels } from "../../src/mcp/ui/grid.client.js";
-import { openSheet, closeSheet, renderDetailPage } from "../../src/mcp/ui/detail.client.js";
+import { showDetail, closeDetail, renderDetailPage } from "../../src/mcp/ui/detail.client.js";
 import { SLIDE_MS } from "../../src/mcp/ui/carousel.js";
 import type { Host } from "../../src/mcp/ui/host.client.js";
 
@@ -71,7 +71,7 @@ beforeEach(() => {
 
 afterEach(() => {
   stopCarousels();
-  closeSheet(fakeHost());
+  closeDetail(fakeHost());
   vi.useRealTimers();
 });
 
@@ -156,27 +156,46 @@ describe("the auto-carousel", () => {
   });
 });
 
-describe("the detail sheet", () => {
-  it("shows the product from the row on the frame it opens", () => {
-    // A modal that waits for a network round trip before showing anything is a
-    // modal that reads as broken.
+describe("the detail view", () => {
+  it("replaces the grid in place rather than floating over it", () => {
+    // A fixed overlay only ever covers the widget's own viewport, and the host
+    // draws its composer on top of that — which is how the seller line and the
+    // photo links ended up permanently behind the message box. In flow, the
+    // host lays the detail out like any other widget content and autoResize
+    // sizes the frame to it.
     const host = fakeHost();
-    openSheet(ROW, host);
-    const sheet = document.querySelector(".sheetwrap")!;
-    expect(sheet.textContent).toContain("Leather conditioner");
-    expect(sheet.textContent).toContain("USD 24.00");
-    expect(sheet.querySelector(".hero img")?.getAttribute("src")).toBe(PHOTOS[0]);
+    renderGrid(root, [ROW]);
+    showDetail(root, ROW, host, {});
+
+    expect(root.querySelector(".detail")).not.toBeNull();
+    expect(root.querySelector(".grid")).toBeNull();
+    expect(document.querySelector(".sheetwrap")).toBeNull();
+  });
+
+  it("shows the product from the row on the frame it opens", () => {
+    // A detail view that waits for a network round trip before showing
+    // anything reads as broken.
+    const host = fakeHost();
+    showDetail(root, ROW, host, {});
+    expect(root.textContent).toContain("Leather conditioner");
+    expect(root.textContent).toContain("USD 24.00");
+    expect(root.querySelector(".hero img")?.getAttribute("src")).toBe(PHOTOS[0]);
   });
 
   it("asks the host for the whole surface, and gives it back on close", () => {
-    // Inline, a widget iframe is often ~400px tall; a detail view inside that
-    // is a letterbox.
     const host = fakeHost();
-    openSheet(ROW, host);
+    showDetail(root, ROW, host, {});
     expect(host.modes).toEqual(["fullscreen"]);
-    closeSheet(host);
+    closeDetail(host);
     expect(host.modes).toEqual(["fullscreen", "inline"]);
-    expect(document.querySelector(".sheetwrap")).toBeNull();
+  });
+
+  it("goes back to the results it came from", () => {
+    const host = fakeHost();
+    const onBack = vi.fn();
+    showDetail(root, ROW, host, { onBack });
+    (root.querySelector("[data-close]") as HTMLElement).click();
+    expect(onBack).toHaveBeenCalled();
   });
 
   it("fills in the description, seller and reviews the row never carried", async () => {
@@ -191,57 +210,44 @@ describe("the detail sheet", () => {
         },
       }),
     });
-    openSheet(ROW, host);
-    // Pending: the sections that are about to arrive read as loading, not as a
-    // product with nothing to say.
-    expect(document.querySelectorAll(".skel").length).toBeGreaterThan(0);
+    showDetail(root, ROW, host, {});
+    expect(root.querySelectorAll(".skel").length).toBeGreaterThan(0);
 
-    await vi.waitFor(() => {
-      expect(document.querySelector(".sheetwrap")!.textContent).toContain("Works well");
-    });
-    const text = document.querySelector(".sheetwrap")!.textContent!;
-    expect(text).toContain("Restores dry leather.");
-    expect(text).toContain("Wax & Hide");
-    expect(text).toContain("What buyers say (9)");
-    expect(document.querySelectorAll(".skel")).toHaveLength(0);
+    await vi.waitFor(() => expect(root.textContent).toContain("Works well"));
+    expect(root.textContent).toContain("Restores dry leather.");
+    expect(root.textContent).toContain("Wax & Hide");
+    expect(root.textContent).toContain("What buyers say (9)");
+    expect(root.querySelectorAll(".skel")).toHaveLength(0);
   });
 
   it("never calls the product tool for an external result", async () => {
-    // A Google Shopping id is not a listing id; the call would earn a 404.
     const host = fakeHost();
-    openSheet(EXTERNAL, host);
+    showDetail(root, EXTERNAL, host, {});
     expect(host.calls).toEqual([]);
-    // …and it offers the merchant instead of a listing page that doesn't exist.
-    expect(document.querySelector(".sheetwrap")!.textContent).toContain("Open on shop.example.com");
+    expect(root.textContent).toContain("Open on shop.example.com");
   });
 
   it("closes on Escape", () => {
     const host = fakeHost();
-    openSheet(ROW, host);
+    const onBack = vi.fn();
+    showDetail(root, ROW, host, { onBack });
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    expect(document.querySelector(".sheetwrap")).toBeNull();
+    expect(onBack).toHaveBeenCalled();
   });
 
   it("drops a stale fetch when another product was opened meanwhile", async () => {
-    // Two clicks in quick succession must not paint product A's reviews into
-    // product B's sheet.
     let release: (v: any) => void = () => {};
     const slow = new Promise<any>((r) => { release = r; });
     const host = fakeHost({
-      // Only the FIRST product's call ever answers. The second sheet is still
-      // waiting, so anything that appears in it came from the stale response.
       callTool: async (_name, args) => (args.listing_id === "lst_abc123" ? slow : new Promise(() => {})),
     });
-    openSheet(ROW, host);
-    openSheet({ ...ROW, id: "lst_other", product_name: "Something else" }, host);
+    showDetail(root, ROW, host, {});
+    showDetail(root, { ...ROW, id: "lst_other", product_name: "Something else" }, host, {});
     release({ product: { description: "Belongs to the first product." } });
-    // Drain the microtask queue AND a macrotask: asserting straight after
-    // `await slow` runs before the stale handler could have painted, which
-    // makes the absence below prove nothing.
     await slow;
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(document.querySelector(".sheetwrap")!.textContent).not.toContain("Belongs to the first product.");
+    expect(root.textContent).not.toContain("Belongs to the first product.");
   });
 });
 
