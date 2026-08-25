@@ -55,6 +55,47 @@ const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firest
 const DASHBOARD_SETTINGS_URL =
   process.env.DASHBOARD_SETTINGS_URL || "https://firestarter.network/dashboard?tab=settings";
 
+/** What GET /v1/sellers/payout-method serves about the selling gate (#949). */
+export interface SellingGate {
+  hold_cap_cents?: number;
+  max_age_days?: number;
+  age_min_cents?: number;
+}
+
+/**
+ * When a payout-less seller stops selling — rendered from what the API serves,
+ * never from a number compiled into this package.
+ *
+ * commerce#949: this sentence used to carry the thresholds as literals in six
+ * places. commerce#942 moved the age from 30 days to 90 and added a floor
+ * ($100) below which the age rule never fires at all, and this package went on
+ * saying "30 days" — telling sellers a number the gate had stopped enforcing
+ * the moment #942 promoted.
+ *
+ * A corrected literal would not have fixed it. Remote MCP serves a PINNED
+ * version, so any hard-coded figure is wrong for every deploy between the
+ * constant moving and the pin moving. commerce/apps/web has a CI guard for the
+ * same drift and it cannot see this repository.
+ *
+ * When the API does not supply the numbers — an older deployment, or a caller
+ * with no seller account — the rule is stated WITHOUT them. Vague and true
+ * beats precise and wrong: a seller who is told the wrong threshold plans
+ * around it.
+ */
+export function sellingGateSentence(gate?: SellingGate | null): string {
+  const cap = typeof gate?.hold_cap_cents === "number" ? `$${(gate.hold_cap_cents / 100).toLocaleString()}` : null;
+  const days = typeof gate?.max_age_days === "number" ? gate.max_age_days : null;
+  const floor = typeof gate?.age_min_cents === "number" ? `$${(gate.age_min_cents / 100).toLocaleString()}` : null;
+
+  if (cap && days != null) {
+    const age = floor
+      ? `the oldest hold is ${days} days old with at least ${floor} held`
+      : `the oldest hold is ${days} days old`;
+    return `selling pauses automatically only once held earnings reach ${cap} or ${age}`;
+  }
+  return "selling pauses automatically only once held earnings pass a cap, or the oldest hold has been waiting a long time — call `firestarter_payouts` for the current thresholds";
+}
+
 export function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   // Authentication/credential failures must not be relayed as a generic
@@ -3716,7 +3757,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `- Create listings with \`firestarter_list\` (just product_name + base_price)\n`;
         text += `- Import existing listings with \`firestarter_import\`\n`;
         text += `- Connect a Shopify store with \`firestarter_connect_shopify\`\n`;
-        text += `\n**Payouts:** Not required to start selling — connect one later with \`firestarter_payouts\` when ready to receive money. Until then, listings go live and sell normally; earnings wait safely in escrow (selling pauses only if held earnings reach $1,000 or the oldest hold is 30 days old). Not sure a country is payable? Check first with \`firestarter_payout_eligibility\`.\n`;
+        text += `\n**Payouts:** Not required to start selling — connect one later with \`firestarter_payouts\` when ready to receive money. Until then, listings go live and sell normally; earnings wait safely in escrow (${sellingGateSentence(null)}). Not sure a country is payable? Check first with \`firestarter_payout_eligibility\`.\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -3841,7 +3882,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Array.isArray(listing.activation_warnings) && listing.activation_warnings.length > 0) {
           for (const warn of listing.activation_warnings) {
             if (warn.code === "SELLER_PAYOUTS_RECOMMENDED") {
-              text += `\n\n⚠️ **Payouts not connected.** The listing is live and sellable — earnings just wait in escrow until a payout method is connected (selling pauses only if held earnings reach $1,000 or the oldest hold is 30 days old). Call \`firestarter_payouts\` to connect one (~2 minutes), or \`firestarter_payout_eligibility\` to check a country first.`;
+              text += `\n\n⚠️ **Payouts not connected.** The listing is live and sellable — earnings just wait in escrow until a payout method is connected (${sellingGateSentence(null)}). Call \`firestarter_payouts\` to connect one (~2 minutes), or \`firestarter_payout_eligibility\` to check a country first.`;
             }
           }
         }
@@ -4147,7 +4188,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Manage seller payout method — this is how a seller RECEIVES money, not permission to sell. A seller with no payout method lists and sells normally; earnings wait in escrow, and selling pauses automatically only once held earnings reach $1,000 or the oldest hold is 30 days old. Two providers, and NEITHER reaches everywhere: Stripe pays into bank accounts in ~44 documented recipient countries (incl. much of Europe, JP, SG, HK, MY, TH, IN) and its reach is UNKNOWN — not necessarily no — outside that list; PayPal covers more (~92) but excludes Pakistan, Bangladesh, Nigeria and Egypt among others. Do not promise either rail for a country without checking. Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list. To check a specific country before the seller invests any effort, call firestarter_payout_eligibility.",
+    "Manage seller payout method — this is how a seller RECEIVES money, not permission to sell. A seller with no payout method lists and sells normally; earnings wait in escrow, and selling pauses automatically only once held earnings pass a cap or the oldest hold has been waiting a long time — call this tool for the current thresholds rather than quoting one, they are set by the API and change. Two providers, and NEITHER reaches everywhere: Stripe pays into bank accounts in ~44 documented recipient countries (incl. much of Europe, JP, SG, HK, MY, TH, IN) and its reach is UNKNOWN — not necessarily no — outside that list; PayPal covers more (~92) but excludes Pakistan, Bangladesh, Nigeria and Egypt among others. Do not promise either rail for a country without checking. Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list. To check a specific country before the seller invests any effort, call firestarter_payout_eligibility.",
     {
       // Wise/Payoneer are implemented but not selectable — neither connect flow
       // yields a destination its adapter can spend, and the API answers 501
@@ -4190,7 +4231,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             // API allowlist that no longer exists — eligibility is Stripe's
             // call now, so quoting a country list here only talks sellers out of
             // the rail that would have worked.
-            text = `**No payout method configured.** You can still list and sell — earnings wait safely in escrow — but selling pauses automatically once held earnings reach $1,000 or the oldest hold is 30 days old.\n\nAvailable providers:\n- **Stripe** — bank payouts wherever Stripe Connect operates, incl. much of Asia-Pacific; ~5 min setup. Needs the country the business banks in (locked permanently once connected).\n- **PayPal** — ~2 min setup (just an email), but its payouts list does not cover every country.\n\nNot sure we can pay your country? Call \`firestarter_payout_eligibility\` first.\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
+            text = `**No payout method configured.** You can still list and sell — earnings wait safely in escrow — but ${sellingGateSentence(status?.selling_gate)}.\n\nAvailable providers:\n- **Stripe** — bank payouts wherever Stripe Connect operates, incl. much of Asia-Pacific; ~5 min setup. Needs the country the business banks in (locked permanently once connected).\n- **PayPal** — ~2 min setup (just an email), but its payouts list does not cover every country.\n\nNot sure we can pay your country? Call \`firestarter_payout_eligibility\` first.\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
           }
           return { content: [{ type: "text" as const, text }] };
         }
@@ -4244,7 +4285,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payout_eligibility
   server.tool(
     "firestarter_payout_eligibility",
-    "Check whether Firestarter can pay a seller in a given country BEFORE they invest any effort — no seller account required. Takes an ISO 3166-1 alpha-2 country code and returns each payout rail's verdict for it. PayPal publishes its own payouts country list, so its 'unsupported' verdict is authoritative; Stripe decides eligibility per seller at connect time, so it comes back 'unknown' for any country outside a small documented snapshot — never treat 'unknown' as 'no'. Use this whenever someone asks 'can I sell on Firestarter from <country>' or before walking a seller through registration, so an unsupported country is caught up front instead of after earnings accrue that cannot be withdrawn. A seller in an unsupported (or still-undetermined) country can still register, list, and sell — earnings wait in escrow — but selling pauses once held earnings reach $1,000 or the oldest hold is 30 days old, which is exactly why checking first is worth it.",
+    "Check whether Firestarter can pay a seller in a given country BEFORE they invest any effort — no seller account required. Takes an ISO 3166-1 alpha-2 country code and returns each payout rail's verdict for it. PayPal publishes its own payouts country list, so its 'unsupported' verdict is authoritative; Stripe decides eligibility per seller at connect time, so it comes back 'unknown' for any country outside a small documented snapshot — never treat 'unknown' as 'no'. Use this whenever someone asks 'can I sell on Firestarter from <country>' or before walking a seller through registration, so an unsupported country is caught up front instead of after earnings accrue that cannot be withdrawn. A seller in an unsupported (or still-undetermined) country can still register, list, and sell — earnings wait in escrow — but selling eventually pauses once held earnings pass a cap or the oldest hold has been waiting a long time (call firestarter_payouts for the current thresholds), which is exactly why checking first is worth it.",
     {
       country: z.string().length(2).describe("ISO 3166-1 alpha-2 country code, e.g. 'PK', 'NG', 'MY'."),
     },
@@ -4295,7 +4336,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // rail (Stripe, which decides per seller at connect time) must never
         // be folded into "we can't pay this country". See unpaidCountryHeadline.
         const parts = [unpaidCountryHeadline(rails, label)];
-        parts.push(`A seller can still register, list, and sell from ${label} right now — earnings wait safely in escrow — but selling pauses automatically once held earnings reach $1,000 or the oldest hold is 30 days old.`);
+        parts.push(`A seller can still register, list, and sell from ${label} right now — earnings wait safely in escrow — but ${sellingGateSentence(null)}.`);
         if (res?.waitlist_available) {
           parts.push(`We're tracking demand for ${label}; ask the seller if they'd like to be notified when a confirmed rail opens.`);
         }
