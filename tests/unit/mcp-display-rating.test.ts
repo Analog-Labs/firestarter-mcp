@@ -46,3 +46,64 @@ describe("displayRating", () => {
       .toEqual({ rating: 3, rating_count: 2, is_seller_level: true });
   });
 });
+
+// ─── Regression: the preview mapper was missed by 2.10.0 ─────────────────────
+
+import { toPreviewStructured, toCatalogStructured } from "../../src/mcp/schemas.js";
+
+const RATED = {
+  id: "lst_1", title: "Shoes", price: 1, currency: "USD", purchasable: true,
+  image_url: "https://a/1.jpg", images: ["https://a/1.jpg", "https://a/2.jpg"],
+  product_rating: 4.8, product_rating_count: 5,
+  seller_rating: 4.2, seller_rating_count: 30, units_sold: 9,
+};
+
+describe("every structured surface agrees on the display rating", () => {
+  it("preview serves the PRODUCT rating, not the seller's", () => {
+    // 2.10.0 fixed this in catalogListing and missed the identical line in
+    // previewOption, so firestarter_preview — the keyless, first-contact agent
+    // surface — served seller stars under the display field's name.
+    const o = toPreviewStructured({ options: [RATED] }, { query: "shoes" }).options[0];
+    expect(o.rating).toBe(4.8);
+    expect(o.rating_count).toBe(5);
+    expect(o.rating_is_seller_level).toBe(false);
+  });
+
+  it("preview labels the seller fallback instead of passing it off as the product's", () => {
+    // The old code set rating to the seller's value AND is_seller_level=false,
+    // which is worse than showing nothing: it actively asserts the wrong thing.
+    const o = toPreviewStructured({
+      options: [{ ...RATED, product_rating: null, product_rating_count: 0 }],
+    }, { query: "shoes" }).options[0];
+    expect(o.rating).toBe(4.2);
+    expect(o.rating_count).toBe(30);
+    expect(o.rating_is_seller_level).toBe(true);
+  });
+
+  it("preview and catalog return the SAME display rating for the same listing", () => {
+    // The whole point of the standard: one listing, one number, every surface.
+    const p = toPreviewStructured({ options: [RATED] }, { query: "x" }).options[0];
+    const c = toCatalogStructured({}, [{
+      id: "lst_1", product_name: "Shoes", current_price: 1, currency: "USD", buyable: true,
+      images: RATED.images, product_rating: 4.8, product_rating_count: 5,
+      seller_rating: 4.2, seller_rating_count: 30, units_sold: 9,
+    }], null).listings[0];
+    expect(p.rating).toBe(c.rating);
+    expect(p.rating_count).toBe(c.rating_count);
+    expect(p.rating_is_seller_level).toBe(c.rating_is_seller_level);
+  });
+
+  it("shows nothing when the listing genuinely has no reviews", () => {
+    // Production's actual state today: no listing has a single review. Absent
+    // must render as absent, never as a zero.
+    const o = toPreviewStructured({
+      options: [{ ...RATED, product_rating: null, product_rating_count: 0, seller_rating: null, seller_rating_count: 0 }],
+    }, { query: "x" }).options[0];
+    expect(o.rating).toBeNull();
+    expect(o.rating_count).toBe(0);
+  });
+
+  it("preview carries the full image array, not just the primary", () => {
+    expect(toPreviewStructured({ options: [RATED] }, { query: "x" }).options[0].images).toHaveLength(2);
+  });
+});
