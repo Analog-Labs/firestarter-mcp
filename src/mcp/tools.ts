@@ -11,6 +11,7 @@ import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalog
 import { SHARE_LINK_BASE, listingShareUrl } from "../lib/share-link.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
+import { isWidgetCall } from "./ui/widget-call.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
 import { sanitizeUntrusted, neutralizeAuthority } from "./untrusted.js";
 import { safeVideos, videoLines, displayRating } from "./media.js";
@@ -4712,14 +4713,28 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // including the rating aggregate and units sold — so this works against the
   // live API today. Individual review comments need a commerce endpoint that
   // does not exist yet; the aggregate is shown and comments are not promised.
-  server.tool(
+  registerToolCompat(
+    server,
     "firestarter_product",
-    "Show one product from the Firestarter catalog in full detail — all photos, description, attributes, price, buyability, and the seller's trust profile (rating, review count, units sold, time on platform). This is the buyer's ZOOM-IN after firestarter_catalog_search or firestarter_preview: pass the listing id (lst_..., also parsed from a firestarter.network/l/<id> share link). Read-only — to buy, pass the same listing_id to firestarter_execute; for a shipping quote first, use firestarter_shipping_estimate.",
     {
-      listing_id: z.string().describe("The listing to show (lst_..., from catalog search, preview, or a share link)."),
+      description: "Show one product from the Firestarter catalog in full detail — all photos, description, attributes, price, buyability, and the seller's trust profile (rating, review count, units sold, time on platform). This is the buyer's ZOOM-IN after firestarter_catalog_search or firestarter_preview: pass the listing id (lst_..., also parsed from a firestarter.network/l/<id> share link). Read-only — to buy, pass the same listing_id to firestarter_execute; for a shipping quote first, use firestarter_shipping_estimate.",
+      inputSchema: {
+        listing_id: z.string().describe("The listing to show (lst_..., from catalog search, preview, or a share link)."),
+      },
+      annotations: { title: "View Product", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+      // Declared at REGISTRATION, not just on the result: Claude Desktop honours
+      // a result-level `_meta.ui`, but ChatGPT reads the tool descriptor, so the
+      // widget never rendered there for this tool. registerAppTool mirrors it to
+      // the legacy flat key for older hosts.
+      //
+      // widgetAccessible is what lets the detail modal call this tool for
+      // itself: ChatGPT refuses a widget-initiated tools/call without it, and
+      // the modal's description, seller and reviews would never arrive. It is
+      // granted to this read-only tool alone — nothing that moves money is
+      // reachable from a sandboxed iframe rendering third-party product data.
+      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
     },
-    { title: "View Product", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
-    async ({ listing_id: rawId }) => {
+    async ({ listing_id: rawId }: { listing_id: string }, extra?: { _meta?: unknown }) => {
       const listing_id = cleanListingId(rawId);
       try {
         const l = await apiRequest("GET", `/v1/listings/${listing_id}`);
@@ -4793,7 +4808,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // image surface that never inlined: preview, catalog and listings all
         // call this, so a text-only host got bare URLs here and pictures
         // everywhere else. Capped by MAX_EMBED_IMAGES and the response budget.
-        const productImages = await inlineImageBlocks(gallery);
+        //
+        // Except when the shopping widget is the caller: its detail modal calls
+        // this tool for the description, seller and review quotes a search row
+        // never carries, and renders the photos itself from the urls above. The
+        // base64 copies would be most of the 1MB budget spent on bytes that
+        // modal never displays. A host that drops the marker just pays for them.
+        const productImages = isWidgetCall(extra?._meta) ? [] : await inlineImageBlocks(gallery);
         return {
           content: [{ type: "text" as const, text: lines.join("\n") }, ...productImages],
           structuredContent: {
