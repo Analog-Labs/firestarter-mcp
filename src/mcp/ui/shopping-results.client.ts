@@ -18,7 +18,7 @@
  * `_meta.ui.csp.resourceDomains`, so a photo on an un-allowlisted host shows
  * the placeholder rather than a broken image.
  */
-import { closeSheet, openSheet, renderDetailPage } from "./detail.client.js";
+import { resetDetail, showDetail, renderDetailPage } from "./detail.client.js";
 import { esc } from "./escape.js";
 import { renderGrid, showShotFromBar, stopCarousels } from "./grid.client.js";
 import { connectHost, type Host } from "./host.client.js";
@@ -36,6 +36,9 @@ function renderError(msg: string): void {
 
 function route(sc: Record<string, unknown>): void {
   try {
+    // A new tool result owns the surface: drop whatever detail view was open
+    // before it repaints, without letting its back handler flash the old grid.
+    resetDetail();
     if (sc.product && typeof sc.product === "object") {
       stopCarousels();
       items = [];
@@ -71,19 +74,27 @@ document.addEventListener("click", (ev) => {
   const bar = el.closest<HTMLElement>(".bar");
   if (bar) { ev.preventDefault(); ev.stopPropagation(); showShotFromBar(bar); return; }
 
-  if (el.closest("[data-close]")) { ev.stopPropagation(); if (host) closeSheet(host); return; }
-
   // Navigation OUT of the sandbox goes through the host: a bare
   // <a target="_blank"> is blocked on hosts that omit allow-popups.
   const link = el.closest<HTMLElement>("[data-url]");
   if (link?.dataset.url) { ev.stopPropagation(); host?.openLink(link.dataset.url); return; }
 
   const card = el.closest<HTMLElement>("[data-card]");
-  if (card && host) {
-    const i = Number(card.dataset.card);
-    if (items[i]) openSheet(items[i] as Record<string, unknown>, host);
-  }
+  if (card && host) openCard(Number(card.dataset.card));
 });
+
+/** A card opens the detail view in place; "back" rebuilds the grid it came
+ *  from, carousels and all. */
+function openCard(i: number): void {
+  const item = items[i];
+  if (!item || !host) return;
+  // The grid is about to be replaced; its carousel timers must not keep
+  // ticking against detached nodes.
+  stopCarousels();
+  showDetail(root, item as Record<string, unknown>, host, {
+    onBack: () => renderGrid(root, items),
+  });
+}
 
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Enter" && ev.key !== " ") return;
@@ -91,8 +102,7 @@ document.addEventListener("keydown", (ev) => {
   const card = el?.closest<HTMLElement>("[data-card]");
   if (!card || !host) return;
   ev.preventDefault();
-  const i = Number(card.dataset.card);
-  if (items[i]) openSheet(items[i] as Record<string, unknown>, host);
+  openCard(Number(card.dataset.card));
 });
 
 connectHost({ onResult: route, onError: renderError })
