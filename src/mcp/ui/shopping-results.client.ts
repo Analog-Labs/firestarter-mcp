@@ -18,7 +18,7 @@
  * placeholder rather than a broken image.
  */
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
-import { badgeFor, firstImage, priceLabel, starsLabel, type ShoppingItem } from "./shopping-item.js";
+import { badgeFor, firstImage, galleryImages, priceLabel, starsLabel, type ShoppingItem } from "./shopping-item.js";
 
 const root = document.getElementById("root")!;
 
@@ -44,9 +44,18 @@ function render(items: ShoppingItem[]): void {
         (u): u is string => typeof u === "string" && /^https?:\/\//i.test(u),
       );
       const badge = badgeFor(it);
+      // Multi-photo cards: the images array was already in the payload and the
+      // grid used only the first, so a 4-photo listing looked identical to a
+      // 1-photo one. Dots rather than a thumb strip — a strip inside a grid
+      // card competes with the card itself for the tap.
+      const shots = galleryImages(it);
       const media = img
-        ? `<img src="${esc(img)}" alt="${title}" loading="lazy"
+        ? `<img class="shot" src="${esc(img)}" alt="${title}" loading="lazy"
              onerror="this.parentElement.classList.add('noimg');this.remove();" />`
+        : "";
+      const dots = shots.length > 1
+        ? `<div class="dots">${shots.map((u, i) =>
+            `<button class="dot${i === 0 ? " on" : ""}" data-shot="${esc(u)}" aria-label="Photo ${i + 1} of ${shots.length}"></button>`).join("")}</div>`
         : "";
       const seller = it.seller ? `<span class="seller">${esc(it.seller)}</span>` : "";
       // Fixed anatomy — media, reserved title, stars (collapses when absent),
@@ -56,7 +65,7 @@ function render(items: ShoppingItem[]): void {
       // No image at all → the placeholder must show immediately; the onerror
       // path only covers an image that EXISTS and fails to load.
       const card = `
-        <div class="media${img ? "" : " noimg"}">${media}<span class="ph">No photo</span></div>
+        <div class="media${img ? "" : " noimg"}">${media}<span class="ph">No photo</span>${dots}</div>
         <div class="body">
           <div class="title">${title}</div>
           <div class="stars">${stars ? `${esc(stars.stars)} <span class="count">${esc(stars.count)}</span>` : ""}</div>
@@ -99,7 +108,23 @@ function openCard(target: EventTarget | null): void {
   const url = el?.dataset.url;
   if (url) void app.openLink({ url }).catch(() => { /* transport failure — grid stays usable */ });
 }
-root.addEventListener("click", (ev) => openCard(ev.target));
+// A dot swaps the card's photo and must NOT navigate: the whole card is a
+// link, so without stopPropagation every attempt to look at photo 2 would open
+// the listing instead.
+root.addEventListener("click", (ev) => {
+  const dot = ev.target instanceof Element ? ev.target.closest<HTMLElement>(".dot") : null;
+  if (dot) {
+    ev.stopPropagation();
+    ev.preventDefault();
+    const media = dot.closest(".media");
+    const shot = media?.querySelector<HTMLImageElement>("img.shot");
+    if (shot && dot.dataset.shot) shot.src = dot.dataset.shot;
+    media?.querySelectorAll(".dot").forEach((d) => d.classList.remove("on"));
+    dot.classList.add("on");
+    return;
+  }
+  openCard(ev.target);
+});
 root.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") openCard(ev.target);
 });

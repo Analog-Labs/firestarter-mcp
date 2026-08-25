@@ -51,6 +51,34 @@ export function firstImage(it: ShoppingItem): string | null {
   return null;
 }
 
+/** Beyond a handful, a card's dot row becomes a scroller. */
+export const MAX_CARD_IMAGES = 6;
+
+/**
+ * Every usable photo for a card, primary first.
+ *
+ * The grid rendered firstImage() only, so a 4-photo listing looked identical
+ * to a 1-photo one — the images array was already in the payload and simply
+ * unused. This is the same filter firstImage applies, kept as one function so
+ * the two cannot disagree about which photo leads: a card showing one photo
+ * and opening a different one is worse than showing one photo.
+ */
+export function galleryImages(it: ShoppingItem): string[] {
+  const ok = (u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (u: unknown) => {
+    if (!ok(u) || seen.has(u) || out.length >= MAX_CARD_IMAGES) return;
+    seen.add(u);
+    out.push(u);
+  };
+  // The primary the API chose leads, whether or not it also appears in the
+  // array — firstImage prefers it too.
+  push(it.image_url ?? it.image);
+  if (Array.isArray(it.images)) for (const u of it.images) push(u);
+  return out;
+}
+
 export function priceLabel(it: ShoppingItem): string {
   const priceObj = typeof it.price === "object" && it.price !== null ? it.price : null;
   const currency = it.currency || priceObj?.currency || "USD";
