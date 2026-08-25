@@ -1,0 +1,197 @@
+/* Firestarter shopping widget — grid, auto-carousel, and detail view.
+ *
+ * FOUNDATION = the original production stylesheet. A redesign pass (host theme
+ * variables, serif host font, padded "catalog tile" contain-framing) read worse
+ * than what was live, so the original look IS the design: system-ui sans,
+ * edge-to-edge cover photos, bordered cards, chip badges.
+ *
+ * Lives in a real .css file rather than a template literal inside the build
+ * script so it can be edited (and diffed) as CSS. scripts/build-shopping-ui.mjs
+ * inlines it verbatim into the generated HTML.
+ */
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #18181b; background: transparent; overflow-y: auto; }
+
+/* ── Grid ────────────────────────────────────────────────────────────────
+   Cards at 210px rather than the original 150px: at 150 a photo in a chat
+   column was a thumbnail, and product photos are the reason this widget
+   exists. auto-fill still collapses to one column on a narrow host. */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px; padding: 4px; }
+.card { display: flex; flex-direction: column; border: 1px solid #e4e4e7; border-radius: 12px;
+  overflow: hidden; text-decoration: none; color: inherit; background: #fff;
+  transition: border-color .12s, transform .12s; }
+a.card:hover, .card.link:hover { border-color: #a1a1aa; transform: translateY(-2px); }
+.card.link:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+
+.media { position: relative; aspect-ratio: 1 / 1; background: #f4f4f5; min-height: 0;
+  overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.media .ph { display: none; color: #a1a1aa; font-size: 12px; }
+.media.noimg .ph { display: block; }
+
+/* Two stacked layers so a photo change is a cross-fade rather than a flash of
+   the background while the next file decodes. Only the layer marked .on is
+   visible; the carousel writes the next url into the hidden one, waits for it
+   to load, then swaps the class. */
+.media .shot { opacity: 0; transition: opacity .45s ease; }
+.media .shot.on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .media .shot { transition: none; }
+  .card, a.card:hover, .card.link:hover { transition: none; transform: none; }
+}
+
+/* Progress bars, not dots. The old 6px dots were tap-only targets nobody in a
+   chat transcript noticed, and they said nothing about the rotation; a bar
+   that fills reads as "this is advancing on its own". */
+.bars { position: absolute; bottom: 6px; left: 6px; right: 6px; display: flex; gap: 3px; }
+.bar { flex: 1; height: 3px; padding: 0; border: 0; border-radius: 999px; cursor: pointer;
+  background: rgba(255,255,255,.42); box-shadow: 0 0 0 1px rgba(0,0,0,.18); overflow: hidden; }
+.bar .fill { display: block; height: 100%; width: 0; background: #fff; }
+.bar.on .fill { width: 100%; }
+/* The fill animates only while that photo is the one on screen AND the card is
+   actually rotating — a paused card shows a static full bar, not a lying one. */
+.media.running .bar.on .fill { animation: barfill var(--slide, 3200ms) linear forwards; }
+@keyframes barfill { from { width: 0 } to { width: 100% } }
+@media (prefers-reduced-motion: reduce) { .media.running .bar.on .fill { animation: none; width: 100%; } }
+
+/* Media count, so a card advertises what the modal holds. */
+.mcount { position: absolute; top: 6px; right: 6px; font-size: 10px; padding: 1px 6px;
+  border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; letter-spacing: .02em; }
+
+.body { padding: 9px 11px 11px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.title { font-weight: 600; font-size: 13px; line-height: 1.3; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  min-height: calc(2 * 1.3em); }
+.stars { font-size: 12px; color: #f59e0b; }
+.stars .count { color: #71717a; }
+.stars:empty { display: none; }
+.grid.has-stars .stars:empty { display: block; min-height: 1.4em; }
+.meta { display: flex; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; }
+.price { font-weight: 700; flex: none; }
+.seller { color: #71717a; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.badgerow { margin-top: auto; padding-top: 4px; }
+.badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid transparent; }
+.badge.ok { background: #dcfce7; color: #166534; }
+.badge.muted { background: #f4f4f5; color: #71717a; }
+.empty { color: #71717a; text-align: center; padding: 24px; }
+
+/* ── Detail view ─────────────────────────────────────────────────────────
+   One markup for two mounts: `.detail.page` when firestarter_product is the
+   tool result, `.detail.sheet` when a grid card was clicked. The sheet covers
+   the widget's own viewport, which is the whole surface once the host grants
+   fullscreen and a scrollable panel when it does not. */
+.detail { max-width: 560px; margin: 0 auto; padding: 4px 4px 16px; }
+.sheetwrap { position: fixed; inset: 0; z-index: 50; overflow-y: auto;
+  background: #fff; padding: 8px 10px 20px; }
+.sheetbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center;
+  justify-content: space-between; gap: 8px; padding: 6px 0 10px; background: inherit; }
+.back { font-size: 13px; color: #3f3f46; background: none; border: 0; cursor: pointer;
+  padding: 6px 8px; border-radius: 8px; }
+.back:hover { background: #f4f4f5; }
+
+.hero { position: relative; aspect-ratio: 4 / 3; background: #f4f4f5; border: 1px solid #e4e4e7;
+  border-radius: 12px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+/* contain, not cover: the modal is where a buyer inspects the product, and a
+   cropped hero hides exactly what they opened it to see. */
+.hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.hero .ph { display: none; color: #a1a1aa; font-size: 12px; }
+.hero.noimg .ph { display: block; }
+.nav { position: absolute; top: 50%; transform: translateY(-50%); width: 32px; height: 32px;
+  border-radius: 999px; border: 0; cursor: pointer; background: rgba(0,0,0,.55); color: #fff;
+  font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.nav.prev { left: 8px; } .nav.next { right: 8px; }
+.nav:hover { background: rgba(0,0,0,.75); }
+.hpos { position: absolute; bottom: 8px; right: 10px; font-size: 11px; color: #fff;
+  background: rgba(0,0,0,.6); border-radius: 999px; padding: 1px 7px; }
+
+.thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+.thumb { flex: none; width: 56px; height: 56px; padding: 0; background: #f4f4f5;
+  border: 1px solid #e4e4e7; border-radius: 8px; cursor: pointer; overflow: hidden; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb.sel { border-color: #18181b; }
+
+/* Video: poster + play chip that opens the file. The widget is a sandboxed
+   iframe in someone else's client; embedding a seller-supplied 25MB file there
+   is not ours to decide (#774 D11). */
+.vids { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+.vid { position: relative; flex: 0 0 auto; width: 104px; height: 68px; border-radius: 8px;
+  overflow: hidden; background: #11131a; cursor: pointer; display: inline-flex;
+  align-items: center; justify-content: center; }
+.vid img { width: 100%; height: 100%; object-fit: cover; }
+.playchip { position: absolute; bottom: 4px; left: 4px; font-size: 10px; padding: 1px 5px;
+  border-radius: 999px; background: rgba(0,0,0,.72); color: #fff; }
+
+.dbody { padding: 12px 2px 0; display: flex; flex-direction: column; gap: 7px; }
+.dtitle { font-weight: 600; font-size: 17px; line-height: 1.3; }
+.dprice { font-weight: 700; font-size: 17px; }
+.rlabel { color: #71717a; font-size: 11px; }
+.sellerline { font-size: 12px; color: #3f3f46; }
+.verified { color: #16a34a; }
+.desc { font-size: 13px; color: #3f3f46; white-space: pre-wrap; }
+.sec { margin-top: 14px; }
+.sech { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: #71717a;
+  margin: 0 0 6px; font-weight: 600; }
+.rev { border-top: 1px solid #e4e4e7; padding: 8px 0; }
+.rev:first-of-type { border-top: 0; }
+.revhead { font-size: 11px; color: #71717a; display: flex; gap: 6px; align-items: center; }
+.revstars { color: #f59e0b; }
+.revtext { font-size: 13px; margin: 3px 0 0; }
+/* Links out: photos and videos as links, plus the listing/store destinations. */
+.links { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid #e4e4e7;
+  background: #fafafa; cursor: pointer; color: inherit; }
+.chip:hover { border-color: #a1a1aa; }
+.chip.primary { background: #18181b; color: #fff; border-color: #18181b; }
+.chip.primary:hover { background: #3f3f46; }
+/* Skeletons for the sections the lazy firestarter_product call fills. They
+   disappear on failure rather than becoming an error: a modal that says
+   "couldn't load reviews" is worse than one that simply has none. */
+.skel { height: 11px; border-radius: 4px; background: linear-gradient(90deg,#efefef,#f7f7f7,#efefef);
+  background-size: 200% 100%; animation: shimmer 1.2s linear infinite; margin: 6px 0; }
+.skel.w60 { width: 60%; } .skel.w40 { width: 40%; }
+@keyframes shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }
+@media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
+
+/* ── Dark theme ──────────────────────────────────────────────────────────
+   Two triggers, one palette: the host's explicit choice stamped as
+   [data-theme] by applyDocumentTheme, and the OS preference as a fallback
+   guarded so an explicit light stamp beats a dark OS. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) body { color: #f4f4f5; }
+  :root:not([data-theme="light"]) .card { background: #18181b; border-color: #3f3f46; }
+  :root:not([data-theme="light"]) a.card:hover, :root:not([data-theme="light"]) .card.link:hover { border-color: #71717a; }
+  :root:not([data-theme="light"]) .media, :root:not([data-theme="light"]) .hero { background: #27272a; }
+  :root:not([data-theme="light"]) .badge.ok { background: #14532d; color: #bbf7d0; }
+  :root:not([data-theme="light"]) .badge.muted { background: #27272a; color: #a1a1aa; }
+  :root:not([data-theme="light"]) .hero, :root:not([data-theme="light"]) .thumb { border-color: #3f3f46; }
+  :root:not([data-theme="light"]) .thumb { background: #27272a; }
+  :root:not([data-theme="light"]) .thumb.sel { border-color: #f4f4f5; }
+  :root:not([data-theme="light"]) .sheetwrap { background: #09090b; }
+  :root:not([data-theme="light"]) .back:hover { background: #27272a; }
+  :root:not([data-theme="light"]) .desc, :root:not([data-theme="light"]) .sellerline { color: #d4d4d8; }
+  :root:not([data-theme="light"]) .rev { border-color: #27272a; }
+  :root:not([data-theme="light"]) .chip { background: #18181b; border-color: #3f3f46; }
+  :root:not([data-theme="light"]) .chip.primary { background: #f4f4f5; color: #18181b; border-color: #f4f4f5; }
+  :root:not([data-theme="light"]) .skel { background: linear-gradient(90deg,#27272a,#3f3f46,#27272a); background-size: 200% 100%; }
+}
+:root[data-theme="dark"] body { color: #f4f4f5; }
+:root[data-theme="dark"] .card { background: #18181b; border-color: #3f3f46; }
+:root[data-theme="dark"] a.card:hover, :root[data-theme="dark"] .card.link:hover { border-color: #71717a; }
+:root[data-theme="dark"] .media, :root[data-theme="dark"] .hero { background: #27272a; }
+:root[data-theme="dark"] .badge.ok { background: #14532d; color: #bbf7d0; }
+:root[data-theme="dark"] .badge.muted { background: #27272a; color: #a1a1aa; }
+:root[data-theme="dark"] .hero, :root[data-theme="dark"] .thumb { border-color: #3f3f46; }
+:root[data-theme="dark"] .thumb { background: #27272a; }
+:root[data-theme="dark"] .thumb.sel { border-color: #f4f4f5; }
+:root[data-theme="dark"] .sheetwrap { background: #09090b; }
+:root[data-theme="dark"] .back:hover { background: #27272a; }
+:root[data-theme="dark"] .desc, :root[data-theme="dark"] .sellerline { color: #d4d4d8; }
+:root[data-theme="dark"] .rev { border-color: #27272a; }
+:root[data-theme="dark"] .chip { background: #18181b; border-color: #3f3f46; }
+:root[data-theme="dark"] .chip.primary { background: #f4f4f5; color: #18181b; border-color: #f4f4f5; }
+:root[data-theme="dark"] .skel { background: linear-gradient(90deg,#27272a,#3f3f46,#27272a); background-size: 200% 100%; }

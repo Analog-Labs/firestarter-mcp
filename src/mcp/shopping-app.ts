@@ -20,7 +20,7 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // reinstalled — an updated widget silently renders with the OLD html/css until
 // the URI changes. Bump the segment whenever the generated HTML changes
 // meaningfully; hosts fetch the "new" resource and the stale cache is orphaned.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v3";
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v4";
 
 // Origins the sandboxed iframe may load product images from. By default an MCP
 // App iframe has NO network access; images load only from origins allowlisted
@@ -60,7 +60,16 @@ export function registerShoppingApp(server: McpServer): void {
         _meta: {
           ui: {
             csp: { resourceDomains: IMAGE_DOMAINS },
+            // The view draws its own cards and sheet; a host frame around it
+            // just doubles the border in the grid case.
+            prefersBorder: false,
           },
+          // ChatGPT reads these two off the resource. The description is what
+          // its model is told the widget shows, so it can decide when the
+          // inline view answers the question and prose is unnecessary.
+          "openai/widgetDescription":
+            "An inline product grid: each card rotates the listing's photos, and clicking one opens the product's full detail — photos, video links, price, rating, seller and buyer reviews.",
+          "openai/widgetPrefersBorder": false,
         },
       }],
     }),
