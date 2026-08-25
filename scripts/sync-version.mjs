@@ -10,12 +10,15 @@
  * (firestarter_preview is registered in a form the pattern missed), which would
  * have written a wrong count into both manifests. One counter, in the test.
  *
- * The version lives in five places: package.json (what npm publishes),
+ * The version lives in six places: package.json (what npm publishes),
  * mcpb/manifest.json (what an installed extension reports), src/mcp/server.ts
- * (what clients see in the initialize handshake), and both mcp.json manifests.
- * `npm version` only bumps the first, so every release used to leave the other
- * four behind — src/mcp/mcp.json had already drifted to 2.1.0 while everything
- * else sat at 2.0.0.
+ * and src/mcp/route.ts (what stdio and remote clients respectively see in the
+ * initialize handshake), and both mcp.json manifests. `npm version` only bumps
+ * the first, so every release used to leave the other five behind —
+ * src/mcp/mcp.json had already drifted to 2.1.0 while everything else sat at
+ * 2.0.0. Keep package.json's `version` script staging all five in step with
+ * the list below: route.ts was added here and left out of that git add, so
+ * 2.12.1 shipped a remote handshake still advertising 2.12.0.
  *
  * Wired to the `version` npm lifecycle, so `npm version 2.1.0` rewrites all of
  * them and stages the result into the version commit. release.yml re-checks the
