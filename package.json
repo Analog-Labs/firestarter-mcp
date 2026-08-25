@@ -29,7 +29,7 @@
     "test:watch": "vitest",
     "mcp": "tsx src/mcp/server.ts",
     "sync-version": "node scripts/sync-version.mjs",
-    "version": "node scripts/sync-version.mjs && git add mcpb/manifest.json mcp.json src/mcp/mcp.json src/mcp/server.ts",
+    "version": "node scripts/sync-version.mjs && git add mcpb/manifest.json mcp.json src/mcp/mcp.json src/mcp/server.ts src/mcp/route.ts",
     "prepare": "node scripts/build-shopping-ui.mjs && tsc && node scripts/build-mcpb.mjs",
     "sync-manifests": "tsx scripts/sync-manifest-descriptions.ts"
   },

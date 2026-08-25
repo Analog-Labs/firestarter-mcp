@@ -110,7 +110,7 @@ jobs:
       - run: node scripts/smoke-bundle.mjs
 
       # The tag is derived from package.json, so those two agree by construction.
-      # The other four files that state the version do not, unless the bump went
+      # The other five files that state the version do not, unless the bump went
       # through `npm version`. sync-version rewrites them from package.json; if
       # it changes anything, the merged commit was inconsistent — fail rather
       # than ship a bundle whose version lies.
@@ -123,7 +123,7 @@ jobs:
             git --no-pager diff --stat
             exit 1
           fi
-          echo "package.json, both mcp.json manifests, mcpb/manifest.json and server.ts all agree"
+          echo "package.json, both mcp.json manifests, mcpb/manifest.json, server.ts and route.ts all agree"
 
       # The installable artifact. firestarter-commerce depends on this tarball by
       # URL rather than on a registry entry: the MCP server has no lifecycle of
