@@ -2030,12 +2030,23 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .boolean()
         .optional()
         .describe("TEST MODE ONLY (fs_test_ keys): park the order at 'shipped' instead of auto-delivering it ~2s later. The mock shipment, tracking number and 'shipped' status all still happen; only the auto-deliver timer is skipped, so the order can be inspected mid-flight and then delivered explicitly with firestarter_confirm_delivery. Ignored on a live key. Use it to stage a shipped-but-not-delivered order for QA."),
+      // commerce#899: hold_at_shipped's delivered-side twin. Test mode zeroes
+      // the escrow inspection window so a test sell completes end to end on the
+      // next tick, which also makes escrow releasable the instant delivery
+      // lands — and a released hold cannot be disputed. So the most common real
+      // dispute, "it arrived and it's wrong", was unstageable in test mode by
+      // any route: hold_at_shipped parks the order BEFORE delivery, and the
+      // confirm-delivery paths re-collapse the window when you finally deliver.
+      hold_at_delivered: z
+        .boolean()
+        .optional()
+        .describe("TEST MODE ONLY (fs_test_ keys): keep the escrow hold in place after delivery, instead of releasing it the moment the order is marked delivered. The order still ships and delivers normally — only the payout is held, on the same inspection window a live order gets. Ignored on a live key. Use it to stage a DELIVERED order that can still be disputed, which is what firestarter_disputes needs to open a dispute at all."),
     },
     // Creates a pending execution and returns priced options — it does not
     // charge anything. Payment happens in firestarter_approve, which is the
     // tool marked destructive. openWorld: it searches the live catalog.
     { title: "Start a Purchase", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by, voucher_code, hold_at_shipped }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by, voucher_code, hold_at_shipped, hold_at_delivered }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
@@ -2048,6 +2059,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // this key inside its test_mode branch only, so forwarding it on a live
         // key is inert rather than dangerous.
         if (hold_at_shipped) body.preferences.hold_at_shipped = true;
+        // Same contract as hold_at_shipped: persisted verbatim, consulted only
+        // for a test_mode ledger (inside confirmDeliverable), inert on a live key.
+        if (hold_at_delivered) body.preferences.hold_at_delivered = true;
         // Attribution rides the existing free-form metadata column — the REST
         // API stores body.metadata verbatim and the list endpoint echoes it.
         if (requested_by && (requested_by.name || requested_by.id)) {
