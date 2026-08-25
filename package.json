@@ -24,7 +24,7 @@
     "build:ui": "node scripts/build-shopping-ui.mjs",
     "build": "node scripts/build-shopping-ui.mjs && tsc",
     "build:mcpb": "node scripts/build-mcpb.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "mcp": "tsx src/mcp/server.ts",
@@ -46,6 +46,7 @@
     "@types/node": "^25.9.1",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.25.12",
+    "jsdom": "^29.1.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },

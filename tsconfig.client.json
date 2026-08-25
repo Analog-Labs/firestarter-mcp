@@ -1,0 +1,14 @@
+{
+  "//": "The iframe half of the codebase. The main tsconfig excludes *.client.ts (they use DOM globals the Node build has no types for) — which left ~400 lines of view code with no typechecking at all, since esbuild only parses. This project typechecks exactly those files against the DOM lib. Wired into `npm run typecheck` and the widget build.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/mcp/ui/**/*.ts"]
+}

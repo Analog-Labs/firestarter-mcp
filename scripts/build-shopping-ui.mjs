@@ -16,7 +16,7 @@
  * Regenerate after editing the client: `npm run build:ui` (wired into `build`).
  */
 import esbuild from "esbuild";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -39,107 +39,11 @@ const result = await esbuild.build({
 // inline <script> element that hosts it.
 const js = result.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 
-const css = `
-  /* FOUNDATION = the original production stylesheet, verbatim where possible.
-     A redesign pass (host theme variables, serif host font, padded "catalog
-     tile" contain-framing) read worse than what was live — so the original
-     look IS the design: system-ui sans, edge-to-edge cover photos, bordered
-     cards, chip badges. On top of it, only the STRUCTURAL fixes the original
-     lacked:
-       1. badge row PINNED to the card bottom (badges align across a row);
-       2. title reserves two lines (rows align when titles don't wrap);
-       3. media images absolutely positioned (a tall intrinsic image can no
-          longer stretch its square tile);
-       4. page scrolls inside a host-capped iframe (no half-cropped rows);
-       5. a stars row that stays collapsed until rating data exists;
-       6. the firestarter_product detail view, styled from the same palette. */
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; }
-  body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    color: #18181b; background: transparent; overflow-y: auto; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 12px; padding: 4px; }
-  .card { display: flex; flex-direction: column; border: 1px solid #e4e4e7; border-radius: 12px;
-    overflow: hidden; text-decoration: none; color: inherit; background: #fff;
-    transition: border-color .12s, transform .12s; }
-  a.card:hover, .card.link:hover { border-color: #a1a1aa; transform: translateY(-2px); }
-  .media { position: relative; aspect-ratio: 1 / 1; background: #f4f4f5; min-height: 0;
-    overflow: hidden; display: flex; align-items: center; justify-content: center; }
-  .media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .media .ph { display: none; color: #a1a1aa; font-size: 12px; }
-  .media.noimg .ph { display: block; }
-  .body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
-  .title { font-weight: 600; font-size: 13px; line-height: 1.3; display: -webkit-box;
-    -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-    min-height: calc(2 * 1.3em); }
-  .stars { font-size: 12px; color: #f59e0b; }
-  .stars .count { color: #71717a; }
-  .stars:empty { display: none; }
-  /* Mixed-rating rows: when the grid has ANY stars, unrated cards keep an
-     empty stars line so price/seller rows align across the row. */
-  .grid.has-stars .stars:empty { display: block; min-height: 1.4em; }
-  .meta { display: flex; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; }
-  .price { font-weight: 700; flex: none; }
-  .seller { color: #71717a; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
-  .badgerow { margin-top: auto; padding-top: 4px; }
-  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
-    border: 1px solid transparent; }
-  .badge.ok { background: #dcfce7; color: #166534; }
-  .badge.muted { background: #f4f4f5; color: #71717a; }
-  .empty { color: #71717a; text-align: center; padding: 24px; }
-
-  /* Detail view (firestarter_product) — original palette, cover hero. */
-  .detail { max-width: 460px; margin: 0 auto; padding: 4px; }
-  .media.hero { border: 1px solid #e4e4e7; border-radius: 12px; }
-  .thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
-  /* Multi-photo grid cards. Dots, not a thumb strip: a strip inside a grid
-     card competes with the card itself for the tap. Pinned bottom-centre over
-     the image so they never shift the fixed card anatomy. */
-  .media { position: relative; }
-  .dots { position: absolute; bottom: 6px; left: 0; right: 0; display: flex; gap: 4px; justify-content: center; }
-  .dot { width: 6px; height: 6px; padding: 0; border: 0; border-radius: 999px;
-    background: rgba(255,255,255,.55); box-shadow: 0 0 0 1px rgba(0,0,0,.25); cursor: pointer; }
-  .dot.on { background: #fff; }
-  /* Video: poster + play chip, no inline <video>. The widget is a sandboxed
-     iframe in someone else's client; embedding seller-supplied media there is
-     not ours to decide (#774 D11). */
-  .vids { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
-  .vid { position: relative; flex: 0 0 auto; width: 96px; height: 64px; border-radius: 8px; overflow: hidden; background: #11131a; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
-  .vid img { width: 100%; height: 100%; object-fit: cover; }
-  .playchip { position: absolute; bottom: 4px; left: 4px; font-size: 10px; padding: 1px 5px; border-radius: 999px; background: rgba(0,0,0,.72); color: #fff; }
-  .thumb { flex: none; width: 52px; height: 52px; padding: 0; background: #f4f4f5;
-    border: 1px solid #e4e4e7; border-radius: 8px; cursor: pointer; overflow: hidden; }
-  .thumb img { width: 100%; height: 100%; object-fit: cover; }
-  .thumb.sel { border-color: #a1a1aa; }
-  .dbody { padding: 10px 2px; display: flex; flex-direction: column; gap: 6px; }
-  .dtitle { font-weight: 600; font-size: 15px; line-height: 1.3; }
-
-  /* Dark theme, two triggers with one palette:
-     1. the HOST's explicit choice — the client stamps hostContext.theme as
-        [data-theme] on :root (applyDocumentTheme), which must win in BOTH
-        directions (dark app on light OS, light app on dark OS);
-     2. the OS preference as fallback, guarded so an explicit light stamp
-        beats a dark OS. */
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) body { color: #f4f4f5; }
-    :root:not([data-theme="light"]) .card { background: #18181b; border-color: #3f3f46; }
-    :root:not([data-theme="light"]) a.card:hover, :root:not([data-theme="light"]) .card.link:hover { border-color: #71717a; }
-    :root:not([data-theme="light"]) .media { background: #27272a; }
-    :root:not([data-theme="light"]) .badge.ok { background: #14532d; color: #bbf7d0; }
-    :root:not([data-theme="light"]) .badge.muted { background: #27272a; color: #a1a1aa; }
-    :root:not([data-theme="light"]) .media.hero, :root:not([data-theme="light"]) .thumb { border-color: #3f3f46; }
-    :root:not([data-theme="light"]) .thumb { background: #27272a; }
-  }
-  :root[data-theme="dark"] body { color: #f4f4f5; }
-  :root[data-theme="dark"] .card { background: #18181b; border-color: #3f3f46; }
-  :root[data-theme="dark"] a.card:hover, :root[data-theme="dark"] .card.link:hover { border-color: #71717a; }
-  :root[data-theme="dark"] .media { background: #27272a; }
-  :root[data-theme="dark"] .badge.ok { background: #14532d; color: #bbf7d0; }
-  :root[data-theme="dark"] .badge.muted { background: #27272a; color: #a1a1aa; }
-  :root[data-theme="dark"] .media.hero, :root[data-theme="dark"] .thumb { border-color: #3f3f46; }
-  :root[data-theme="dark"] .thumb { background: #27272a; }
-`;
+// The stylesheet is a real .css file (src/mcp/ui/shopping.css) rather than a
+// template literal in here, so it can be edited and diffed as CSS. Inlined
+// verbatim: the widget must be one self-contained document — an iframe with no
+// network access cannot fetch a stylesheet.
+const css = readFileSync(join(apiRoot, "src/mcp/ui/shopping.css"), "utf8");
 
 const html = `<!doctype html>
 <html lang="en">

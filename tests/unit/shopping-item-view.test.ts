@@ -12,7 +12,7 @@
  * claimed the item cannot be bought.
  */
 import { describe, it, expect } from "vitest";
-import { badgeFor, priceLabel, firstImage } from "../../src/mcp/ui/shopping-item.js";
+import { badgeFor, priceLabel, firstImage, mediaCountLabel } from "../../src/mcp/ui/shopping-item.js";
 
 describe("badgeFor", () => {
   it("marks a buyable, eligible catalog hit as buyable now", () => {
@@ -143,3 +143,25 @@ describe("galleryImages", () => {
     expect(galleryImages(it)[0]).toBe(firstImage(it));
   });
 });
+
+describe("mediaCountLabel", () => {
+  it("advertises both photo and video counts on a rich card", () => {
+    // The card shows one photo at a time; the chip is how a buyer knows there
+    // are three more and a clip behind the click.
+    expect(mediaCountLabel(["a", "b", "c", "d"], [{ url: "v" }])).toBe("📷 4 · ▶ 1");
+  });
+
+  it("says nothing about a single photo and no video", () => {
+    // A "1 photo" chip is noise on the majority of cards.
+    expect(mediaCountLabel(["a"], [])).toBeNull();
+    expect(mediaCountLabel([], [])).toBeNull();
+  });
+
+  it("mentions video alone when there is only one photo", () => {
+    expect(mediaCountLabel(["a"], [{ url: "v" }, { url: "w" }])).toBe("▶ 2");
+  });
+
+  it("mentions photos alone when there is no video", () => {
+    expect(mediaCountLabel(["a", "b", "c"], [])).toBe("📷 3");
+  });
+})
