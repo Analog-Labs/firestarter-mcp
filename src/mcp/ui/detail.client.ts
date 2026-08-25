@@ -1,110 +1,127 @@
 /**
- * The detail view — one markup, two mounts.
+ * The product detail view — one renderer, one mount, two display modes.
  *
- * `firestarter_product` returns a complete product, and this renders it as the
- * page. A clicked grid card has only a search row (no description, no reviews,
- * and no seller at all on catalog rows), so the same markup opens as a sheet
- * over the grid and a lazy firestarter_product call fills the gaps a moment
- * later. Both read identically because both are built from detailModel().
+ * It used to be a `position: fixed` sheet appended to document.body. That only
+ * ever covers the widget's OWN viewport, and the host draws its chat composer
+ * on top of that viewport — so the tail of the view (seller line, photo and
+ * video links) sat behind the message box with no way to scroll clear of it.
+ * Inline, where the frame is a few hundred pixels tall, the same overlay was a
+ * letterbox.
  *
- * The sheet asks the host for the whole surface first. A widget iframe is often
- * ~400px tall inline, and a "modal" inside that is a letterbox; when the host
- * declines, the sheet still covers the widget's own viewport and scrolls, with
- * a back button rather than a cramped overlay.
+ * Now it renders IN FLOW, replacing the grid inside #root. The host lays it out
+ * like any other widget content and autoResize sizes the frame to it, which is
+ * correct inline and correct fullscreen. The only thing display mode still
+ * changes is how much room the host chrome needs at the bottom — see
+ * safe-area.ts, applied by the stylesheet through [data-display].
  *
- * DOM only — every content decision lives in detail.ts, which Node tests.
+ * Content decisions live in detail.ts, which Node tests; this owns elements.
  */
 import { detailFetchId, detailModel, type DetailModel, type FetchedDetail } from "./detail.js";
 import { esc } from "./escape.js";
 import type { Host } from "./host.client.js";
 
-/** Section markup for the parts the lazy call fills, so a modal that is still
- *  loading looks like it is loading rather than like a product with nothing to
- *  say. On failure the skeletons are simply replaced by nothing. */
+/** Placeholder lines for the sections the lazy firestarter_product call fills,
+ *  so a view that is still loading looks like it is loading rather than like a
+ *  product with nothing to say. */
 const SKELETON = `<div class="skel"></div><div class="skel w60"></div><div class="skel w40"></div>`;
 
-function heroHtml(m: DetailModel): string {
+function mediaColumn(m: DetailModel): string {
   const first = m.images[0];
   const many = m.images.length > 1;
-  return `<div class="hero${first ? "" : " noimg"}">
-    ${first ? `<img id="hero" src="${esc(first)}" alt="${esc(m.title)}"
-        onerror="this.closest('.hero').classList.add('noimg');this.remove();" />` : ""}
-    <span class="ph">No photo</span>
-    ${many ? `<button class="nav prev" data-step="-1" aria-label="Previous photo">‹</button>
-      <button class="nav next" data-step="1" aria-label="Next photo">›</button>
-      <span class="hpos" data-hpos>1 / ${m.images.length}</span>` : ""}
-  </div>
-  ${many ? `<div class="thumbs">${m.images.map((u, i) =>
-    `<button class="thumb${i === 0 ? " sel" : ""}" data-thumb="${i}" aria-label="Photo ${i + 1}"><img src="${esc(u)}" alt="" loading="lazy" /></button>`).join("")}</div>` : ""}`;
+  return `<div class="dmedia">
+    <div class="hero${first ? "" : " noimg"}">
+      ${first ? `<img id="hero" src="${esc(first)}" alt="${esc(m.title)}"
+          onerror="this.closest('.hero').classList.add('noimg');this.remove();" />` : ""}
+      <span class="ph">No photo</span>
+      ${many ? `<button class="nav prev" data-step="-1" aria-label="Previous photo">‹</button>
+        <button class="nav next" data-step="1" aria-label="Next photo">›</button>
+        <span class="hpos" data-hpos>1 / ${m.images.length}</span>` : ""}
+    </div>
+    ${many ? `<div class="thumbs">${m.images.map((u, i) =>
+      `<button class="thumb${i === 0 ? " sel" : ""}" data-thumb="${i}" aria-label="Photo ${i + 1}"><img src="${esc(u)}" alt="" loading="lazy" onerror="this.remove()" /></button>`).join("")}</div>` : ""}
+    ${m.videos.length ? `<div class="vids">${m.videos.map((v, i) =>
+      `<span class="vid" data-url="${esc(v.url)}" role="button" tabindex="0" aria-label="Play video ${i + 1}">${
+        v.poster_url ? `<img src="${esc(v.poster_url)}" alt="" loading="lazy" onerror="this.remove()" />` : ""
+      }<span class="playchip">▶ video</span></span>`).join("")}</div>` : ""}
+  </div>`;
 }
 
 function reviewsHtml(m: DetailModel, pending: boolean): string {
   if (!m.reviews.length) {
-    // Pending → skeleton. Settled with nothing → the section disappears: an
-    // empty "Reviews (0)" makes a new listing look rejected rather than new.
-    return pending ? `<div class="sec"><h3 class="sech">What buyers say</h3>${SKELETON}</div>` : "";
+    // Settled with nothing → the section disappears. An empty "Reviews (0)"
+    // makes a new listing look rejected rather than new.
+    return pending ? `<section class="sec"><h3 class="sech">What buyers say</h3>${SKELETON}</section>` : "";
   }
   const n = m.reviewCount || m.reviews.length;
-  return `<div class="sec"><h3 class="sech">What buyers say (${n})</h3>${m.reviews.map((r) => {
+  return `<section class="sec"><h3 class="sech">What buyers say (${n})</h3>${m.reviews.map((r) => {
     const stars = "★".repeat(Math.max(1, Math.min(5, Math.round(r.rating))));
     const date = r.created_at ? esc(String(r.created_at).slice(0, 10)) : "";
-    return `<div class="rev">
+    return `<article class="rev">
       <div class="revhead"><span class="revstars">${stars}</span><span>Verified buyer</span>${date ? `<span>· ${date}</span>` : ""}</div>
       <p class="revtext">${esc(r.comment)}</p>
-    </div>`;
-  }).join("")}</div>`;
+    </article>`;
+  }).join("")}</section>`;
 }
 
 function mediaLinksHtml(m: DetailModel): string {
-  const chips = [
-    ...m.videos.map((v, i) => `<button class="chip" data-url="${esc(v.url)}">▶ Video ${i + 1}</button>`),
-    ...m.photoLinks.map((p) => `<button class="chip" data-url="${esc(p.url)}">${esc(p.label)}</button>`),
-  ];
-  if (!chips.length) return "";
-  // Links, never an inline <video>: this runs in a sandboxed iframe inside
-  // someone else's client, and autoplaying a seller-supplied 25MB file there is
-  // not ours to decide (#774 D11).
-  return `<div class="sec"><h3 class="sech">Photos &amp; video</h3><div class="links">${chips.join("")}</div></div>`;
+  // Photos only: the media column already shows each clip as a poster with a
+  // play chip, and listing the same video again as a text chip is the same
+  // link twice on one screen. Opening the original photo has no such
+  // equivalent — the thumbnails swap the hero, they do not open the file.
+  if (!m.photoLinks.length) return "";
+  const chips = m.photoLinks.map((p) => `<button class="chip" data-url="${esc(p.url)}">${esc(p.label)}</button>`);
+  return `<section class="sec"><h3 class="sech">Open a photo at full size</h3><div class="links">${chips.join("")}</div></section>`;
 }
 
-function videoStripHtml(m: DetailModel): string {
-  if (!m.videos.length) return "";
-  return `<div class="vids">${m.videos.map((v) =>
-    `<span class="vid" data-url="${esc(v.url)}" role="button" tabindex="0">${
-      v.poster_url ? `<img src="${esc(v.poster_url)}" alt="" loading="lazy" />` : ""
-    }<span class="playchip">▶ video</span></span>`).join("")}</div>`;
-}
-
-export function detailHtml(m: DetailModel, opts: { pending: boolean }): string {
-  const stars = m.rating
-    ? `<div class="stars">${esc(m.rating.stars)} <span class="count">${esc(m.rating.count)}</span>${
-        m.rating.label ? ` <span class="rlabel">${esc(m.rating.label)}</span>` : ""
-      }${m.soldLabel ? ` <span class="count">· ${esc(m.soldLabel)}</span>` : ""}</div>`
-    : m.soldLabel ? `<div class="stars"><span class="count">${esc(m.soldLabel)}</span></div>` : "";
+function infoColumn(m: DetailModel, pending: boolean): string {
+  const rating = m.rating
+    ? `<div class="drating">${esc(m.rating.stars)} <span class="count">${esc(m.rating.count)}</span>${
+        m.rating.label ? `<span class="rlabel">${esc(m.rating.label)}</span>` : ""
+      }${m.soldLabel ? `<span class="count">· ${esc(m.soldLabel)}</span>` : ""}</div>`
+    : m.soldLabel ? `<div class="drating"><span class="count">${esc(m.soldLabel)}</span></div>` : "";
   const seller = m.seller
-    ? `<div class="sellerline">Sold by <strong>${esc(m.seller.name)}</strong>${m.seller.verified ? ` <span class="verified" title="Verified seller">✓ verified</span>` : ""}</div>`
-    : opts.pending ? `<div class="skel w40"></div>` : "";
+    ? `<div class="sellerline">Sold by <strong>${esc(m.seller.name)}</strong>${
+        m.seller.verified ? `<span class="verified">✓ verified</span>` : ""
+      }</div>`
+    : pending ? `<div class="skel w40"></div>` : "";
   const desc = m.description
     ? `<p class="desc">${esc(m.description)}</p>`
-    : opts.pending ? SKELETON : "";
-  const links = m.links.length
-    ? `<div class="sec"><div class="links">${m.links.map((l, i) =>
-        `<button class="chip${i === 0 ? " primary" : ""}" data-url="${esc(l.url)}">${esc(l.label)}</button>`).join("")}</div></div>`
+    : pending ? SKELETON : "";
+  const actions = m.links.length
+    ? `<div class="actions">${m.links.map((l, i) =>
+        `<button class="chip${i === 0 ? " primary" : ""}" data-url="${esc(l.url)}">${esc(l.label)}</button>`).join("")}</div>`
     : "";
-  return `${heroHtml(m)}
-    ${videoStripHtml(m)}
-    <div class="dbody">
-      <div class="dtitle">${esc(m.title)}</div>
-      ${stars}
-      <div class="meta"><span class="dprice">${esc(m.price)}</span>${
-        m.badge ? ` <span class="badge ${m.badge.cls}">${esc(m.badge.text)}</span>` : ""
-      }</div>
-      ${seller}
-      ${desc}
+  return `<div class="dinfo">
+    ${rating}
+    ${seller}
+    ${actions}
+    ${desc ? `<section class="sec">${desc}</section>` : ""}
+    ${reviewsHtml(m, pending)}
+    ${mediaLinksHtml(m)}
+  </div>`;
+}
+
+/** The whole view. `back` is omitted for the firestarter_product mount, where
+ *  the tool result IS the product and there are no results to go back to. */
+function detailHtml(m: DetailModel, opts: { pending: boolean; back: boolean }): string {
+  // Name and price lead, above the gallery. In a chat-sized frame a full-width
+  // hero pushed them under the fold, so opening a product showed a photo and
+  // nothing that said WHICH product — and in two columns a title spanning the
+  // top is the ordinary shape of a product page anyway.
+  return `<div class="detail">
+    ${opts.back ? `<div class="dbar"><button class="back" data-close aria-label="Back to results">‹ Back to results</button></div>` : ""}
+    <header class="dhead">
+      <h2 class="dtitle">${esc(m.title)}</h2>
+      <div class="pricerow">
+        <span class="dprice">${esc(m.price)}</span>
+        ${m.badge ? `<span class="badge ${m.badge.cls}">${esc(m.badge.text)}</span>` : ""}
+      </div>
+    </header>
+    <div class="dgrid">
+      ${mediaColumn(m)}
+      ${infoColumn(m, opts.pending)}
     </div>
-    ${links}
-    ${reviewsHtml(m, opts.pending)}
-    ${mediaLinksHtml(m)}`;
+  </div>`;
 }
 
 /** Hero navigation for whichever detail view is mounted in `container`. */
@@ -135,75 +152,81 @@ function wireHero(container: HTMLElement, images: string[]): void {
 /** The firestarter_product mount: the tool result IS the whole product. */
 export function renderDetailPage(root: HTMLElement, product: Record<string, unknown>): void {
   const model = detailModel(product, product as FetchedDetail);
-  root.innerHTML = `<div class="detail page">${detailHtml(model, { pending: false })}</div>`;
+  root.innerHTML = detailHtml(model, { pending: false, back: false });
   wireHero(root, model.images);
 }
 
-let sheet: HTMLElement | null = null;
+/** Which view is open, and which fetch is allowed to paint into it. Two clicks
+ *  in quick succession must not land product A's reviews in product B's view. */
+let openToken = 0;
 let onKey: ((e: KeyboardEvent) => void) | null = null;
+let onBackHandler: (() => void) | null = null;
 
-/** Tear the sheet down without touching the display mode. Opening a second
- *  product goes through here rather than closeSheet: asking the host to shrink
- *  back to inline and immediately expand again makes it animate a collapse the
- *  buyer never asked for, between two views that both want the full surface. */
-function dismiss(): void {
-  sheet?.remove();
-  sheet = null;
+function detachKey(): void {
   if (onKey) { window.removeEventListener("keydown", onKey); onKey = null; }
 }
 
-export function closeSheet(host: Host): void {
-  if (!sheet) return;
-  dismiss();
-  // Give the surface back — the grid is a browsing view and does not want the
-  // whole window.
+/** Drop any open view WITHOUT restoring anything: a fresh tool result is about
+ *  to repaint #root, and running the back handler first would render the old
+ *  results for a frame before the new ones land. */
+export function resetDetail(): void {
+  openToken += 1;
+  detachKey();
+  onBackHandler = null;
+}
+
+/** Leave the detail view: hand the surface back and let the caller restore
+ *  whatever it was showing before. */
+export function closeDetail(host: Host): void {
+  openToken += 1;
+  detachKey();
+  const back = onBackHandler;
+  onBackHandler = null;
+  // The grid is a browsing view and does not want the whole window.
   host.setDisplayMode("inline");
+  back?.();
 }
 
 /**
- * Open the detail view over the grid for a clicked card, then top it up.
+ * Open the detail view for a clicked card, then top it up.
  *
- * Renders from the row on the first frame — a modal that waits for a network
- * round trip before showing anything is a modal that feels broken — and
- * re-renders once firestarter_product answers with the description, seller and
- * review quotes the row never carried. An external result (no listing id) skips
- * the call entirely rather than spending a round trip to earn a 404.
+ * Renders from the row on the first frame — a view that waits for a network
+ * round trip before showing anything reads as broken — and re-renders once
+ * firestarter_product answers with the description, seller and review quotes
+ * the row never carried. An external result (no listing id) skips the call
+ * rather than spending a round trip to earn a 404.
  */
-export function openSheet(item: Record<string, unknown>, host: Host): void {
-  dismiss();
+export function showDetail(
+  root: HTMLElement,
+  item: Record<string, unknown>,
+  host: Host,
+  opts: { onBack?: () => void },
+): void {
+  detachKey();
+  const token = ++openToken;
+  onBackHandler = opts.onBack ?? null;
   host.setDisplayMode("fullscreen");
 
   const fetchId = detailFetchId(item);
   const paint = (fetched: FetchedDetail | null, pending: boolean) => {
     const model = detailModel(item, fetched);
-    const body = `<div class="sheetbar">
-        <button class="back" data-close aria-label="Back to results">‹ Back to results</button>
-      </div>
-      <div class="detail sheet">${detailHtml(model, { pending })}</div>`;
-    if (!sheet) return;
-    sheet.innerHTML = body;
-    wireHero(sheet, model.images);
+    root.innerHTML = detailHtml(model, { pending, back: true });
+    wireHero(root, model.images);
+    root.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      closeDetail(host);
+    });
   };
-
-  sheet = document.createElement("div");
-  sheet.className = "sheetwrap";
-  sheet.setAttribute("role", "dialog");
-  sheet.setAttribute("aria-modal", "true");
-  document.body.appendChild(sheet);
   paint(null, fetchId !== null);
-  sheet.querySelector<HTMLElement>(".back")?.focus();
+  root.querySelector<HTMLElement>(".back")?.focus();
 
-  onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeSheet(host); };
+  onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeDetail(host); };
   window.addEventListener("keydown", onKey);
 
   if (!fetchId) return;
-  // Stamped BEFORE the call so the in-flight guard below can never race it.
-  sheet.dataset.for = fetchId;
   void host.callTool("firestarter_product", { listing_id: fetchId }).then((sc) => {
-    // The sheet may have been closed, or a different card opened, while the
-    // call was in flight — repainting then would replace one product's detail
-    // with another's.
-    if (!sheet || sheet.dataset.for !== fetchId) return;
+    // Closed, or a different product opened, while the call was in flight.
+    if (token !== openToken) return;
     const product = sc?.product;
     paint(product && typeof product === "object" ? (product as FetchedDetail) : null, false);
   });

@@ -15,6 +15,7 @@
  * globals. Everything it decides lives in the pure modules it imports.
  */
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
+import { sheetBottomInset } from "./safe-area.js";
 import { WIDGET_SURFACE_KEY, WIDGET_SURFACE } from "./widget-call.js";
 
 /** What the view needs from whichever host it woke up inside. */
@@ -34,6 +35,8 @@ export interface Host {
 interface OpenAiBridge {
   toolOutput?: unknown;
   theme?: unknown;
+  displayMode?: unknown;
+  safeArea?: unknown;
   callTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   openExternal?: (params: { href: string }) => void;
   requestDisplayMode?: (params: { mode: string }) => void;
@@ -49,6 +52,24 @@ function openAiBridge(): OpenAiBridge | null {
  *  prefers-color-scheme fallback keeps working. */
 function adoptTheme(theme: unknown): void {
   if (theme === "dark" || theme === "light") applyDocumentTheme(theme);
+}
+
+/**
+ * Publish what the host is doing to the document, for the stylesheet to react
+ * to: how much of the bottom it is covering with its own chrome, and which
+ * display mode we are in.
+ *
+ * The composer bug came from having neither. The detail view reserved 20px at
+ * the bottom of a surface the host was drawing a message box over, so its last
+ * section was unreachable — and inline, where nothing is covered, the same
+ * reserve would just be dead space. One attribute and one variable let the CSS
+ * get both cases right.
+ */
+function applyHostChrome(context: unknown, mode?: string): void {
+  const el = document.documentElement;
+  el.style.setProperty("--fs-safe-bottom", `${sheetBottomInset(context)}px`);
+  const dm = mode ?? (context as { displayMode?: unknown } | undefined)?.displayMode;
+  if (dm === "fullscreen" || dm === "pip" || dm === "inline") el.setAttribute("data-display", String(dm));
 }
 
 /** structuredContent out of whatever shape a host returns a tool result in. */
@@ -69,11 +90,13 @@ export async function connectHost(handlers: {
     const sc = (params?.structuredContent ?? {}) as Record<string, unknown>;
     handlers.onResult(sc);
   };
-  app.addEventListener("hostcontextchanged", (ctx: any) => adoptTheme(ctx?.theme));
+  app.addEventListener("hostcontextchanged", (ctx: any) => { adoptTheme(ctx?.theme); applyHostChrome(ctx); });
 
   try {
     await app.connect();
-    adoptTheme((app.getHostContext() as any)?.theme);
+    const ctx = app.getHostContext() as any;
+    adoptTheme(ctx?.theme);
+    applyHostChrome(ctx);
     return {
       openLink: (url) => { void app.openLink({ url }).catch(() => { /* grid stays usable */ }); },
       callTool: async (name, args) => {
@@ -91,7 +114,17 @@ export async function connectHost(handlers: {
           return null;
         }
       },
-      setDisplayMode: (mode) => { void app.requestDisplayMode({ mode }).catch(() => { /* advisory */ }); },
+      setDisplayMode: (mode) => {
+        // Stamped optimistically: a host that grants the request may never send
+        // a context change, and the reserve has to be in place before the view
+        // paints, not a frame later. Then corrected from the host's ANSWER — a
+        // denied fullscreen must not leave an inline frame reserving 160px of
+        // dead space for chrome that is not there.
+        applyHostChrome(app.getHostContext(), mode);
+        void app.requestDisplayMode({ mode })
+          .then((res) => applyHostChrome(app.getHostContext(), res?.mode ?? mode))
+          .catch(() => applyHostChrome(app.getHostContext(), "inline"));
+      },
     };
   } catch (err) {
     const bridge = openAiBridge();
@@ -101,8 +134,10 @@ export async function connectHost(handlers: {
     }
     // ChatGPT surface without the standard bridge. Same three verbs.
     adoptTheme(bridge.theme);
+    applyHostChrome(bridge);
     window.addEventListener("openai:set_globals", () => {
       adoptTheme(openAiBridge()?.theme);
+      applyHostChrome(openAiBridge());
       const out = openAiBridge()?.toolOutput;
       if (out && typeof out === "object") handlers.onResult(out as Record<string, unknown>);
     });
@@ -118,7 +153,10 @@ export async function connectHost(handlers: {
           return null;
         }
       },
-      setDisplayMode: (mode) => bridge.requestDisplayMode?.({ mode }),
+      setDisplayMode: (mode) => {
+        applyHostChrome(openAiBridge(), mode);
+        bridge.requestDisplayMode?.({ mode });
+      },
     };
   }
 }

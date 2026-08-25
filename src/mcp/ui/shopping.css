@@ -81,81 +81,133 @@ a.card:hover, .card.link:hover { border-color: #a1a1aa; transform: translateY(-2
 .empty { color: #71717a; text-align: center; padding: 24px; }
 
 /* ── Detail view ─────────────────────────────────────────────────────────
-   One markup for two mounts: `.detail.page` when firestarter_product is the
-   tool result, `.detail.sheet` when a grid card was clicked. The sheet covers
-   the widget's own viewport, which is the whole surface once the host grants
-   fullscreen and a scrollable panel when it does not. */
-.detail { max-width: 560px; margin: 0 auto; padding: 4px 4px 16px; }
-.sheetwrap { position: fixed; inset: 0; z-index: 50; overflow-y: auto;
-  background: #fff; padding: 8px 10px 20px; }
-.sheetbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center;
-  justify-content: space-between; gap: 8px; padding: 6px 0 10px; background: inherit; }
-.back { font-size: 13px; color: #3f3f46; background: none; border: 0; cursor: pointer;
-  padding: 6px 8px; border-radius: 8px; }
-.back:hover { background: #f4f4f5; }
+   One markup, two display modes. It renders IN FLOW (replacing the grid), so
+   the host lays it out and autoResize sizes the frame to it — correct inline,
+   correct fullscreen. What display mode changes is only the reserve at the
+   bottom: fullscreen hosts draw their chat composer over the surface, and 20px
+   of padding left the last section permanently behind it. */
+.detail { max-width: 1000px; margin: 0 auto; padding: 4px 10px 28px; }
+:root[data-display="fullscreen"] .detail,
+:root[data-display="pip"] .detail { padding-bottom: var(--fs-safe-bottom, 160px); }
 
-.hero { position: relative; aspect-ratio: 4 / 3; background: #f4f4f5; border: 1px solid #e4e4e7;
-  border-radius: 12px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-/* contain, not cover: the modal is where a buyer inspects the product, and a
+.dbar { position: sticky; top: 0; z-index: 3; margin: 0 -10px 10px; padding: 6px 10px;
+  background: rgba(255,255,255,.86); backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(0,0,0,.06); }
+.back { font-size: 13px; color: #3f3f46; background: none; border: 0; cursor: pointer;
+  padding: 6px 8px; border-radius: 8px; font: inherit; font-size: 13px; }
+.back:hover { background: #f4f4f5; }
+.back:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+
+/* One column until there is genuinely room for two. The breakpoint is on the
+   IFRAME's width, which is what the host gives us — not the device's. */
+.dhead { margin: 2px 0 14px; }
+.dgrid { display: grid; gap: 18px; grid-template-columns: 1fr; align-items: start; }
+@media (min-width: 640px) {
+  .dgrid { grid-template-columns: minmax(260px, 44%) 1fr; gap: 26px; }
+  /* The photos stay put while the reviews scroll past them. */
+  .dmedia { position: sticky; top: 52px; }
+  /* Two columns: the photo no longer competes with the text for the fold, so
+     it goes back to a square. */
+  .hero { height: auto; aspect-ratio: 1 / 1; max-height: 62vh; }
+}
+
+/* Single column (a chat-sized frame): the hero is CAPPED, not square. A
+   full-width 1:1 hero in a ~600px frame is 600px of photo — the product's name,
+   price and seller all land below the fold, so the detail view opens showing
+   nothing but a picture. Height first, contain does the rest. */
+.hero { position: relative; height: min(46vh, 420px); background: #fafafa; border: 1px solid #e4e4e7;
+  border-radius: 14px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+/* contain, not cover: this is where a buyer inspects the product, and a
    cropped hero hides exactly what they opened it to see. */
-.hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 10px; }
 .hero .ph { display: none; color: #a1a1aa; font-size: 12px; }
 .hero.noimg .ph { display: block; }
-.nav { position: absolute; top: 50%; transform: translateY(-50%); width: 32px; height: 32px;
-  border-radius: 999px; border: 0; cursor: pointer; background: rgba(0,0,0,.55); color: #fff;
-  font-size: 15px; line-height: 1; display: flex; align-items: center; justify-content: center; }
-.nav.prev { left: 8px; } .nav.next { right: 8px; }
-.nav:hover { background: rgba(0,0,0,.75); }
-.hpos { position: absolute; bottom: 8px; right: 10px; font-size: 11px; color: #fff;
-  background: rgba(0,0,0,.6); border-radius: 999px; padding: 1px 7px; }
+.nav { position: absolute; top: 50%; transform: translateY(-50%); width: 34px; height: 34px;
+  border-radius: 999px; border: 0; cursor: pointer; background: rgba(24,24,27,.62); color: #fff;
+  font-size: 17px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  transition: opacity .15s, background .15s; }
+.nav.prev { left: 10px; } .nav.next { right: 10px; }
+.nav:hover { background: rgba(24,24,27,.85); }
+/* Out of the way of the photo until the pointer is on it — but always there on
+   touch, where there is no hover to reveal them. */
+@media (hover: hover) { .hero .nav { opacity: 0; } .hero:hover .nav, .nav:focus-visible { opacity: 1; } }
+.hpos { position: absolute; bottom: 10px; right: 12px; font-size: 11px; color: #fff;
+  background: rgba(24,24,27,.66); border-radius: 999px; padding: 2px 8px; }
 
-.thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
-.thumb { flex: none; width: 56px; height: 56px; padding: 0; background: #f4f4f5;
-  border: 1px solid #e4e4e7; border-radius: 8px; cursor: pointer; overflow: hidden; }
+.thumbs { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; padding-bottom: 2px; }
+.thumb { flex: none; width: 58px; height: 58px; padding: 0; background: #fafafa;
+  border: 1px solid #e4e4e7; border-radius: 10px; cursor: pointer; overflow: hidden;
+  transition: border-color .12s, transform .12s; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
-.thumb.sel { border-color: #18181b; }
+.thumb:hover { transform: translateY(-1px); }
+.thumb.sel { border-color: #18181b; box-shadow: 0 0 0 1px #18181b; }
 
-/* Video: poster + play chip that opens the file. The widget is a sandboxed
-   iframe in someone else's client; embedding a seller-supplied 25MB file there
-   is not ours to decide (#774 D11). */
-.vids { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
-.vid { position: relative; flex: 0 0 auto; width: 104px; height: 68px; border-radius: 8px;
+/* Video: poster + play chip that opens the file. This is a sandboxed iframe in
+   someone else's client; playing a seller-supplied file here is not ours to
+   decide (#774 D11). */
+.vids { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; }
+.vid { position: relative; flex: 0 0 auto; width: 108px; height: 70px; border-radius: 10px;
   overflow: hidden; background: #11131a; cursor: pointer; display: inline-flex;
   align-items: center; justify-content: center; }
 .vid img { width: 100%; height: 100%; object-fit: cover; }
-.playchip { position: absolute; bottom: 4px; left: 4px; font-size: 10px; padding: 1px 5px;
+.playchip { position: absolute; bottom: 5px; left: 5px; font-size: 10px; padding: 2px 6px;
   border-radius: 999px; background: rgba(0,0,0,.72); color: #fff; }
 
-.dbody { padding: 12px 2px 0; display: flex; flex-direction: column; gap: 7px; }
-.dtitle { font-weight: 600; font-size: 17px; line-height: 1.3; }
-.dprice { font-weight: 700; font-size: 17px; }
-.rlabel { color: #71717a; font-size: 11px; }
-.sellerline { font-size: 12px; color: #3f3f46; }
-.verified { color: #16a34a; }
-.desc { font-size: 13px; color: #3f3f46; white-space: pre-wrap; }
-.sec { margin-top: 14px; }
-.sech { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: #71717a;
-  margin: 0 0 6px; font-weight: 600; }
-.rev { border-top: 1px solid #e4e4e7; padding: 8px 0; }
-.rev:first-of-type { border-top: 0; }
-.revhead { font-size: 11px; color: #71717a; display: flex; gap: 6px; align-items: center; }
-.revstars { color: #f59e0b; }
-.revtext { font-size: 13px; margin: 3px 0 0; }
-/* Links out: photos and videos as links, plus the listing/store destinations. */
-.links { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid #e4e4e7;
-  background: #fafafa; cursor: pointer; color: inherit; }
-.chip:hover { border-color: #a1a1aa; }
-.chip.primary { background: #18181b; color: #fff; border-color: #18181b; }
-.chip.primary:hover { background: #3f3f46; }
-/* Skeletons for the sections the lazy firestarter_product call fills. They
-   disappear on failure rather than becoming an error: a modal that says
-   "couldn't load reviews" is worse than one that simply has none. */
-.skel { height: 11px; border-radius: 4px; background: linear-gradient(90deg,#efefef,#f7f7f7,#efefef);
-  background-size: 200% 100%; animation: shimmer 1.2s linear infinite; margin: 6px 0; }
+.dinfo { min-width: 0; }
+/* The rating is the first thing in the info column now that the title moved
+   up; without this it hugs the gallery on narrow frames. */
+.dinfo > .drating:first-child { margin-top: 0; }
+.dinfo .desc, .dinfo .revtext { max-width: 64ch; }
+.dtitle { font-size: 20px; font-weight: 650; line-height: 1.28; letter-spacing: -.011em; margin: 0; }
+.pricerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.dprice { font-size: 22px; font-weight: 700; letter-spacing: -.015em; }
+.drating { margin-top: 2px; font-size: 13px; color: #f59e0b; display: flex; align-items: center;
+  gap: 6px; flex-wrap: wrap; }
+.drating .count { color: #71717a; }
+/* The fallback has to be labelled: unlabelled seller stars read as this
+   product's, which is the misattribution product-first ratings exist to end. */
+.rlabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: #71717a;
+  border: 1px solid #e4e4e7; border-radius: 999px; padding: 1px 7px; }
+.sellerline { margin-top: 10px; font-size: 13px; color: #3f3f46; display: flex; align-items: center;
+  gap: 8px; flex-wrap: wrap; }
+.sellerline strong { font-weight: 600; color: inherit; }
+.verified { color: #16a34a; font-size: 11px; background: rgba(22,163,74,.1); border-radius: 999px;
+  padding: 1px 8px; }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.chip { font: inherit; font-size: 12.5px; padding: 7px 14px; border-radius: 999px;
+  border: 1px solid #e4e4e7; background: #fff; cursor: pointer; color: inherit;
+  transition: border-color .12s, transform .12s, background .12s; }
+.chip:hover { border-color: #a1a1aa; transform: translateY(-1px); }
+.chip:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.chip.primary { background: #18181b; color: #fff; border-color: #18181b; font-weight: 550; }
+.chip.primary:hover { background: #3f3f46; border-color: #3f3f46; }
+
+.sec { margin-top: 22px; padding-top: 18px; border-top: 1px solid #f0f0f1; }
+.sech { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: #71717a;
+  margin: 0 0 10px; font-weight: 600; }
+.desc { font-size: 13.5px; line-height: 1.6; color: #3f3f46; white-space: pre-wrap; margin: 0; }
+
+.rev { background: #fafafa; border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
+.rev:last-child { margin-bottom: 0; }
+.revhead { font-size: 11px; color: #71717a; display: flex; gap: 7px; align-items: center; }
+.revstars { color: #f59e0b; letter-spacing: .04em; }
+.revtext { font-size: 13.5px; line-height: 1.55; margin: 5px 0 0; }
+
+.links { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Skeletons for what the lazy firestarter_product call fills. They disappear on
+   failure rather than becoming an error: a view that says "couldn't load
+   reviews" is worse than one that simply has none. */
+.skel { height: 11px; border-radius: 5px; background: linear-gradient(90deg,#efefef,#f7f7f7,#efefef);
+  background-size: 200% 100%; animation: shimmer 1.2s linear infinite; margin: 8px 0; }
 .skel.w60 { width: 60%; } .skel.w40 { width: 40%; }
 @keyframes shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }
-@media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .skel { animation: none; }
+  .chip, .thumb, .nav { transition: none; }
+  .chip:hover, .thumb:hover { transform: none; }
+}
 
 /* ── Dark theme ──────────────────────────────────────────────────────────
    Two triggers, one palette: the host's explicit choice stamped as
@@ -168,15 +220,20 @@ a.card:hover, .card.link:hover { border-color: #a1a1aa; transform: translateY(-2
   :root:not([data-theme="light"]) .media, :root:not([data-theme="light"]) .hero { background: #27272a; }
   :root:not([data-theme="light"]) .badge.ok { background: #14532d; color: #bbf7d0; }
   :root:not([data-theme="light"]) .badge.muted { background: #27272a; color: #a1a1aa; }
-  :root:not([data-theme="light"]) .hero, :root:not([data-theme="light"]) .thumb { border-color: #3f3f46; }
-  :root:not([data-theme="light"]) .thumb { background: #27272a; }
-  :root:not([data-theme="light"]) .thumb.sel { border-color: #f4f4f5; }
-  :root:not([data-theme="light"]) .sheetwrap { background: #09090b; }
+  :root:not([data-theme="light"]) .hero { background: #131316; border-color: #3f3f46; }
+  :root:not([data-theme="light"]) .thumb { background: #27272a; border-color: #3f3f46; }
+  :root:not([data-theme="light"]) .thumb.sel { border-color: #f4f4f5; box-shadow: 0 0 0 1px #f4f4f5; }
+  :root:not([data-theme="light"]) .dbar { background: rgba(9,9,11,.86); border-bottom-color: rgba(255,255,255,.08); }
+  :root:not([data-theme="light"]) .back { color: #d4d4d8; }
   :root:not([data-theme="light"]) .back:hover { background: #27272a; }
   :root:not([data-theme="light"]) .desc, :root:not([data-theme="light"]) .sellerline { color: #d4d4d8; }
-  :root:not([data-theme="light"]) .rev { border-color: #27272a; }
+  :root:not([data-theme="light"]) .sec { border-top-color: #232326; }
+  :root:not([data-theme="light"]) .rev { background: #18181b; }
+  :root:not([data-theme="light"]) .rlabel { border-color: #3f3f46; }
   :root:not([data-theme="light"]) .chip { background: #18181b; border-color: #3f3f46; }
+  :root:not([data-theme="light"]) .chip:hover { border-color: #71717a; }
   :root:not([data-theme="light"]) .chip.primary { background: #f4f4f5; color: #18181b; border-color: #f4f4f5; }
+  :root:not([data-theme="light"]) .chip.primary:hover { background: #d4d4d8; border-color: #d4d4d8; }
   :root:not([data-theme="light"]) .skel { background: linear-gradient(90deg,#27272a,#3f3f46,#27272a); background-size: 200% 100%; }
 }
 :root[data-theme="dark"] body { color: #f4f4f5; }
@@ -185,13 +242,18 @@ a.card:hover, .card.link:hover { border-color: #a1a1aa; transform: translateY(-2
 :root[data-theme="dark"] .media, :root[data-theme="dark"] .hero { background: #27272a; }
 :root[data-theme="dark"] .badge.ok { background: #14532d; color: #bbf7d0; }
 :root[data-theme="dark"] .badge.muted { background: #27272a; color: #a1a1aa; }
-:root[data-theme="dark"] .hero, :root[data-theme="dark"] .thumb { border-color: #3f3f46; }
-:root[data-theme="dark"] .thumb { background: #27272a; }
-:root[data-theme="dark"] .thumb.sel { border-color: #f4f4f5; }
-:root[data-theme="dark"] .sheetwrap { background: #09090b; }
+:root[data-theme="dark"] .hero { background: #131316; border-color: #3f3f46; }
+:root[data-theme="dark"] .thumb { background: #27272a; border-color: #3f3f46; }
+:root[data-theme="dark"] .thumb.sel { border-color: #f4f4f5; box-shadow: 0 0 0 1px #f4f4f5; }
+:root[data-theme="dark"] .dbar { background: rgba(9,9,11,.86); border-bottom-color: rgba(255,255,255,.08); }
+:root[data-theme="dark"] .back { color: #d4d4d8; }
 :root[data-theme="dark"] .back:hover { background: #27272a; }
 :root[data-theme="dark"] .desc, :root[data-theme="dark"] .sellerline { color: #d4d4d8; }
-:root[data-theme="dark"] .rev { border-color: #27272a; }
+:root[data-theme="dark"] .sec { border-top-color: #232326; }
+:root[data-theme="dark"] .rev { background: #18181b; }
+:root[data-theme="dark"] .rlabel { border-color: #3f3f46; }
 :root[data-theme="dark"] .chip { background: #18181b; border-color: #3f3f46; }
+:root[data-theme="dark"] .chip:hover { border-color: #71717a; }
 :root[data-theme="dark"] .chip.primary { background: #f4f4f5; color: #18181b; border-color: #f4f4f5; }
+:root[data-theme="dark"] .chip.primary:hover { background: #d4d4d8; border-color: #d4d4d8; }
 :root[data-theme="dark"] .skel { background: linear-gradient(90deg,#27272a,#3f3f46,#27272a); background-size: 200% 100%; }

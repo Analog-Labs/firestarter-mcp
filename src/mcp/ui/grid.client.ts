@@ -50,7 +50,7 @@ function mediaHtml(it: ShoppingItem): string {
   // empty tile while the next file decodes.
   const layers = first
     ? `<img class="shot on" src="${esc(first)}" alt="" loading="lazy"
-         onerror="this.closest('.media').classList.add('noimg');this.remove();" /><img class="shot" alt="" aria-hidden="true" />`
+         onerror="this.closest('.media').classList.add('noimg');this.remove();" /><img class="shot" alt="" aria-hidden="true" onerror="this.removeAttribute('src')" />`
     : "";
   const bars = shots.length > 1
     ? `<div class="bars">${shots.map((_, i) =>
