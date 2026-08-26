@@ -2082,7 +2082,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       hold_at_delivered: z
         .boolean()
         .optional()
-        .describe("TEST MODE ONLY (fs_test_ keys): keep the escrow hold in place after delivery, instead of releasing it the moment the order is marked delivered. The order still ships and delivers normally — only the payout is held, on the same inspection window a live order gets. Ignored on a live key. Use it to stage a DELIVERED order that can still be disputed, which is what firestarter_disputes needs to open a dispute at all."),
+        .describe("Keep the escrow hold in place after delivery, instead of releasing it the moment the order is marked delivered, so the order can still be disputed — which is what firestarter_disputes needs to open a dispute at all. The order still ships and delivers normally; only the payout is held, on the same inspection window a live order gets. REQUIRES the organization's test mode to be ON as well as a test key: a test key on its own runs the mock sandbox, which never creates an escrow hold for this to act on, and the API now refuses the flag there (HOLD_AT_DELIVERED_UNAVAILABLE) rather than accepting a purchase whose hold would be silently dropped. Inert on a live key, where escrow already holds for the full window."),
     },
     // Creates a pending execution and returns priced options — it does not
     // charge anything. Payment happens in firestarter_approve, which is the
