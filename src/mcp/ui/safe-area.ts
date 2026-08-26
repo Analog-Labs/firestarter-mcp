@@ -40,3 +40,23 @@ export function sheetBottomInset(hostContext: unknown): number {
   if (!Number.isFinite(n) || n <= SHEET_BOTTOM_FLOOR_PX) return SHEET_BOTTOM_FLOOR_PX;
   return Math.min(n, SHEET_BOTTOM_MAX_PX);
 }
+
+/**
+ * Whether the widget should keep telling the host how tall its content is.
+ *
+ * Inline, yes: that notification is how the host sizes the frame. In
+ * fullscreen the host owns the whole window, and a stream of "I am 712px tall"
+ * is at best meaningless there — at worst it reads as a request to go back to
+ * being 712px tall in the transcript.
+ *
+ * Which is what the first-open report looked like: the first card click opened
+ * fullscreen and then dropped straight back to the chat with the detail
+ * rendered inline, while every click after it behaved. The first open is
+ * exactly when the reported height is smallest and changes most — skeletons,
+ * unloaded photos, then the lazy fetch landing — so it is the open that
+ * generates the noisiest size notifications at the moment the host is deciding
+ * what to do with the panel.
+ */
+export function reportsOwnSize(displayMode: string | undefined): boolean {
+  return displayMode !== "fullscreen" && displayMode !== "pip";
+}

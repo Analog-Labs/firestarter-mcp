@@ -14,7 +14,7 @@
  * floor to raise, never the only defence.
  */
 import { describe, it, expect } from "vitest";
-import { sheetBottomInset, SHEET_BOTTOM_FLOOR_PX } from "../../src/mcp/ui/safe-area.js";
+import { sheetBottomInset, reportsOwnSize, SHEET_BOTTOM_FLOOR_PX } from "../../src/mcp/ui/safe-area.js";
 
 describe("sheetBottomInset", () => {
   it("clears a composer the host never mentioned", () => {
@@ -49,5 +49,24 @@ describe("sheetBottomInset", () => {
     // A host reporting most of the viewport would otherwise push every link
     // below the fold — the failure this fixes, in the other direction.
     expect(sheetBottomInset({ safeAreaInsets: { bottom: 100000 } })).toBeLessThanOrEqual(400);
+  });
+});
+
+describe("reportsOwnSize", () => {
+  it("reports content height while the widget is inline", () => {
+    // Inline, the host sizes the frame to whatever we say we need — that is
+    // the whole point of the size-changed notification.
+    expect(reportsOwnSize("inline")).toBe(true);
+    expect(reportsOwnSize(undefined)).toBe(true);
+  });
+
+  it("stays quiet once the host has given us the whole window", () => {
+    // Reported: the first card click opened fullscreen and then dropped back
+    // to the chat with the detail inline; the second click behaved. In
+    // fullscreen the host owns the surface, so a stream of "I am 712px tall"
+    // notifications is at best meaningless and at worst read as a request to
+    // go back to being 712px tall in the transcript.
+    expect(reportsOwnSize("fullscreen")).toBe(false);
+    expect(reportsOwnSize("pip")).toBe(false);
   });
 });
