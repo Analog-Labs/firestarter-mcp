@@ -159,7 +159,13 @@ function playVideo(container: HTMLElement, url: string): void {
   });
   hero.classList.add("playing");
   hero.appendChild(video);
-  void video.play?.().catch(() => { /* the controls are right there */ });
+  // play() is SPECIFIED to return a promise and does not always return one —
+  // jsdom returns undefined, and so do older WebViews. Chaining .catch onto
+  // that throws, which surfaced as three unhandled errors in CI.
+  const started = video.play?.();
+  if (started && typeof started.catch === "function") {
+    started.catch(() => { /* the controls are right there */ });
+  }
 }
 
 function stopVideo(container: HTMLElement): void {
