@@ -137,6 +137,84 @@ describe("detailModel — merging the lazy fetch", () => {
     const m = detailModel(listingRow, { reviews: { count: 2, top: [{ rating: 5, comment: "   ", created_at: null }] } } as any);
     expect(m.reviews).toEqual([]);
   });
+
+  // ── Ratings off the fetch ────────────────────────────────────────────────
+  // firestarter_product returns rating / rating_count / rating_is_seller_level
+  // on every product (tools.ts), but FetchedDetail never declared them, so
+  // detailModel read stars from the ROW alone. A catalog row whose aggregate
+  // was absent therefore showed no stars in the detail view even after the
+  // fetch answered with them — the rating arrived and was thrown away, while
+  // description, seller, photos and units_sold beside it all merged correctly.
+
+  it("shows the rating the fetch carried when the row had none", () => {
+    const m = detailModel(listingRow, { ...fetched, rating: 4.4, rating_count: 39, rating_is_seller_level: false } as any);
+    expect(m.rating).toEqual({ stars: "★ 4.4", count: "(39)", label: null });
+  });
+
+  it("labels a fetched seller-level rating as the seller's", () => {
+    // The label is the whole point of the fallback — unlabelled seller stars
+    // read as this product's. It has to survive the merge, not just the row.
+    const m = detailModel(listingRow, { ...fetched, rating: 4.4, rating_count: 39, rating_is_seller_level: true } as any);
+    expect(m.rating).toEqual({ stars: "★ 4.4", count: "(39)", label: "seller rating" });
+  });
+
+  it("prefers the row's rating over the fetch's", () => {
+    // The row is what the buyer just saw on the card. A detail view that
+    // renumbers the stars on open reads as two different products.
+    const rated = { ...listingRow, rating: 4.9, rating_count: 3, rating_is_seller_level: false };
+    const m = detailModel(rated, { ...fetched, rating: 4.4, rating_count: 39, rating_is_seller_level: true } as any);
+    expect(m.rating).toEqual({ stars: "★ 4.9", count: "(3)", label: null });
+  });
+
+  it("still shows nothing when neither the row nor the fetch has a rating", () => {
+    expect(detailModel(listingRow, fetched).rating).toBeNull();
+  });
+
+  it("keeps the review count visible when no quote survived", () => {
+    // Ratings without written comments are the common case: topReviews only
+    // quotes comments past a length floor, so a listing can hold 9 ratings and
+    // zero quotable ones. Dropping the whole section there told the buyer the
+    // product had no feedback at all.
+    const m = detailModel(listingRow, { reviews: { count: 9, top: [] } } as any);
+    expect(m.reviews).toEqual([]);
+    expect(m.reviewCount).toBe(9);
+  });
+});
+
+describe("detailModel — the reviews note", () => {
+  // reviewsHtml drops the whole section when no quote survives, so a listing
+  // rated by nine buyers who wrote nothing rendered identically to one nobody
+  // has ever bought. The count is real and worth saying on its own.
+
+  it("says how many rated a product nobody wrote about", () => {
+    const m = detailModel(listingRow, { reviews: { count: 9, top: [] } } as any);
+    expect(m.reviewsNote).toBe("9 ratings, no written reviews yet");
+  });
+
+  it("counts a single rating in the singular", () => {
+    const m = detailModel(listingRow, { reviews: { count: 1, top: [] } } as any);
+    expect(m.reviewsNote).toBe("1 rating, no written reviews yet");
+  });
+
+  it("stays quiet when the quotes already speak for themselves", () => {
+    const m = detailModel(listingRow, {
+      reviews: { count: 4, top: [{ rating: 5, comment: "Works", created_at: null }] },
+    } as any);
+    expect(m.reviewsNote).toBeNull();
+  });
+
+  it("stays quiet for a product with genuinely no reviews", () => {
+    // A brand-new listing must not be handed a note announcing its own
+    // emptiness — that reads as rejected rather than new.
+    expect(detailModel(listingRow, { reviews: { count: 0, top: [] } } as any).reviewsNote).toBeNull();
+    expect(detailModel(listingRow, null).reviewsNote).toBeNull();
+  });
+
+  it("stays quiet while the fetch is still in flight", () => {
+    // Nothing fetched yet is not the same as nothing to say, and the section
+    // is already showing a skeleton at that point.
+    expect(detailModel(listingRow, {} as any).reviewsNote).toBeNull();
+  });
 });
 
 describe("detailModel — media links", () => {

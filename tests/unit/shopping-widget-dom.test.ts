@@ -182,12 +182,17 @@ describe("the detail view", () => {
     expect(root.querySelector(".hero img")?.getAttribute("src")).toBe(PHOTOS[0]);
   });
 
-  it("asks the host for the whole surface, and gives it back on close", () => {
+  it("asks the host for a detail surface, and gives it back on close", () => {
+    // The view asks for an INTENT, not a mode. Which surface that becomes —
+    // the docked pip panel where a host offers one, fullscreen where it does
+    // not — is host.client.ts's ladder to resolve against availableDisplayModes
+    // (see shopping-display-mode.test.ts). Naming a concrete mode here would
+    // pin the view to a decision that is not its to make.
     const host = fakeHost();
     showDetail(root, ROW, host, {});
-    expect(host.modes).toEqual(["fullscreen"]);
+    expect(host.modes).toEqual(["detail"]);
     closeDetail(host);
-    expect(host.modes).toEqual(["fullscreen", "inline"]);
+    expect(host.modes).toEqual(["detail", "inline"]);
   });
 
   it("goes back to the results it came from", () => {
