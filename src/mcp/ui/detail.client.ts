@@ -10,9 +10,11 @@
  *
  * Now it renders IN FLOW, replacing the grid inside #root. The host lays it out
  * like any other widget content and autoResize sizes the frame to it, which is
- * correct inline and correct fullscreen. The only thing display mode still
- * changes is how much room the host chrome needs at the bottom — see
- * safe-area.ts, applied by the stylesheet through [data-display].
+ * correct in every display mode. It asks for "detail" — an intent, not a mode:
+ * host.client.ts resolves that to the best surface the host actually offers,
+ * preferring the docked side panel (pip) over a fullscreen takeover. What the
+ * granted mode still changes is how much room the host chrome needs at the
+ * bottom — see safe-area.ts, applied by the stylesheet through [data-display].
  *
  * Content decisions live in detail.ts, which Node tests; this owns elements.
  */
@@ -48,9 +50,16 @@ function mediaColumn(m: DetailModel): string {
 
 function reviewsHtml(m: DetailModel, pending: boolean): string {
   if (!m.reviews.length) {
+    if (pending) return `<section class="sec"><h3 class="sech">What buyers say</h3>${SKELETON}</section>`;
+    // Rated but unwritten-about: the count is real and the section stays, or a
+    // product nine buyers scored reads exactly like one nobody has touched.
+    if (m.reviewsNote) {
+      return `<section class="sec"><h3 class="sech">What buyers say</h3>
+        <p class="revnote">${esc(m.reviewsNote)}</p></section>`;
+    }
     // Settled with nothing → the section disappears. An empty "Reviews (0)"
     // makes a new listing look rejected rather than new.
-    return pending ? `<section class="sec"><h3 class="sech">What buyers say</h3>${SKELETON}</section>` : "";
+    return "";
   }
   const n = m.reviewCount || m.reviews.length;
   return `<section class="sec"><h3 class="sech">What buyers say (${n})</h3>${m.reviews.map((r) => {
@@ -271,7 +280,7 @@ export function showDetail(
   detachKey();
   const token = ++openToken;
   onBackHandler = opts.onBack ?? null;
-  host.setDisplayMode("fullscreen");
+  host.setDisplayMode("detail");
 
   const fetchId = detailFetchId(item);
   const paint = (fetched: FetchedDetail | null, pending: boolean) => {
