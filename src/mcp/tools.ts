@@ -277,6 +277,52 @@ export function formatCommunitySells(community: any): string | null {
  * Tolerates an API response without the newer fields (older api deployments):
  * the reconciliation lines simply don't render. Exported for tests.
  */
+/**
+ * Render the developer-margin config (commerce#977).
+ *
+ * The API speaks basis points; a person asking for this says "10%". Both are
+ * printed — the percentage is what was asked for, the bps is what every API
+ * field and error message quotes back.
+ *
+ * `earnings` is nullable on purpose: the read tool fetches margin and earnings
+ * separately, and a failed earnings call must not become a confident
+ * "$0.00 earned". Missing beats wrong on a money read — the same rule
+ * firestarter_spend_cap follows for month-to-date spend.
+ */
+export function formatDeveloperMargin(cfg: any, earnings: any | null): string {
+  const money = (cents: unknown) => `$${((Number(cents) || 0) / 100).toFixed(2)}`;
+  const bps = Math.max(0, Number(cfg?.margin_bps) || 0);
+  const maxBps = Math.max(0, Number(cfg?.max_margin_bps) || 1000);
+  const pct = (n: number) => `${Number((n / 100).toFixed(2))}%`;
+
+  const head = bps === 0
+    ? "**No developer margin set.** Purchases through this organization's API keys are charged at the seller's price, with nothing added."
+    : `**Developer margin: ${pct(bps)}** (${bps} bps)`;
+
+  const limits =
+    `\nCeiling: ${pct(maxBps)} (${maxBps} bps), capped at ` +
+    `${money(cfg?.max_margin_cents_per_transaction ?? 5000)} per transaction.`;
+
+  // Worth saying plainly what this money IS: a margin is added ON TOP of the
+  // item total and paid by the buyer, whereas the other bps-shaped setting on
+  // this platform (a market's share_bps) comes OUT of Firestarter's fee and
+  // costs the buyer nothing. Confusing the two is what commerce#977 was about.
+  const what = "\nAdded on top of the item total, disclosed to the buyer, and paid to this organization when the seller is paid.";
+
+  let earned = "";
+  if (earnings) {
+    const pending = Number(earnings.pending_cents) || 0;
+    const released = Number(earnings.released_cents) || 0;
+    const txns = Math.max(0, Number(earnings.transactions) || 0);
+    earned = `\n\nEarned so far: ${money(released)} paid out, ${money(pending)} pending, across ${txns} transaction${txns === 1 ? "" : "s"}.`;
+    if (pending > 0 && !cfg?.payout_account_connected) {
+      earned += "\n⚠️ No payout account connected — margin keeps accruing but cannot be transferred until one is (firestarter_connect_payouts).";
+    }
+  }
+
+  return `${head}${limits}${what}${earned}`;
+}
+
 export function formatSellerAnalytics(data: any): string {
   const money = (cents: unknown) => `$${((Number(cents) || 0) / 100).toFixed(2)}`;
   const count = (v: unknown) => Math.max(0, Number(v) || 0);
@@ -3259,6 +3305,84 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error updating spend cap: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_developer_margin (commerce#977)
+  server.tool(
+    "firestarter_developer_margin",
+    "Read this organization's DEVELOPER MARGIN — the markup it adds on top of the item total for purchases made through its own API keys, disclosed to the buyer and paid out to this organization when the seller is paid. Returns the current margin, the platform ceiling, and margin earned so far. Read-only: use firestarter_set_developer_margin to set or change it. NOT the same thing as a community market's share_bps (firestarter_create_market), which is a cut of Firestarter's own platform fee and costs the buyer nothing — this one is money the buyer pays.",
+    {
+      margin_percent: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_developer_margin."),
+    },
+    { title: "Read Developer Margin", readOnlyHint: true, openWorldHint: false },
+    async (args) => {
+      try {
+        const cfg = await apiRequest("GET", "/v1/developer/margin");
+        // Earnings are a separate endpoint and a nice-to-have: a failure there
+        // must not sink the read, and must not be rendered as "$0.00 earned".
+        let earnings: any = null;
+        try {
+          earnings = await apiRequest("GET", "/v1/developer/earnings");
+        } catch {
+          earnings = null;
+        }
+        return {
+          content: [{
+            type: "text" as const,
+            text: `${formatDeveloperMargin(cfg, earnings)}${readOnlyArgsNotice(args, "firestarter_set_developer_margin")}`,
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error reading developer margin: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_set_developer_margin (commerce#977)
+  server.tool(
+    "firestarter_set_developer_margin",
+    "Set or change this organization's DEVELOPER MARGIN — the markup added on top of the item total for purchases made through its own API keys (e.g. 'set my developer margin to 10%', 'change my margin', 'take a 5% cut on my integration'). Applies to future purchases only; existing orders keep the margin frozen at the time they were paid. Pass margin_percent: 0 to turn it off. The platform ceiling is 10% and $50 per transaction. NOT the same thing as a community market's share_bps (firestarter_create_market): that is a cut of Firestarter's own platform fee, this is money the buyer pays on top of the item.",
+    {
+      margin_percent: z.number().min(0).max(10).describe("Margin as a percentage of the item total, 0 to 10 (e.g. 10 = 10%, 2.5 = 2.5%). 0 turns the margin off. The API stores basis points; this is converted for you (10% = 1000 bps)."),
+    },
+    // Changes what buyers are charged on every future purchase through this
+    // org's keys, so a host should confirm rather than fire it silently.
+    // Re-setting the same value is a no-op, hence idempotent.
+    { title: "Set Developer Margin", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    async ({ margin_percent }) => {
+      // Checked here as well as by zod, because the ceiling is knowable without
+      // a round trip and "you asked for 25%, the maximum is 10%" is a better
+      // answer than a 400 relayed from the API.
+      //
+      // The 10 is MAX_MARGIN_BPS (1000) from the commerce API's lib/margin.ts —
+      // a hard-coded constant with no env override, which is the only reason it
+      // is safe to state here at all. A zod bound has to be static, so this
+      // cannot be served from the API the way the selling-gate thresholds now
+      // are (commerce#949). If that constant ever moves, this bound and the two
+      // descriptions above move with it; the READ tool already prints the
+      // ceiling straight from the API, so it will disagree first and loudest.
+      if (typeof margin_percent !== "number" || !Number.isFinite(margin_percent) || margin_percent < 0 || margin_percent > 10) {
+        return {
+          content: [{ type: "text" as const, text: "margin_percent must be between 0% and 10% — 10% is the platform ceiling on developer margin (and each transaction is capped at $50). Pass 0 to turn the margin off." }],
+          isError: true,
+        };
+      }
+      // The API takes an INTEGER bps; 2.5% is 250, and anything finer than a
+      // basis point is not representable, so round rather than send a float the
+      // route would reject as INVALID_MARGIN_BPS.
+      const marginBps = Math.round(margin_percent * 100);
+      try {
+        await apiRequest("PATCH", "/v1/developer/margin", { margin_bps: marginBps });
+        const text = marginBps === 0
+          ? "**Developer margin turned off.** Purchases through this organization's API keys are charged at the seller's price from now on. Orders already paid keep the margin they were charged."
+          : `**Developer margin set to ${Number((marginBps / 100).toFixed(2))}%** (${marginBps} bps).\n` +
+            "Applies to purchases made through this organization's API keys from now on — it is added on top of the item total, disclosed to the buyer, and capped at $50 per transaction. Orders already paid are unchanged.\n" +
+            "Read it back any time with firestarter_developer_margin.";
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error setting developer margin: ${toErrorMessage(err)}` }], isError: true };
       }
     }
   );

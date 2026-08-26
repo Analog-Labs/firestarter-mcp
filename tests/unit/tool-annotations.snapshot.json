@@ -124,6 +124,10 @@
     "destructiveHint": false,
     "openWorldHint": false
   },
+  "firestarter_developer_margin": {
+    "readOnlyHint": true,
+    "openWorldHint": false
+  },
   "firestarter_discover_markets": {
     "readOnlyHint": true,
     "destructiveHint": false,
@@ -319,6 +323,12 @@
     "openWorldHint": false
   },
   "firestarter_set_auto_approve_limit": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true,
+    "openWorldHint": false
+  },
+  "firestarter_set_developer_margin": {
     "readOnlyHint": false,
     "destructiveHint": true,
     "idempotentHint": true,
