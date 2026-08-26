@@ -16,6 +16,7 @@
  */
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { reportsOwnSize, sheetBottomInset } from "./safe-area.js";
+import { preferredDetailMode, type DetailDisplayMode } from "./display-mode.js";
 import { WIDGET_SURFACE_KEY, WIDGET_SURFACE } from "./widget-call.js";
 
 /** What the view needs from whichever host it woke up inside. */
@@ -27,15 +28,16 @@ export interface Host {
    *  the host refuses, the call fails, or it returns nothing usable. Never
    *  throws: everything it feeds is optional enrichment. */
   callTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
-  /** Ask for the whole surface (the detail view) or give it back (the grid).
+  /** Ask for a bigger surface (the detail view) or give it back (the grid).
    *  Advisory — a host may decline, and the view stays usable either way. */
-  setDisplayMode(mode: "fullscreen" | "inline"): void;
+  setDisplayMode(mode: "detail" | "inline"): void;
 }
 
 interface OpenAiBridge {
   toolOutput?: unknown;
   theme?: unknown;
   displayMode?: unknown;
+  availableDisplayModes?: unknown;
   safeArea?: unknown;
   callTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   openExternal?: (params: { href: string }) => void;
@@ -133,11 +135,18 @@ export async function connectHost(handlers: {
           return null;
         }
       },
-      setDisplayMode: (mode) => {
+      setDisplayMode: (want) => {
+        // "detail" is an INTENT, not a mode. The host publishes what it can
+        // actually do in availableDisplayModes, and pip — the docked side
+        // panel — is the best of those for a product the buyer is reading
+        // against what the agent just said. Asking for a mode the host never
+        // offered only buys a refusal, so the ladder resolves it here.
+        const mode: DetailDisplayMode =
+          want === "inline" ? "inline" : preferredDetailMode((app.getHostContext() as any)?.availableDisplayModes);
         // Stamped optimistically: a host that grants the request may never send
         // a context change, and the reserve has to be in place before the view
         // paints, not a frame later. Then corrected from the host's ANSWER — a
-        // denied fullscreen must not leave an inline frame reserving 160px of
+        // denied panel must not leave an inline frame reserving 160px of
         // dead space for chrome that is not there.
         applyHostChrome(app.getHostContext(), mode);
         // Silenced BEFORE the request, not after: the detail view repaints in
@@ -183,8 +192,11 @@ export async function connectHost(handlers: {
           return null;
         }
       },
-      setDisplayMode: (mode) => {
-        applyHostChrome(openAiBridge(), mode);
+      setDisplayMode: (want) => {
+        const b = openAiBridge();
+        const mode: DetailDisplayMode =
+          want === "inline" ? "inline" : preferredDetailMode((b as { availableDisplayModes?: unknown } | null)?.availableDisplayModes);
+        applyHostChrome(b, mode);
         bridge.requestDisplayMode?.({ mode });
       },
     };

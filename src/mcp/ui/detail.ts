@@ -41,6 +41,16 @@ export interface FetchedDetail {
   videos?: unknown;
   units_sold?: number;
   reviews?: { count?: number; top?: unknown } | null;
+  /** The display rating — this product's own stars when it has any, the
+   *  seller's otherwise, with the flag saying which (media.ts displayRating).
+   *  firestarter_product has always sent these; this interface omitted them,
+   *  so detailModel read stars from the ROW alone and a catalog row with no
+   *  aggregate showed none even after the fetch answered with one. */
+  rating?: number | null;
+  rating_count?: number | null;
+  rating_is_seller_level?: boolean;
+  seller_rating?: number | null;
+  seller_rating_count?: number | null;
 }
 
 export interface DetailLink {
@@ -64,6 +74,10 @@ export interface DetailModel {
   description: string | null;
   reviews: DetailReview[];
   reviewCount: number;
+  /** What the reviews section says when it has a count but nothing to quote,
+   *  and null whenever the quotes (or the absence of any reviews at all) speak
+   *  for themselves. */
+  reviewsNote: string | null;
   links: DetailLink[];
 }
 
@@ -164,17 +178,34 @@ export function detailModel(item: unknown, fetched: FetchedDetail | null): Detai
   const fetchedVideos = videosOf(fetched?.videos);
   const videos = fetchedVideos.length ? fetchedVideos : videosOf(it.videos);
 
-  const stars = starsLabel(it);
+  // Row first, fetch second. The row is what the buyer just saw on the card, so
+  // renumbering the stars on open would read as two different products — but a
+  // row whose surface never carried an aggregate (a preview option, a catalog
+  // row served before the rating join landed) has nothing to show, and the
+  // fetch does. Whichever wins also decides the label below, so the two can
+  // never disagree about whose stars these are.
+  const rowStars = starsLabel(it);
+  const rated: ShoppingItem = rowStars ? it : ((fetched ?? {}) as ShoppingItem);
+  const stars = rowStars ?? starsLabel(rated);
   // The flag when the payload sets it; otherwise infer it, because a catalog
   // row that carries only seller_rating IS showing seller stars whether or not
   // the mapper said so.
   const sellerLevel =
-    it.rating_is_seller_level === true ||
-    (it.rating == null && it.rating_count == null && it.seller_rating != null);
+    rated.rating_is_seller_level === true ||
+    (rated.rating == null && rated.rating_count == null && rated.seller_rating != null);
 
   const sold = Number(fetched?.units_sold ?? it.units_sold);
 
   const sellerName = cleanText(fetched?.seller) ?? cleanText(it.seller);
+
+  // Ratings without text are ordinary, not an error: topReviews only quotes a
+  // comment past a length floor, so a listing can hold nine ratings and no
+  // quotable ones. The section drops when there is nothing to quote — and the
+  // count dropped with it, leaving a rated product looking untouched. Say the
+  // number on its own instead. Silent at zero: a brand-new listing announcing
+  // its own emptiness reads as rejected rather than new.
+  const reviews = reviewList(fetched?.reviews?.top);
+  const reviewCount = Number(fetched?.reviews?.count) || 0;
 
   return {
     title: cleanText(it.title) ?? cleanText(it.product_name) ?? "Untitled",
@@ -187,8 +218,12 @@ export function detailModel(item: unknown, fetched: FetchedDetail | null): Detai
     soldLabel: Number.isFinite(sold) && sold > 0 ? `${sold} sold` : null,
     seller: sellerName ? { name: sellerName, verified: fetched?.seller_verified === true } : null,
     description: cleanText(fetched?.description) ?? cleanText(it.description),
-    reviews: reviewList(fetched?.reviews?.top),
-    reviewCount: Number(fetched?.reviews?.count) || 0,
+    reviews,
+    reviewCount,
+    reviewsNote:
+      reviewCount > 0 && reviews.length === 0
+        ? `${reviewCount} rating${reviewCount === 1 ? "" : "s"}, no written reviews yet`
+        : null,
     links: linksFor(it),
   };
 }
