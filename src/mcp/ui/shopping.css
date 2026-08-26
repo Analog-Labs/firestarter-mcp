@@ -19,8 +19,15 @@ body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
    Cards at 210px rather than the original 150px: at 150 a photo in a chat
    column was a thumbnail, and product photos are the reason this widget
    exists. auto-fill still collapses to one column on a narrow host. */
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 14px; padding: 4px; }
+/* Fixed column counts rather than auto-fill: auto-fill sized cards to whatever
+   was left over, so a Desktop-width frame showed three enormous tiles. Five
+   across at a normal frame width is the density a catalogue wants, and the
+   count is capped there — beyond five, cards get small before they get useful. */
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; padding: 4px; }
+@media (min-width: 420px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 580px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 720px) { .grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 .card { display: flex; flex-direction: column; border: 1px solid #e4e4e7; border-radius: 12px;
   overflow: hidden; text-decoration: none; color: inherit; background: #fff;
   transition: border-color .12s, transform .12s; }
@@ -89,6 +96,16 @@ a.card:hover, .card.link:hover { border-color: #a1a1aa; transform: translateY(-2
 .detail { max-width: 1000px; margin: 0 auto; padding: 4px 10px 28px; }
 :root[data-display="fullscreen"] .detail,
 :root[data-display="pip"] .detail { padding-bottom: var(--fs-safe-bottom, 160px); }
+/* Fullscreen is a whole window: a 1000px column stranded in the middle of it
+   reads as a page that failed to load the rest of itself. */
+:root[data-display="fullscreen"] .detail { max-width: 1180px; }
+/* Fill the window the host just opened. The view is in flow, so a short
+   product (one photo, no description, no reviews — most new listings) reported
+   a small height and left the fullscreen panel as a card stranded in black. */
+:root[data-display="fullscreen"] body { min-height: 100vh; }
+@media (min-width: 900px) {
+  :root[data-display="fullscreen"] .hero { max-height: 68vh; }
+}
 
 .dbar { position: sticky; top: 0; z-index: 3; margin: 0 -10px 10px; padding: 6px 10px;
   background: rgba(255,255,255,.86); backdrop-filter: blur(8px);
@@ -120,6 +137,12 @@ a.card:hover, .card.link:hover { border-color: #a1a1aa; transform: translateY(-2
 /* contain, not cover: this is where a buyer inspects the product, and a
    cropped hero hides exactly what they opened it to see. */
 .hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 10px; }
+/* Playing: the clip takes the hero, and the photo furniture gets out of its
+   way — a play control layered under nav arrows is a mis-tap waiting. */
+.heroplayer { position: absolute; inset: 0; width: 100%; height: 100%; background: #000;
+  object-fit: contain; }
+.hero.playing img, .hero.playing .nav, .hero.playing .hpos, .hero.playing .ph { display: none; }
+.playfail { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
 .hero .ph { display: none; color: #a1a1aa; font-size: 12px; }
 .hero.noimg .ph { display: block; }
 .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 34px; height: 34px;
@@ -150,8 +173,9 @@ a.card:hover, .card.link:hover { border-color: #a1a1aa; transform: translateY(-2
   overflow: hidden; background: #11131a; cursor: pointer; display: inline-flex;
   align-items: center; justify-content: center; }
 .vid img { width: 100%; height: 100%; object-fit: cover; }
-.playchip { position: absolute; bottom: 5px; left: 5px; font-size: 10px; padding: 2px 6px;
-  border-radius: 999px; background: rgba(0,0,0,.72); color: #fff; }
+.playchip { position: absolute; bottom: 6px; left: 6px; font-size: 10.5px; padding: 3px 8px;
+  border-radius: 999px; background: rgba(0,0,0,.78); color: #fff; font-weight: 550; }
+.vid:hover .playchip { background: #18181b; }
 
 .dinfo { min-width: 0; }
 /* The rating is the first thing in the info column now that the title moved

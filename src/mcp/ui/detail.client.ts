@@ -40,9 +40,9 @@ function mediaColumn(m: DetailModel): string {
     ${many ? `<div class="thumbs">${m.images.map((u, i) =>
       `<button class="thumb${i === 0 ? " sel" : ""}" data-thumb="${i}" aria-label="Photo ${i + 1}"><img src="${esc(u)}" alt="" loading="lazy" onerror="this.remove()" /></button>`).join("")}</div>` : ""}
     ${m.videos.length ? `<div class="vids">${m.videos.map((v, i) =>
-      `<span class="vid" data-url="${esc(v.url)}" role="button" tabindex="0" aria-label="Play video ${i + 1}">${
+      `<span class="vid" data-video="${esc(v.url)}" role="button" tabindex="0" aria-label="Play video ${i + 1}">${
         v.poster_url ? `<img src="${esc(v.poster_url)}" alt="" loading="lazy" onerror="this.remove()" />` : ""
-      }<span class="playchip">▶ video</span></span>`).join("")}</div>` : ""}
+      }<span class="playchip">▶ Play</span></span>`).join("")}</div>` : ""}
   </div>`;
 }
 
@@ -124,11 +124,71 @@ function detailHtml(m: DetailModel, opts: { pending: boolean; back: boolean }): 
   </div>`;
 }
 
-/** Hero navigation for whichever detail view is mounted in `container`. */
+/**
+ * Play a clip in the hero.
+ *
+ * It used to be a poster that opened the file through the host, which on a
+ * desktop client means a browser tab — reported, fairly, as "videos not
+ * playing". The clips live on our own blob origin, which the resource already
+ * allowlists in csp.resourceDomains, so they can just play here.
+ *
+ * `playsinline` and an explicit `controls` rather than autoplay-with-sound: a
+ * widget in someone else's chat client does not get to make noise unasked.
+ */
+function playVideo(container: HTMLElement, url: string): void {
+  const hero = container.querySelector<HTMLElement>(".hero");
+  if (!hero) return;
+  hero.querySelector("video")?.remove();
+  hero.querySelector(".playfail")?.remove();
+  const video = document.createElement("video");
+  video.className = "heroplayer";
+  video.setAttribute("src", url);
+  video.setAttribute("controls", "");
+  video.setAttribute("playsinline", "");
+  video.setAttribute("preload", "metadata");
+  // A codec this host cannot decode, or a blob that 404s. A dead black
+  // rectangle is the one outcome with no way forward, so hand back the link.
+  video.addEventListener("error", () => {
+    video.remove();
+    hero.classList.remove("playing");
+    const out = document.createElement("button");
+    out.className = "chip playfail";
+    out.setAttribute("data-url", url);
+    out.textContent = "Couldn't play it here — open the video";
+    hero.appendChild(out);
+  });
+  hero.classList.add("playing");
+  hero.appendChild(video);
+  void video.play?.().catch(() => { /* the controls are right there */ });
+}
+
+function stopVideo(container: HTMLElement): void {
+  const hero = container.querySelector<HTMLElement>(".hero");
+  if (!hero) return;
+  hero.querySelector("video")?.remove();
+  hero.querySelector(".playfail")?.remove();
+  hero.classList.remove("playing");
+}
+
+/** Gallery behaviour: photo navigation, and playing a clip in the hero. */
 function wireHero(container: HTMLElement, images: string[]): void {
+  container.addEventListener("click", (ev) => {
+    const tile = ev.target instanceof Element ? ev.target.closest<HTMLElement>("[data-video]") : null;
+    if (!tile?.dataset.video) return;
+    ev.stopPropagation();
+    playVideo(container, tile.dataset.video);
+  });
+  container.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    const tile = ev.target instanceof Element ? ev.target.closest<HTMLElement>("[data-video]") : null;
+    if (!tile?.dataset.video) return;
+    ev.preventDefault();
+    playVideo(container, tile.dataset.video);
+  });
   if (images.length < 2) return;
   let index = 0;
   const paint = (i: number) => {
+    stopVideo(container);
     index = (i + images.length) % images.length;
     const hero = container.querySelector<HTMLImageElement>("#hero");
     if (hero) hero.src = images[index];
