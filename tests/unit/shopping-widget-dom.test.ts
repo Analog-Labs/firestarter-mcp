@@ -251,6 +251,45 @@ describe("the detail view", () => {
   });
 });
 
+describe("video", () => {
+  const host = () => fakeHost();
+
+  it("plays the clip in place instead of sending the buyer out to a browser", () => {
+    // Reported as "videos not playing": a poster that opens a URL is a link,
+    // not a player, and in a desktop client it dumps you into a browser tab.
+    // The clips are on our own blob origin, which the resource already
+    // allowlists in csp.resourceDomains, so they can simply play here.
+    showDetail(root, ROW, host(), {});
+    (root.querySelector(".vid") as HTMLElement).click();
+
+    const video = root.querySelector<HTMLVideoElement>(".hero video");
+    expect(video).not.toBeNull();
+    expect(video!.getAttribute("src")).toBe("https://img.test/clip.mp4");
+    expect(video!.hasAttribute("controls")).toBe(true);
+  });
+
+  it("goes back to the photos when a thumbnail is picked", () => {
+    showDetail(root, ROW, host(), {});
+    (root.querySelector(".vid") as HTMLElement).click();
+    (root.querySelectorAll(".thumb")[1] as HTMLElement).click();
+
+    expect(root.querySelector(".hero video")).toBeNull();
+    expect(root.querySelector<HTMLImageElement>(".hero img")?.getAttribute("src")).toBe(PHOTOS[1]);
+  });
+
+  it("offers a way out when the clip will not play here", () => {
+    // Codec the host cannot decode, or a blob that 404s. Leaving a dead black
+    // rectangle is the one outcome with no way forward.
+    showDetail(root, ROW, host(), {});
+    (root.querySelector(".vid") as HTMLElement).click();
+    const video = root.querySelector<HTMLVideoElement>(".hero video")!;
+    video.dispatchEvent(new Event("error"));
+
+    expect(root.querySelector(".hero video")).toBeNull();
+    expect(root.querySelector(".hero [data-url]")?.getAttribute("data-url")).toBe("https://img.test/clip.mp4");
+  });
+});
+
 describe("the firestarter_product page", () => {
   it("renders the full product, its reviews and its links", () => {
     renderDetailPage(root, {

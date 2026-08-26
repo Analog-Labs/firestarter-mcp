@@ -15,7 +15,7 @@
  * globals. Everything it decides lives in the pure modules it imports.
  */
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
-import { sheetBottomInset } from "./safe-area.js";
+import { reportsOwnSize, sheetBottomInset } from "./safe-area.js";
 import { WIDGET_SURFACE_KEY, WIDGET_SURFACE } from "./widget-call.js";
 
 /** What the view needs from whichever host it woke up inside. */
@@ -82,7 +82,21 @@ export async function connectHost(handlers: {
   onResult: (structuredContent: Record<string, unknown>) => void;
   onError: (message: string) => void;
 }): Promise<Host> {
-  const app = new App({ name: "firestarter-shopping", version: "0.2.0" }, undefined, { autoResize: true });
+  // autoResize OFF, and the size notifications driven by hand below. The
+  // library's automatic version runs for the whole session, including in
+  // fullscreen — where the host owns the surface and our height is noise.
+  const app = new App({ name: "firestarter-shopping", version: "0.3.0" }, undefined, { autoResize: false });
+  let stopSizeReports: (() => void) | null = null;
+
+  /** Report our content height only while the host is sizing the frame to it. */
+  const syncSizeReporting = (mode: string | undefined) => {
+    if (reportsOwnSize(mode)) {
+      if (!stopSizeReports) stopSizeReports = app.setupSizeChangedNotifications();
+    } else if (stopSizeReports) {
+      stopSizeReports();
+      stopSizeReports = null;
+    }
+  };
 
   // Registered BEFORE connect: the host may send the tool result the moment the
   // handshake completes, and a handler attached afterwards misses it.
@@ -90,13 +104,18 @@ export async function connectHost(handlers: {
     const sc = (params?.structuredContent ?? {}) as Record<string, unknown>;
     handlers.onResult(sc);
   };
-  app.addEventListener("hostcontextchanged", (ctx: any) => { adoptTheme(ctx?.theme); applyHostChrome(ctx); });
+  app.addEventListener("hostcontextchanged", (ctx: any) => {
+    adoptTheme(ctx?.theme);
+    applyHostChrome(ctx);
+    if (typeof ctx?.displayMode === "string") syncSizeReporting(ctx.displayMode);
+  });
 
   try {
     await app.connect();
     const ctx = app.getHostContext() as any;
     adoptTheme(ctx?.theme);
     applyHostChrome(ctx);
+    syncSizeReporting(ctx?.displayMode);
     return {
       openLink: (url) => { void app.openLink({ url }).catch(() => { /* grid stays usable */ }); },
       callTool: async (name, args) => {
@@ -121,9 +140,20 @@ export async function connectHost(handlers: {
         // denied fullscreen must not leave an inline frame reserving 160px of
         // dead space for chrome that is not there.
         applyHostChrome(app.getHostContext(), mode);
+        // Silenced BEFORE the request, not after: the detail view repaints in
+        // the same tick, and a resize notification racing the host's decision
+        // about the panel is the whole failure being fixed here.
+        syncSizeReporting(mode);
         void app.requestDisplayMode({ mode })
-          .then((res) => applyHostChrome(app.getHostContext(), res?.mode ?? mode))
-          .catch(() => applyHostChrome(app.getHostContext(), "inline"));
+          .then((res) => {
+            const granted = res?.mode ?? mode;
+            applyHostChrome(app.getHostContext(), granted);
+            syncSizeReporting(granted);
+          })
+          .catch(() => {
+            applyHostChrome(app.getHostContext(), "inline");
+            syncSizeReporting("inline");
+          });
       },
     };
   } catch (err) {
