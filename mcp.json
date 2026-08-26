@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.13.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 87 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 89 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -2316,6 +2316,34 @@
             "description": "Set to true to remove the spend cap entirely (no limit)."
           }
         }
+      }
+    },
+    {
+      "name": "firestarter_developer_margin",
+      "description": "Read this organization's DEVELOPER MARGIN — the markup it adds on top of the item total for purchases made through its own API keys, disclosed to the buyer and paid out to this organization when the seller is paid. Returns the current margin, the platform ceiling, and margin earned so far. Read-only: use firestarter_set_developer_margin to set or change it. NOT the same thing as a community market's share_bps (firestarter_create_market), which is a cut of Firestarter's own platform fee and costs the buyer nothing — this one is money the buyer pays.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "margin_percent": {
+            "description": "IGNORED here — this tool only reads. Use firestarter_set_developer_margin."
+          }
+        }
+      }
+    },
+    {
+      "name": "firestarter_set_developer_margin",
+      "description": "Set or change this organization's DEVELOPER MARGIN — the markup added on top of the item total for purchases made through its own API keys (e.g. 'set my developer margin to 10%', 'change my margin', 'take a 5% cut on my integration'). Applies to future purchases only; existing orders keep the margin frozen at the time they were paid. Pass margin_percent: 0 to turn it off. The platform ceiling is 10% and $50 per transaction. NOT the same thing as a community market's share_bps (firestarter_create_market): that is a cut of Firestarter's own platform fee, this is money the buyer pays on top of the item.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "margin_percent": {
+            "type": "number",
+            "description": "Margin as a percentage of the item total, 0 to 10 (e.g. 10 = 10%, 2.5 = 2.5%). 0 turns the margin off. The API stores basis points; this is converted for you (10% = 1000 bps)."
+          }
+        },
+        "required": [
+          "margin_percent"
+        ]
       }
     },
     {
