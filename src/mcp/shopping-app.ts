@@ -22,6 +22,21 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // meaningfully; hosts fetch the "new" resource and the stale cache is orphaned.
 export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v7";
 
+// The same widget under a URI that NEVER moves, for ChatGPT.
+//
+// ChatGPT caches the template in its own store keyed by the URI a tool points
+// at, and answers "Failed to fetch template" for a URI that store has not
+// ingested — so the version bump above, which is the only thing that can ever
+// refresh Claude Desktop, is precisely what breaks ChatGPT. Shipping 2.15.0
+// moved v5 → v7 and every ChatGPT connector holding v5 stopped rendering.
+//
+// The two hosts read different keys, so they can be pointed at different URIs:
+// `_meta.ui.resourceUri` (the standard, which Claude Desktop reads) keeps the
+// version segment, and `_meta["openai/outputTemplate"]` — ChatGPT's own alias,
+// attached in tools.ts — carries this one. Both serve identical HTML, and a
+// contract test asserts they cannot drift. Do not version this string.
+export const SHOPPING_RESULTS_STABLE_URI = "ui://firestarter/shopping-results";
+
 // Origins the sandboxed iframe may load product images from. By default an MCP
 // App iframe has NO network access; images load only from origins allowlisted
 // here (csp.resourceDomains). Seller photos are predominantly Shopify-synced
@@ -47,31 +62,31 @@ const IMAGE_DOMAINS = [
  */
 export function registerShoppingApp(server: McpServer): void {
   if (typeof (server as unknown as { registerResource?: unknown }).registerResource !== "function") return;
-  registerAppResource(
-    server,
-    "Firestarter shopping results",
-    SHOPPING_RESULTS_URI,
-    { description: "Inline product grid for Firestarter shopping results (photos, price, buyability)." },
-    async () => ({
-      contents: [{
-        uri: SHOPPING_RESULTS_URI,
-        mimeType: RESOURCE_MIME_TYPE,
-        text: SHOPPING_RESULTS_HTML,
-        _meta: {
-          ui: {
-            csp: { resourceDomains: IMAGE_DOMAINS },
-            // The view draws its own cards and sheet; a host frame around it
-            // just doubles the border in the grid case.
-            prefersBorder: false,
-          },
-          // ChatGPT reads these two off the resource. The description is what
-          // its model is told the widget shows, so it can decide when the
-          // inline view answers the question and prose is unnecessary.
-          "openai/widgetDescription":
-            "An inline product grid: each card rotates the listing's photos, and clicking one opens the product's full detail — photos, video links, price, rating, seller and buyer reviews.",
-          "openai/widgetPrefersBorder": false,
+  // One document, two URIs — see SHOPPING_RESULTS_STABLE_URI for why the hosts
+  // are pointed at different ones. Registered from a single body so the HTML,
+  // the CSP allowlist and the widget description cannot drift between them.
+  const serve = (uri: string) => async () => ({
+    contents: [{
+      uri,
+      mimeType: RESOURCE_MIME_TYPE,
+      text: SHOPPING_RESULTS_HTML,
+      _meta: {
+        ui: {
+          csp: { resourceDomains: IMAGE_DOMAINS },
+          // The view draws its own cards and sheet; a host frame around it
+          // just doubles the border in the grid case.
+          prefersBorder: false,
         },
-      }],
-    }),
-  );
+        // ChatGPT reads these two off the resource. The description is what
+        // its model is told the widget shows, so it can decide when the
+        // inline view answers the question and prose is unnecessary.
+        "openai/widgetDescription":
+          "An inline product grid: each card rotates the listing's photos, and clicking one opens the product's full detail — photos, video links, price, rating, seller and buyer reviews.",
+        "openai/widgetPrefersBorder": false,
+      },
+    }],
+  });
+  const config = { description: "Inline product grid for Firestarter shopping results (photos, price, buyability)." };
+  registerAppResource(server, "Firestarter shopping results", SHOPPING_RESULTS_URI, config, serve(SHOPPING_RESULTS_URI));
+  registerAppResource(server, "Firestarter shopping results (stable)", SHOPPING_RESULTS_STABLE_URI, config, serve(SHOPPING_RESULTS_STABLE_URI));
 }

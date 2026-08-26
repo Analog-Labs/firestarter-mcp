@@ -10,7 +10,7 @@ import { isRelevantMatch } from "../lib/relevance.js";
 import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalogOutputShape, toCatalogStructured, sellerListingsOutputShape, toSellerListingsStructured, shelfOutputShape, toShelfStructured } from "./schemas.js";
 import { SHARE_LINK_BASE, listingShareUrl } from "../lib/share-link.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
-import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
+import { registerShoppingApp, SHOPPING_RESULTS_URI, SHOPPING_RESULTS_STABLE_URI } from "./shopping-app.js";
 import { isWidgetCall } from "./ui/widget-call.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
 import { sanitizeUntrusted, neutralizeAuthority } from "./untrusted.js";
@@ -1963,7 +1963,14 @@ function registerToolCompat(server: McpServer, name: string, config: any, handle
       // UI-enabled tool (MCP Apps): route through registerAppTool so the ui
       // metadata is normalized (modern `_meta.ui.resourceUri` + the legacy
       // flat key) for whichever host version connects.
-      registerAppTool(server, name, config, handler);
+      //
+      // registerAppTool emits neither of ChatGPT's own keys — ext-apps 1.7.5
+      // contains no `openai/` string at all — so outputTemplate is added here.
+      // It is not redundant with ui.resourceUri: it deliberately names the
+      // STABLE alias, because ChatGPT 404s a URI its template store has not
+      // ingested while Claude Desktop only ever re-reads a NEW one. Attached
+      // centrally so no widget tool can be added without it.
+      registerAppTool(server, name, { ...config, _meta: { "openai/outputTemplate": SHOPPING_RESULTS_STABLE_URI, ...config._meta } }, handler);
     } else {
       s.registerTool(name, config, handler);
     }
