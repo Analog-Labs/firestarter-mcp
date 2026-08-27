@@ -12,7 +12,7 @@
  * claimed the item cannot be bought.
  */
 import { describe, it, expect } from "vitest";
-import { badgeFor, priceLabel, firstImage } from "../../src/mcp/ui/shopping-item.js";
+import { badgeFor, priceLabel, firstImage, mediaCountLabel } from "../../src/mcp/ui/shopping-item.js";
 
 describe("badgeFor", () => {
   it("marks a buyable, eligible catalog hit as buyable now", () => {
@@ -93,3 +93,75 @@ describe("firstImage", () => {
     expect(firstImage({ images: [] })).toBeNull();
   });
 });
+
+// ─── Grid gallery (multi-image cards) ────────────────────────────────────────
+
+import { galleryImages, MAX_CARD_IMAGES } from "../../src/mcp/ui/shopping-item.js";
+
+describe("galleryImages", () => {
+  it("returns every usable image, not just the first", () => {
+    // The grid rendered firstImage() only, so a 4-photo listing looked
+    // identical to a 1-photo one — the array was in the payload and unused.
+    expect(galleryImages({ images: ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg"] }))
+      .toEqual(["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg"]);
+  });
+
+  it("falls back to the single image field when there is no array", () => {
+    expect(galleryImages({ image_url: "https://a/only.jpg" })).toEqual(["https://a/only.jpg"]);
+  });
+
+  it("puts image_url first when it is not already in the array", () => {
+    // image_url is the primary the API chose; a card must open on it.
+    expect(galleryImages({ image_url: "https://a/primary.jpg", images: ["https://a/2.jpg"] })[0])
+      .toBe("https://a/primary.jpg");
+  });
+
+  it("does not duplicate the primary when it is already in the array", () => {
+    expect(galleryImages({ image_url: "https://a/1.jpg", images: ["https://a/1.jpg", "https://a/2.jpg"] }))
+      .toEqual(["https://a/1.jpg", "https://a/2.jpg"]);
+  });
+
+  it("drops javascript: and data: urls", () => {
+    expect(galleryImages({ images: ["javascript:alert(1)", "data:image/png;base64,AA", "https://a/ok.jpg"] }))
+      .toEqual(["https://a/ok.jpg"]);
+  });
+
+  it("caps the count so a card cannot become a scroller", () => {
+    const many = Array.from({ length: 20 }, (_, i) => `https://a/${i}.jpg`);
+    expect(galleryImages({ images: many })).toHaveLength(MAX_CARD_IMAGES);
+  });
+
+  it("returns [] when there is nothing usable", () => {
+    expect(galleryImages({})).toEqual([]);
+    expect(galleryImages({ images: [1, null, {}] as any })).toEqual([]);
+  });
+
+  it("agrees with firstImage on which photo leads", () => {
+    // Two helpers disagreeing about the primary would show one photo on the
+    // card and open a different one.
+    const it = { image_url: "https://a/p.jpg", images: ["https://a/2.jpg"] };
+    expect(galleryImages(it)[0]).toBe(firstImage(it));
+  });
+});
+
+describe("mediaCountLabel", () => {
+  it("advertises both photo and video counts on a rich card", () => {
+    // The card shows one photo at a time; the chip is how a buyer knows there
+    // are three more and a clip behind the click.
+    expect(mediaCountLabel(["a", "b", "c", "d"], [{ url: "v" }])).toBe("📷 4 · ▶ 1");
+  });
+
+  it("says nothing about a single photo and no video", () => {
+    // A "1 photo" chip is noise on the majority of cards.
+    expect(mediaCountLabel(["a"], [])).toBeNull();
+    expect(mediaCountLabel([], [])).toBeNull();
+  });
+
+  it("mentions video alone when there is only one photo", () => {
+    expect(mediaCountLabel(["a"], [{ url: "v" }, { url: "w" }])).toBe("▶ 2");
+  });
+
+  it("mentions photos alone when there is no video", () => {
+    expect(mediaCountLabel(["a", "b", "c"], [])).toBe("📷 3");
+  });
+})

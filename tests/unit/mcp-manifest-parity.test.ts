@@ -22,10 +22,12 @@ import manifest from "../../src/mcp/mcp.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// The installable stdio manifest at apps/api/mcp.json declares the same tool set
-// as the runtime and the served .well-known manifest. It sits outside src/, so
-// it's read at runtime rather than imported as typed JSON. It once drifted to 32
-// tools because nothing guarded it — the checks below keep all three in lockstep.
+// This repo's ROOT mcp.json — the installable stdio manifest, and the file
+// firestarter-commerce's /discovery route serves verbatim from the pinned npm
+// package. It declares the same tool set as the runtime and as
+// src/mcp/mcp.json. It sits outside src/, so it's read at runtime rather than
+// imported as typed JSON. It once drifted to 32 tools because nothing guarded
+// it — the checks below keep all three in lockstep.
 const rootManifest = JSON.parse(
   readFileSync(fileURLToPath(new URL("../../mcp.json", import.meta.url)), "utf8"),
 );
@@ -175,7 +177,7 @@ describe("MCP manifest param drift (#Phase4/C9)", () => {
 
 /**
  * Helper to validate firestarter_bulk_list nested items.required against live zod schema.
- * Used by both the served manifest (src/mcp/mcp.json) and the stdio manifest (apps/api/mcp.json).
+ * Used by both the served manifest (src/mcp/mcp.json) and the stdio manifest (root mcp.json).
  */
 function checkBulkListNestedRequiredDrift(manifestToCheck: any, manifestName: string) {
   // Capture the actual zod schema from the tool registration
@@ -218,23 +220,23 @@ function checkBulkListNestedRequiredDrift(manifestToCheck: any, manifestName: st
   ).toBe(manifestStr);
 }
 
-// The installable stdio manifest (apps/api/mcp.json) is a SECOND tool-listing
+// The installable stdio manifest (root mcp.json) is a SECOND tool-listing
 // surface — the client-config form ("transport":"stdio") distinct from the
 // served .well-known manifest. Nothing imported it and no test guarded it, so it
 // silently froze at 32 tools while the runtime grew to 70. These checks bind it
 // to the runtime (the source of truth) exactly like the served manifest above,
 // so a new tool must be added to BOTH manifests or CI fails.
-describe("stdio mcp.json (apps/api/mcp.json) <-> runtime parity", () => {
+describe("stdio mcp.json (this repo's root manifest) <-> runtime parity", () => {
   it("advertises no ghost tools (every root mcp.json tool is registered)", () => {
     const registered = new Set(registeredToolNames());
     const ghosts = rootManifestToolNames.filter((t) => !registered.has(t));
-    expect(ghosts, `apps/api/mcp.json advertises tools that are NOT registered: ${ghosts.join(", ")}`).toEqual([]);
+    expect(ghosts, `root mcp.json advertises tools that are NOT registered: ${ghosts.join(", ")}`).toEqual([]);
   });
 
   it("hides no tools (every registered tool is in root mcp.json)", () => {
     const advertised = new Set(rootManifestToolNames);
     const hidden = registeredToolNames().filter((t) => !advertised.has(t));
-    expect(hidden, `tools registered but missing from apps/api/mcp.json: ${hidden.join(", ")}`).toEqual([]);
+    expect(hidden, `tools registered but missing from root mcp.json: ${hidden.join(", ")}`).toEqual([]);
   });
 
   it("declares the same tool set as the served .well-known manifest", () => {
@@ -246,12 +248,12 @@ describe("stdio mcp.json (apps/api/mcp.json) <-> runtime parity", () => {
     expect(rootManifestToolNames.length).toBe(runtime);
     const m = /(\d+)\s+tools/.exec(rootManifest.description || "");
     if (m) {
-      expect(parseInt(m[1], 10), "apps/api/mcp.json description 'N tools' is stale vs registered tools").toBe(runtime);
+      expect(parseInt(m[1], 10), "root mcp.json description 'N tools' is stale vs registered tools").toBe(runtime);
     }
   });
 
-  it("firestarter_bulk_list nested items.required matches the zod schema's per-item optional/required fields (apps/api/mcp.json)", () => {
-    checkBulkListNestedRequiredDrift(rootManifest, "apps/api/mcp.json");
+  it("firestarter_bulk_list nested items.required matches the zod schema's per-item optional/required fields (root mcp.json)", () => {
+    checkBulkListNestedRequiredDrift(rootManifest, "root mcp.json");
   });
 });
 
@@ -377,5 +379,106 @@ describe("manifest input schemas declare every registered parameter", () => {
       ghosts,
       `${label} advertises parameters the server ignores — run \`npm run sync-manifests\`: ${ghosts.join(", ")}`,
     ).toEqual([]);
+  });
+});
+
+/**
+ * Enum parity — the gap that let the payout rails drift.
+ *
+ * Every check above compares tool NAMES, REQUIRED params, DESCRIPTIONS and the
+ * SET of declared parameters. None of them looks at a parameter's allowed
+ * VALUES, so `firestarter_payouts.provider` sat at
+ * ["stripe","paypal","wise","payoneer"] in both manifests long after tools.ts
+ * narrowed the Zod enum to ["stripe","paypal"].
+ *
+ * That is not cosmetic. firestarter-commerce's /discovery route serves
+ * mcp.json verbatim from the pinned npm package, so the live
+ * .well-known/mcp.json advertised two payout rails the API answers 501 for —
+ * and an agent that believed the manifest had its follow-up call rejected by
+ * the server's own enum before the API could return the helpful message.
+ */
+function registeredToolEnums(): Map<string, Map<string, string[]>> {
+  const out = new Map<string, Map<string, string[]>>();
+  const stub = {
+    tool: (name: string, _description: string, schema: any) => {
+      const perParam = new Map<string, string[]>();
+      for (const [param, field] of Object.entries(schema ?? {})) {
+        const values = zodEnumValues(field);
+        if (values) perParam.set(param, values.slice().sort());
+      }
+      if (perParam.size) out.set(name, perParam);
+    },
+  } as any;
+  delete process.env.ATTRIBUTION_SELF_SERVE_ENABLED;
+  registerTools(stub, "fs_test_parity", "http://local");
+  return out;
+}
+
+/** Unwrap .optional()/.default() and read a ZodEnum's values, or null. */
+function zodEnumValues(field: any): string[] | null {
+  let node = field;
+  for (let depth = 0; node && depth < 6; depth++) {
+    const def = node._def ?? node.def;
+    if (!def) return null;
+    if (Array.isArray(def.values)) return def.values as string[];
+    // ZodEnum in newer zod keeps its members on `entries`.
+    if (def.entries && typeof def.entries === "object") return Object.values(def.entries) as string[];
+    node = def.innerType ?? def.schema ?? def.type;
+  }
+  return null;
+}
+
+describe("manifest enums match the values the server accepts", () => {
+  const cases: Array<[string, any]> = [
+    ["src/mcp/mcp.json", manifest],
+    ["mcp.json", rootManifest],
+  ];
+
+  it.each(cases)("%s advertises no value the server would reject", (label, m) => {
+    const live = registeredToolEnums();
+    // If the unwrapping ever breaks, the whole check silently passes — so
+    // assert we actually found enums before trusting an empty drift list.
+    expect(live.size).toBeGreaterThan(5);
+
+    const drifts: string[] = [];
+    for (const tool of m.tools || []) {
+      const perParam = live.get(tool.name);
+      if (!perParam) continue;
+      for (const [param, values] of perParam) {
+        const declared = tool.inputSchema?.properties?.[param]?.enum;
+        if (!Array.isArray(declared)) continue;
+        // Subset, not equality — deliberately. A manifest value the server
+        // REJECTS is the bug: the agent trusts the manifest and its call dies
+        // in schema validation. The reverse is a legitimate pattern here:
+        // firestarter_connect_store accepts "shopify" and "tiktok_shop" purely
+        // so its handler can redirect to the right tool with a readable
+        // message, and advertising them would tell an agent this tool handles
+        // Shopify, which it does not.
+        const accepted = new Set(values);
+        const rejected = declared.filter((v: string) => !accepted.has(v));
+        if (rejected.length) {
+          drifts.push(
+            `${tool.name}.${param}: manifest offers [${rejected.sort().join(",")}] which the server rejects (accepts [${values.join(",")}])`,
+          );
+        }
+      }
+    }
+    expect(
+      drifts,
+      `${label} advertises enum values the server does not accept — an agent that trusts the manifest gets its call rejected by schema validation:\n${drifts.join("\n")}`,
+    ).toEqual([]);
+  });
+
+  it("firestarter_payouts offers only rails the API will accept", () => {
+    // Pinned explicitly, not just by parity: both sides could drift back
+    // together. The commerce API answers 501 PROVIDER_NOT_AVAILABLE for wise
+    // and payoneer (services/payouts/providers.ts).
+    for (const [label, m] of cases) {
+      const tool = (m.tools || []).find((t: any) => t.name === "firestarter_payouts");
+      expect(tool, `${label} is missing firestarter_payouts`).toBeTruthy();
+      expect(tool.inputSchema.properties.provider.enum.slice().sort()).toEqual(["paypal", "stripe"]);
+      expect(Object.keys(tool.inputSchema.properties)).not.toContain("wise_recipient_id");
+      expect(Object.keys(tool.inputSchema.properties)).not.toContain("payoneer_email");
+    }
   });
 });

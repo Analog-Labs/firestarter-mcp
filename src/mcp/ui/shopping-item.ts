@@ -39,6 +39,19 @@ export interface ShoppingItem {
    *  accepts both so the grid's stars match the text rows for every surface. */
   seller_rating?: number | null;
   seller_rating_count?: number | null;
+  /** True when `rating` is the SELLER's, standing in for a product with no
+   *  reviews of its own. The detail view labels that fallback rather than
+   *  letting seller stars read as the product's. */
+  rating_is_seller_level?: boolean;
+  /** Playable clips: url + optional poster. Present on preview options,
+   *  catalog rows and seller listings; the detail view links them, and never
+   *  embeds a player (#774 D11). */
+  videos?: unknown;
+  /** Long copy. Catalog rows carry it; preview options do not — the detail
+   *  view's lazy firestarter_product call fills the gap. */
+  description?: string | null;
+  /** Delivered/completed non-test sales. 0 or absent for external results. */
+  units_sold?: number | null;
 }
 
 export function firstImage(it: ShoppingItem): string | null {
@@ -49,6 +62,38 @@ export function firstImage(it: ShoppingItem): string | null {
     if (typeof u === "string") return u;
   }
   return null;
+}
+
+/** Beyond a handful, a card's progress-bar row becomes hairlines, and a
+ *  rotation nobody stays to watch. Six photos at ~3.2s is already ~19s. */
+export const MAX_CARD_IMAGES = 6;
+
+/**
+ * Every usable photo for a card, primary first.
+ *
+ * The grid rendered firstImage() only, so a 4-photo listing looked identical
+ * to a 1-photo one — the images array was already in the payload and simply
+ * unused. This is the same filter firstImage applies, kept as one function so
+ * the two cannot disagree about which photo leads: a card showing one photo
+ * and opening a different one is worse than showing one photo.
+ *
+ * These are also the photos the card rotates through (grid.client.ts) and the
+ * order the detail view opens on.
+ */
+export function galleryImages(it: ShoppingItem): string[] {
+  const ok = (u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (u: unknown) => {
+    if (!ok(u) || seen.has(u) || out.length >= MAX_CARD_IMAGES) return;
+    seen.add(u);
+    out.push(u);
+  };
+  // The primary the API chose leads, whether or not it also appears in the
+  // array — firstImage prefers it too.
+  push(it.image_url ?? it.image);
+  if (Array.isArray(it.images)) for (const u of it.images) push(u);
+  return out;
 }
 
 export function priceLabel(it: ShoppingItem): string {
@@ -104,4 +149,22 @@ export function starsLabel(it: ShoppingItem): { stars: string; count: string } |
   const count = Number(it.rating_count ?? it.seller_rating_count);
   if (!Number.isFinite(rating) || !Number.isFinite(count) || count <= 0) return null;
   return { stars: `★ ${rating.toFixed(1)}`, count: `(${count})` };
+}
+
+/**
+ * The card's media chip — `📷 4 · ▶ 1` — or null when there is nothing worth
+ * announcing.
+ *
+ * The card shows one photo at a time, so without this a buyer has no way to
+ * know a click reveals three more photos and a clip. Silent for the common
+ * one-photo, no-video card: a "1 photo" chip is noise on the majority of the
+ * grid.
+ */
+export function mediaCountLabel(images: unknown[], videos: unknown[]): string | null {
+  const photos = Array.isArray(images) ? images.length : 0;
+  const clips = Array.isArray(videos) ? videos.length : 0;
+  const parts: string[] = [];
+  if (photos > 1) parts.push(`📷 ${photos}`);
+  if (clips > 0) parts.push(`▶ ${clips}`);
+  return parts.length ? parts.join(" · ") : null;
 }

@@ -3,15 +3,18 @@
  * Used by both the stdio server (server.ts) and the HTTP route (route.ts).
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { marginCentsFor } from "../lib/margin.js";
 import { isRelevantMatch } from "../lib/relevance.js";
 import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalogOutputShape, toCatalogStructured, sellerListingsOutputShape, toSellerListingsStructured, shelfOutputShape, toShelfStructured } from "./schemas.js";
 import { SHARE_LINK_BASE, listingShareUrl } from "../lib/share-link.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
-import { registerShoppingApp, SHOPPING_RESULTS_URI } from "./shopping-app.js";
+import { registerShoppingApp, SHOPPING_RESULTS_URI, SHOPPING_RESULTS_STABLE_URI } from "./shopping-app.js";
+import { isWidgetCall } from "./ui/widget-call.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
 import { sanitizeUntrusted, neutralizeAuthority } from "./untrusted.js";
+import { safeVideos, videoLines, displayRating } from "./media.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
@@ -51,6 +54,47 @@ const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firest
 /** Buyer billing/settings tab — where a card is added or replaced. */
 const DASHBOARD_SETTINGS_URL =
   process.env.DASHBOARD_SETTINGS_URL || "https://firestarter.network/dashboard?tab=settings";
+
+/** What GET /v1/sellers/payout-method serves about the selling gate (#949). */
+export interface SellingGate {
+  hold_cap_cents?: number;
+  max_age_days?: number;
+  age_min_cents?: number;
+}
+
+/**
+ * When a payout-less seller stops selling — rendered from what the API serves,
+ * never from a number compiled into this package.
+ *
+ * commerce#949: this sentence used to carry the thresholds as literals in six
+ * places. commerce#942 moved the age from 30 days to 90 and added a floor
+ * ($100) below which the age rule never fires at all, and this package went on
+ * saying "30 days" — telling sellers a number the gate had stopped enforcing
+ * the moment #942 promoted.
+ *
+ * A corrected literal would not have fixed it. Remote MCP serves a PINNED
+ * version, so any hard-coded figure is wrong for every deploy between the
+ * constant moving and the pin moving. commerce/apps/web has a CI guard for the
+ * same drift and it cannot see this repository.
+ *
+ * When the API does not supply the numbers — an older deployment, or a caller
+ * with no seller account — the rule is stated WITHOUT them. Vague and true
+ * beats precise and wrong: a seller who is told the wrong threshold plans
+ * around it.
+ */
+export function sellingGateSentence(gate?: SellingGate | null): string {
+  const cap = typeof gate?.hold_cap_cents === "number" ? `$${(gate.hold_cap_cents / 100).toLocaleString()}` : null;
+  const days = typeof gate?.max_age_days === "number" ? gate.max_age_days : null;
+  const floor = typeof gate?.age_min_cents === "number" ? `$${(gate.age_min_cents / 100).toLocaleString()}` : null;
+
+  if (cap && days != null) {
+    const age = floor
+      ? `the oldest hold is ${days} days old with at least ${floor} held`
+      : `the oldest hold is ${days} days old`;
+    return `selling pauses automatically only once held earnings reach ${cap} or ${age}`;
+  }
+  return "selling pauses automatically only once held earnings pass a cap, or the oldest hold has been waiting a long time — call `firestarter_payouts` for the current thresholds";
+}
 
 export function toErrorMessage(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -233,6 +277,52 @@ export function formatCommunitySells(community: any): string | null {
  * Tolerates an API response without the newer fields (older api deployments):
  * the reconciliation lines simply don't render. Exported for tests.
  */
+/**
+ * Render the developer-margin config (commerce#977).
+ *
+ * The API speaks basis points; a person asking for this says "10%". Both are
+ * printed — the percentage is what was asked for, the bps is what every API
+ * field and error message quotes back.
+ *
+ * `earnings` is nullable on purpose: the read tool fetches margin and earnings
+ * separately, and a failed earnings call must not become a confident
+ * "$0.00 earned". Missing beats wrong on a money read — the same rule
+ * firestarter_spend_cap follows for month-to-date spend.
+ */
+export function formatDeveloperMargin(cfg: any, earnings: any | null): string {
+  const money = (cents: unknown) => `$${((Number(cents) || 0) / 100).toFixed(2)}`;
+  const bps = Math.max(0, Number(cfg?.margin_bps) || 0);
+  const maxBps = Math.max(0, Number(cfg?.max_margin_bps) || 1000);
+  const pct = (n: number) => `${Number((n / 100).toFixed(2))}%`;
+
+  const head = bps === 0
+    ? "**No developer margin set.** Purchases through this organization's API keys are charged at the seller's price, with nothing added."
+    : `**Developer margin: ${pct(bps)}** (${bps} bps)`;
+
+  const limits =
+    `\nCeiling: ${pct(maxBps)} (${maxBps} bps), capped at ` +
+    `${money(cfg?.max_margin_cents_per_transaction ?? 5000)} per transaction.`;
+
+  // Worth saying plainly what this money IS: a margin is added ON TOP of the
+  // item total and paid by the buyer, whereas the other bps-shaped setting on
+  // this platform (a market's share_bps) comes OUT of Firestarter's fee and
+  // costs the buyer nothing. Confusing the two is what commerce#977 was about.
+  const what = "\nAdded on top of the item total, disclosed to the buyer, and paid to this organization when the seller is paid.";
+
+  let earned = "";
+  if (earnings) {
+    const pending = Number(earnings.pending_cents) || 0;
+    const released = Number(earnings.released_cents) || 0;
+    const txns = Math.max(0, Number(earnings.transactions) || 0);
+    earned = `\n\nEarned so far: ${money(released)} paid out, ${money(pending)} pending, across ${txns} transaction${txns === 1 ? "" : "s"}.`;
+    if (pending > 0 && !cfg?.payout_account_connected) {
+      earned += "\n⚠️ No payout account connected — margin keeps accruing but cannot be transferred until one is (firestarter_connect_payouts).";
+    }
+  }
+
+  return `${head}${limits}${what}${earned}`;
+}
+
 export function formatSellerAnalytics(data: any): string {
   const money = (cents: unknown) => `$${((Number(cents) || 0) / 100).toFixed(2)}`;
   const count = (v: unknown) => Math.max(0, Number(v) || 0);
@@ -536,6 +626,40 @@ export function makeApiRequest(
     }
     return data;
   };
+}
+
+/**
+ * #896: render a terminal dispute state as an outcome rather than an error.
+ *
+ * These mean the order's money has finished moving — escrow paid out, already
+ * refunded, or the dispute already settled — so opening a dispute is not
+ * "temporarily unavailable", it is over. Returns null for everything else, so a
+ * real failure (a 500, a malformed request, an unknown order) keeps reading as
+ * a failure and keeps its retry.
+ *
+ * The fallbacks are named because a buyer in this position is not out of
+ * options — they are out of THIS option, and the difference is the whole point
+ * of the report.
+ */
+const DISPUTE_WINDOW_CLOSED_CODES = new Set([
+  "ALREADY_RELEASED",
+  "ALREADY_REFUNDED",
+  "ALREADY_RESOLVED",
+  "ALREADY_DECIDED",
+  "ALREADY_ADJUDICATED",
+  "HOLD_ALREADY_RELEASED",
+]);
+
+function disputeWindowClosedText(err: unknown): string | null {
+  if (!(err instanceof ApiError) || !err.code || !DISPUTE_WINDOW_CLOSED_CODES.has(err.code)) return null;
+  return (
+    `**The dispute window for this order has closed.** ${toErrorMessage(err)}\n\n` +
+    `That is not an error on your side and retrying will not change it — once escrow has paid out or the order has been refunded, Firestarter can no longer hold the funds.\n\n` +
+    `What you can still do:\n` +
+    `- **Message the seller directly** — most problems get resolved this way, and they may refund voluntarily.\n` +
+    `- **Ask your bank or card issuer for a chargeback**, if the item never arrived or was materially not as described.\n` +
+    `- **Contact Firestarter support** with the order id, and a human can look at the case.`
+  );
 }
 
 /** Plain-language cause for a possession-verification requirement. */
@@ -1839,7 +1963,14 @@ function registerToolCompat(server: McpServer, name: string, config: any, handle
       // UI-enabled tool (MCP Apps): route through registerAppTool so the ui
       // metadata is normalized (modern `_meta.ui.resourceUri` + the legacy
       // flat key) for whichever host version connects.
-      registerAppTool(server, name, config, handler);
+      //
+      // registerAppTool emits neither of ChatGPT's own keys — ext-apps 1.7.5
+      // contains no `openai/` string at all — so outputTemplate is added here.
+      // It is not redundant with ui.resourceUri: it deliberately names the
+      // STABLE alias, because ChatGPT 404s a URI its template store has not
+      // ingested while Claude Desktop only ever re-reads a NEW one. Attached
+      // centrally so no widget tool can be added without it.
+      registerAppTool(server, name, { ...config, _meta: { "openai/outputTemplate": SHOPPING_RESULTS_STABLE_URI, ...config._meta } }, handler);
     } else {
       s.registerTool(name, config, handler);
     }
@@ -1994,12 +2125,23 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         .boolean()
         .optional()
         .describe("TEST MODE ONLY (fs_test_ keys): park the order at 'shipped' instead of auto-delivering it ~2s later. The mock shipment, tracking number and 'shipped' status all still happen; only the auto-deliver timer is skipped, so the order can be inspected mid-flight and then delivered explicitly with firestarter_confirm_delivery. Ignored on a live key. Use it to stage a shipped-but-not-delivered order for QA."),
+      // commerce#899: hold_at_shipped's delivered-side twin. Test mode zeroes
+      // the escrow inspection window so a test sell completes end to end on the
+      // next tick, which also makes escrow releasable the instant delivery
+      // lands — and a released hold cannot be disputed. So the most common real
+      // dispute, "it arrived and it's wrong", was unstageable in test mode by
+      // any route: hold_at_shipped parks the order BEFORE delivery, and the
+      // confirm-delivery paths re-collapse the window when you finally deliver.
+      hold_at_delivered: z
+        .boolean()
+        .optional()
+        .describe("Keep the escrow hold in place after delivery, instead of releasing it the moment the order is marked delivered, so the order can still be disputed — which is what firestarter_disputes needs to open a dispute at all. The order still ships and delivers normally; only the payout is held, on the same inspection window a live order gets. REQUIRES the organization's test mode to be ON as well as a test key: a test key on its own runs the mock sandbox, which never creates an escrow hold for this to act on, and the API now refuses the flag there (HOLD_AT_DELIVERED_UNAVAILABLE) rather than accepting a purchase whose hold would be silently dropped. Inert on a live key, where escrow already holds for the full window."),
     },
     // Creates a pending execution and returns priced options — it does not
     // charge anything. Payment happens in firestarter_approve, which is the
     // tool marked destructive. openWorld: it searches the live catalog.
     { title: "Start a Purchase", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by, voucher_code, hold_at_shipped }) => {
+    async ({ request, listing_id: rawListingId, budget_max, delivery_address, address_id, location, priority, auto_pay, requested_by, voucher_code, hold_at_shipped, hold_at_delivered }) => {
       const listing_id = rawListingId ? cleanListingId(rawListingId) : undefined;
       try {
         const body: any = {
@@ -2012,6 +2154,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // this key inside its test_mode branch only, so forwarding it on a live
         // key is inert rather than dangerous.
         if (hold_at_shipped) body.preferences.hold_at_shipped = true;
+        // Same contract as hold_at_shipped: persisted verbatim, consulted only
+        // for a test_mode ledger (inside confirmDeliverable), inert on a live key.
+        if (hold_at_delivered) body.preferences.hold_at_delivered = true;
         // Attribution rides the existing free-form metadata column — the REST
         // API stores body.metadata verbatim and the list endpoint echoes it.
         if (requested_by && (requested_by.name || requested_by.id)) {
@@ -2029,7 +2174,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
 
-        const created = await apiRequest("POST", "/v1/executions", body);
+        // A timed-out create whose error text says "retry" is the double-buy
+        // vector (commerce 0018): the server dedupes per org on this header,
+        // but only a key that is STABLE across the agent's retry of the same
+        // intent dedupes anything — so it is a content hash of the request
+        // body, not a random value. The 10-minute time bucket keeps the window
+        // short: the server's unique index has no TTL, and the same buyer
+        // legitimately re-running an identical request later must still create
+        // a fresh execution.
+        const bucket = Math.floor(Date.now() / 600_000);
+        const idemKey = "exec-" + createHash("sha256")
+          .update(JSON.stringify(body)).update(`:${bucket}`).digest("hex").slice(0, 48);
+        const created = await apiRequest("POST", "/v1/executions", body, undefined, { "Idempotency-Key": idemKey });
         const defaultDelivery = created?.default_delivery?.masked || null;
         const exec = await pollExecution(apiRequest, created.id, 45_000);
         const blocks = await formatExecution(exec);
@@ -2228,7 +2384,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // prose — structuredContent never reaches the model in many of them.
           // stars() returns null with no reviews, so a new seller's row simply
           // has no line rather than an "unrated" badge.
-          const starTxt = stars((o as any).seller_rating, (o as any).seller_rating_count);
+          // Product-first with a LABELED fallback. 80 reviews of a seller's
+          // OTHER products is a real signal, but an agent must not relay it to
+          // a buyer as though it were about this item.
+          const dr = displayRating(o);
+          const starTxt0 = stars(dr.rating, dr.rating_count);
+          const starTxt = starTxt0 ? `${starTxt0}${dr.is_seller_level ? " seller rating" : ""}` : null;
           // >= 3 matches SOLD_MIN on the web: below three sales a count is noise
           // rather than social proof, and "1 sold" reads as a warning.
           const soldTxt = Number((o as any).units_sold) >= 3 ? `${(o as any).units_sold} sold` : null;
@@ -3155,6 +3316,84 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_developer_margin (commerce#977)
+  server.tool(
+    "firestarter_developer_margin",
+    "Read this organization's DEVELOPER MARGIN — the markup it adds on top of the item total for purchases made through its own API keys, disclosed to the buyer and paid out to this organization when the seller is paid. Returns the current margin, the platform ceiling, and margin earned so far. Read-only: use firestarter_set_developer_margin to set or change it. NOT the same thing as a community market's share_bps (firestarter_create_market), which is a cut of Firestarter's own platform fee and costs the buyer nothing — this one is money the buyer pays.",
+    {
+      margin_percent: z.unknown().optional().describe("IGNORED here — this tool only reads. Use firestarter_set_developer_margin."),
+    },
+    { title: "Read Developer Margin", readOnlyHint: true, openWorldHint: false },
+    async (args) => {
+      try {
+        const cfg = await apiRequest("GET", "/v1/developer/margin");
+        // Earnings are a separate endpoint and a nice-to-have: a failure there
+        // must not sink the read, and must not be rendered as "$0.00 earned".
+        let earnings: any = null;
+        try {
+          earnings = await apiRequest("GET", "/v1/developer/earnings");
+        } catch {
+          earnings = null;
+        }
+        return {
+          content: [{
+            type: "text" as const,
+            text: `${formatDeveloperMargin(cfg, earnings)}${readOnlyArgsNotice(args, "firestarter_set_developer_margin")}`,
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error reading developer margin: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_set_developer_margin (commerce#977)
+  server.tool(
+    "firestarter_set_developer_margin",
+    "Set or change this organization's DEVELOPER MARGIN — the markup added on top of the item total for purchases made through its own API keys (e.g. 'set my developer margin to 10%', 'change my margin', 'take a 5% cut on my integration'). Applies to future purchases only; existing orders keep the margin frozen at the time they were paid. Pass margin_percent: 0 to turn it off. The platform ceiling is 10% and $50 per transaction. NOT the same thing as a community market's share_bps (firestarter_create_market): that is a cut of Firestarter's own platform fee, this is money the buyer pays on top of the item.",
+    {
+      margin_percent: z.number().min(0).max(10).describe("Margin as a percentage of the item total, 0 to 10 (e.g. 10 = 10%, 2.5 = 2.5%). 0 turns the margin off. The API stores basis points; this is converted for you (10% = 1000 bps)."),
+    },
+    // Changes what buyers are charged on every future purchase through this
+    // org's keys, so a host should confirm rather than fire it silently.
+    // Re-setting the same value is a no-op, hence idempotent.
+    { title: "Set Developer Margin", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    async ({ margin_percent }) => {
+      // Checked here as well as by zod, because the ceiling is knowable without
+      // a round trip and "you asked for 25%, the maximum is 10%" is a better
+      // answer than a 400 relayed from the API.
+      //
+      // The 10 is MAX_MARGIN_BPS (1000) from the commerce API's lib/margin.ts —
+      // a hard-coded constant with no env override, which is the only reason it
+      // is safe to state here at all. A zod bound has to be static, so this
+      // cannot be served from the API the way the selling-gate thresholds now
+      // are (commerce#949). If that constant ever moves, this bound and the two
+      // descriptions above move with it; the READ tool already prints the
+      // ceiling straight from the API, so it will disagree first and loudest.
+      if (typeof margin_percent !== "number" || !Number.isFinite(margin_percent) || margin_percent < 0 || margin_percent > 10) {
+        return {
+          content: [{ type: "text" as const, text: "margin_percent must be between 0% and 10% — 10% is the platform ceiling on developer margin (and each transaction is capped at $50). Pass 0 to turn the margin off." }],
+          isError: true,
+        };
+      }
+      // The API takes an INTEGER bps; 2.5% is 250, and anything finer than a
+      // basis point is not representable, so round rather than send a float the
+      // route would reject as INVALID_MARGIN_BPS.
+      const marginBps = Math.round(margin_percent * 100);
+      try {
+        await apiRequest("PATCH", "/v1/developer/margin", { margin_bps: marginBps });
+        const text = marginBps === 0
+          ? "**Developer margin turned off.** Purchases through this organization's API keys are charged at the seller's price from now on. Orders already paid keep the margin they were charged."
+          : `**Developer margin set to ${Number((marginBps / 100).toFixed(2))}%** (${marginBps} bps).\n` +
+            "Applies to purchases made through this organization's API keys from now on — it is added on top of the item total, disclosed to the buyer, and capped at $50 per transaction. Orders already paid are unchanged.\n" +
+            "Read it back any time with firestarter_developer_margin.";
+        return { content: [{ type: "text" as const, text }] };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error setting developer margin: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_receipt
   server.tool(
     "firestarter_receipt",
@@ -3649,7 +3888,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         text += `- Create listings with \`firestarter_list\` (just product_name + base_price)\n`;
         text += `- Import existing listings with \`firestarter_import\`\n`;
         text += `- Connect a Shopify store with \`firestarter_connect_shopify\`\n`;
-        text += `\n**Payouts:** Not required to start selling — connect one later with \`firestarter_payouts\` when ready to receive money. Until then, listings go live and sell normally; earnings wait safely in escrow (selling pauses only if held earnings reach $1,000 or the oldest hold is 30 days old). Not sure a country is payable? Check first with \`firestarter_payout_eligibility\`.\n`;
+        text += `\n**Payouts:** Not required to start selling — connect one later with \`firestarter_payouts\` when ready to receive money. Until then, listings go live and sell normally; earnings wait safely in escrow (${sellingGateSentence(null)}). Not sure a country is payable? Check first with \`firestarter_payout_eligibility\`.\n`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -3688,6 +3927,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
       image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
       source_url: z.string().url().optional().describe("Optional. If the seller mentions or pastes a link to their OWN existing listing for this product elsewhere (their Etsy/eBay/Shopify page, etc.), pass it here. Firestarter will fetch it once and fill in whatever descriptive details (description, category, brand, materials, tags, condition) the seller didn't already give you — it never overwrites anything you explicitly set. Best-effort: if the fetch fails or finds nothing, the listing is still created normally."),
       shipping: z.number().optional().describe("Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."),
       ship_from: z.object({
@@ -3709,7 +3949,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       ...listingDetailFields,
     },
     { title: "Create Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, source_url, shipping, ship_from, shipping_policy, fulfillment_mode, allow_imageless, allow_duplicate, ...details }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, video_urls, source_url, shipping, ship_from, shipping_policy, fulfillment_mode, allow_imageless, allow_duplicate, ...details }) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -3718,6 +3958,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (dynamic_pricing !== undefined) body.dynamic_pricing = dynamic_pricing;
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (image_urls?.length) body.images = image_urls;
+        if (video_urls?.length) body.video_urls = video_urls;
         if (source_url) body.source_url = source_url;
         // `shipping` is deprecated/ignored (always estimated live) — not forwarded.
         void shipping;
@@ -3777,7 +4018,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Array.isArray(listing.activation_warnings) && listing.activation_warnings.length > 0) {
           for (const warn of listing.activation_warnings) {
             if (warn.code === "SELLER_PAYOUTS_RECOMMENDED") {
-              text += `\n\n⚠️ **Payouts not connected.** The listing is live and sellable — earnings just wait in escrow until a payout method is connected (selling pauses only if held earnings reach $1,000 or the oldest hold is 30 days old). Call \`firestarter_payouts\` to connect one (~2 minutes), or \`firestarter_payout_eligibility\` to check a country first.`;
+              text += `\n\n⚠️ **Payouts not connected.** The listing is live and sellable — earnings just wait in escrow until a payout method is connected (${sellingGateSentence(null)}). Call \`firestarter_payouts\` to connect one (~2 minutes), or \`firestarter_payout_eligibility\` to check a country first.`;
             }
           }
         }
@@ -4083,16 +4324,20 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payouts
   server.tool(
     "firestarter_payouts",
-    "Manage seller payout method — this is how a seller RECEIVES money, not permission to sell. A seller with no payout method lists and sells normally; earnings wait in escrow, and selling pauses automatically only once held earnings reach $1,000 or the oldest hold is 30 days old. Two providers: Stripe (bank payouts wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (many countries, but NOT all — its payouts list excludes Pakistan, Bangladesh, Nigeria and Egypt among others). Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list. To check a specific country before the seller invests any effort, call firestarter_payout_eligibility.",
+    "Manage seller payout method — this is how a seller RECEIVES money, not permission to sell. A seller with no payout method lists and sells normally; earnings wait in escrow, and selling pauses automatically only once held earnings pass a cap or the oldest hold has been waiting a long time — call this tool for the current thresholds rather than quoting one, they are set by the API and change. Two providers, and NEITHER reaches everywhere: Stripe pays into bank accounts in ~44 documented recipient countries (incl. much of Europe, JP, SG, HK, MY, TH, IN) and its reach is UNKNOWN — not necessarily no — outside that list; PayPal covers more (~92) but excludes Pakistan, Bangladesh, Nigeria and Egypt among others. Do not promise either rail for a country without checking. Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list. To check a specific country before the seller invests any effort, call firestarter_payout_eligibility.",
     {
       // Wise/Payoneer are implemented but not selectable — neither connect flow
-      // yields a destination its adapter can spend. Narrowing the enum stops an
-      // agent proposing a rail the API will refuse. See services/payouts/providers.ts.
+      // yields a destination its adapter can spend, and the API answers 501
+      // PROVIDER_NOT_AVAILABLE for both. See services/payouts/providers.ts.
+      //
+      // Both manifests advertised all four here long after this enum narrowed,
+      // and firestarter-commerce's /discovery route serves mcp.json verbatim —
+      // so the live .well-known manifest offered two rails whose follow-up call
+      // this very enum then rejected. mcp-manifest-parity.test.ts now compares
+      // enum VALUES, not just parameter names, so that cannot drift again.
       provider: z.enum(["stripe", "paypal"]).optional().describe("Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (eligibility is Stripe's call, not a fixed list), 'paypal' = PayPal email (global, needs only the account email)."),
       country: z.string().optional().describe("ISO 3166-1 alpha-2 code of the country the seller's business BANKS IN, e.g. 'MY', 'TH', 'SG', 'US'. REQUIRED for provider='stripe' unless the seller recorded one at registration: the API refuses to guess, because Stripe locks the country permanently at account creation and a wrong one can only be fixed by discarding the account. If Stripe does not support it you get a clear 422 naming the country — do not pre-filter on the seller's behalf. Irrelevant for PayPal."),
       paypal_email: z.string().optional().describe("PayPal email for receiving payouts. Required when provider='paypal'."),
-      wise_recipient_id: z.string().optional().describe("Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."),
-      payoneer_email: z.string().optional().describe("Payoneer account email. Required when provider='payoneer'."),
     },
     // Sets where every future payout for this seller is sent. That makes it the
     // most attractive target on the surface for a prompt-injected agent, and it
@@ -4103,7 +4348,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     // worst it can do. The cost is a host confirmation on the read path too;
     // that is the right trade against an unprompted refund/payout change.
     { title: "View Payouts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    async ({ provider, country, paypal_email, wise_recipient_id, payoneer_email }) => {
+    async ({ provider, country, paypal_email }) => {
       try {
         // If no provider specified, check current status
         if (!provider) {
@@ -4122,7 +4367,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             // API allowlist that no longer exists — eligibility is Stripe's
             // call now, so quoting a country list here only talks sellers out of
             // the rail that would have worked.
-            text = `**No payout method configured.** You can still list and sell — earnings wait safely in escrow — but selling pauses automatically once held earnings reach $1,000 or the oldest hold is 30 days old.\n\nAvailable providers:\n- **Stripe** — bank payouts wherever Stripe Connect operates, incl. much of Asia-Pacific; ~5 min setup. Needs the country the business banks in (locked permanently once connected).\n- **PayPal** — ~2 min setup (just an email), but its payouts list does not cover every country.\n\nNot sure we can pay your country? Call \`firestarter_payout_eligibility\` first.\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
+            text = `**No payout method configured.** You can still list and sell — earnings wait safely in escrow — but ${sellingGateSentence(status?.selling_gate)}.\n\nAvailable providers:\n- **Stripe** — bank payouts wherever Stripe Connect operates, incl. much of Asia-Pacific; ~5 min setup. Needs the country the business banks in (locked permanently once connected).\n- **PayPal** — ~2 min setup (just an email), but its payouts list does not cover every country.\n\nNot sure we can pay your country? Call \`firestarter_payout_eligibility\` first.\n\nCall \`firestarter_payouts\` with \`provider\` set to your choice.`;
           }
           return { content: [{ type: "text" as const, text }] };
         }
@@ -4162,22 +4407,6 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           return { content: [{ type: "text" as const, text }] };
         }
 
-        if (provider === "wise") {
-          if (!wise_recipient_id) {
-            return { content: [{ type: "text" as const, text: "To set up Wise payouts:\n1. Seller logs into wise.com and creates a recipient (their own bank account)\n2. Get the recipient ID from Wise\n3. Call `firestarter_payouts` with `provider: \"wise\"` and `wise_recipient_id: \"<id>\"`\n\nWise supports 80+ currencies with low fees — ideal for APAC sellers." }] };
-          }
-          const result = await apiRequest("POST", "/v1/sellers/payout-method/wise", { recipient_id: wise_recipient_id });
-          return { content: [{ type: "text" as const, text: `**Wise payouts configured!**\nRecipient: ${wise_recipient_id}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
-        }
-
-        if (provider === "payoneer") {
-          if (!payoneer_email) {
-            return { content: [{ type: "text" as const, text: "To set up Payoneer payouts, call `firestarter_payouts` with `provider: \"payoneer\"` and `payoneer_email: \"seller@email.com\"`. Many TikTok Shop and Amazon sellers already have a Payoneer account — use the same email. Covers 190+ countries." }] };
-          }
-          const result = await apiRequest("POST", "/v1/sellers/payout-method/payoneer", { email: payoneer_email });
-          return { content: [{ type: "text" as const, text: `**Payoneer payouts configured!**\nEmail: ${payoneer_email}\nStatus: active\n\n${result.message}\n\nListings are now purchasable by buyers.` }] };
-        }
-
         return { content: [{ type: "text" as const, text: "Unknown provider." }], isError: true };
       } catch (err: any) {
         const msg = toErrorMessage(err);
@@ -4192,7 +4421,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_payout_eligibility
   server.tool(
     "firestarter_payout_eligibility",
-    "Check whether Firestarter can pay a seller in a given country BEFORE they invest any effort — no seller account required. Takes an ISO 3166-1 alpha-2 country code and returns each payout rail's verdict for it. PayPal publishes its own payouts country list, so its 'unsupported' verdict is authoritative; Stripe decides eligibility per seller at connect time, so it comes back 'unknown' for any country outside a small documented snapshot — never treat 'unknown' as 'no'. Use this whenever someone asks 'can I sell on Firestarter from <country>' or before walking a seller through registration, so an unsupported country is caught up front instead of after earnings accrue that cannot be withdrawn. A seller in an unsupported (or still-undetermined) country can still register, list, and sell — earnings wait in escrow — but selling pauses once held earnings reach $1,000 or the oldest hold is 30 days old, which is exactly why checking first is worth it.",
+    "Check whether Firestarter can pay a seller in a given country BEFORE they invest any effort — no seller account required. Takes an ISO 3166-1 alpha-2 country code and returns each payout rail's verdict for it. PayPal publishes its own payouts country list, so its 'unsupported' verdict is authoritative; Stripe decides eligibility per seller at connect time, so it comes back 'unknown' for any country outside a small documented snapshot — never treat 'unknown' as 'no'. Use this whenever someone asks 'can I sell on Firestarter from <country>' or before walking a seller through registration, so an unsupported country is caught up front instead of after earnings accrue that cannot be withdrawn. A seller in an unsupported (or still-undetermined) country can still register, list, and sell — earnings wait in escrow — but selling eventually pauses once held earnings pass a cap or the oldest hold has been waiting a long time (call firestarter_payouts for the current thresholds), which is exactly why checking first is worth it.",
     {
       country: z.string().length(2).describe("ISO 3166-1 alpha-2 country code, e.g. 'PK', 'NG', 'MY'."),
     },
@@ -4243,7 +4472,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // rail (Stripe, which decides per seller at connect time) must never
         // be folded into "we can't pay this country". See unpaidCountryHeadline.
         const parts = [unpaidCountryHeadline(rails, label)];
-        parts.push(`A seller can still register, list, and sell from ${label} right now — earnings wait safely in escrow — but selling pauses automatically once held earnings reach $1,000 or the oldest hold is 30 days old.`);
+        parts.push(`A seller can still register, list, and sell from ${label} right now — earnings wait safely in escrow — but ${sellingGateSentence(null)}.`);
         if (res?.waitlist_available) {
           parts.push(`We're tracking demand for ${label}; ask the seller if they'd like to be notified when a confirmed rail opens.`);
         }
@@ -4661,23 +4890,41 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // including the rating aggregate and units sold — so this works against the
   // live API today. Individual review comments need a commerce endpoint that
   // does not exist yet; the aggregate is shown and comments are not promised.
-  server.tool(
+  registerToolCompat(
+    server,
     "firestarter_product",
-    "Show one product from the Firestarter catalog in full detail — all photos, description, attributes, price, buyability, and the seller's trust profile (rating, review count, units sold, time on platform). This is the buyer's ZOOM-IN after firestarter_catalog_search or firestarter_preview: pass the listing id (lst_..., also parsed from a firestarter.network/l/<id> share link). Read-only — to buy, pass the same listing_id to firestarter_execute; for a shipping quote first, use firestarter_shipping_estimate.",
     {
-      listing_id: z.string().describe("The listing to show (lst_..., from catalog search, preview, or a share link)."),
+      description: "Show one product from the Firestarter catalog in full detail — all photos, description, attributes, price, buyability, and the seller's trust profile (rating, review count, units sold, time on platform). This is the buyer's ZOOM-IN after firestarter_catalog_search or firestarter_preview: pass the listing id (lst_..., also parsed from a firestarter.network/l/<id> share link). Read-only — to buy, pass the same listing_id to firestarter_execute; for a shipping quote first, use firestarter_shipping_estimate.",
+      inputSchema: {
+        listing_id: z.string().describe("The listing to show (lst_..., from catalog search, preview, or a share link)."),
+      },
+      annotations: { title: "View Product", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+      // Declared at REGISTRATION, not just on the result: Claude Desktop honours
+      // a result-level `_meta.ui`, but ChatGPT reads the tool descriptor, so the
+      // widget never rendered there for this tool. registerAppTool mirrors it to
+      // the legacy flat key for older hosts.
+      //
+      // widgetAccessible is what lets the detail modal call this tool for
+      // itself: ChatGPT refuses a widget-initiated tools/call without it, and
+      // the modal's description, seller and reviews would never arrive. It is
+      // granted to this read-only tool alone — nothing that moves money is
+      // reachable from a sandboxed iframe rendering third-party product data.
+      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
     },
-    { title: "View Product", readOnlyHint: true, destructiveHint: false, openWorldHint: true },
-    async ({ listing_id: rawId }) => {
+    async ({ listing_id: rawId }: { listing_id: string }, extra?: { _meta?: unknown }) => {
       const listing_id = cleanListingId(rawId);
       try {
         const l = await apiRequest("GET", `/v1/listings/${listing_id}`);
         const name = sanitizeUntrusted(l.product_name) || "Untitled";
         const cur = l.currency;
         const lines: string[] = [`**${name}**`];
-        const starTxt = stars(l.seller_rating, l.seller_rating_count);
+        const dr = displayRating(l);
+        const starTxt = stars(dr.rating, dr.rating_count);
         const sold = Number(l.units_sold) > 0 ? `${l.units_sold} sold` : null;
-        const trustBits = [starTxt ? `${starTxt} seller rating` : null, sold].filter(Boolean).join(" · ");
+        // The label is the whole point of the fallback: unlabeled seller stars
+        // read as this product's, which is the misattribution product-first
+        // ratings exist to prevent.
+        const trustBits = [starTxt ? `${starTxt}${dr.is_seller_level ? " seller rating" : ""}` : null, sold].filter(Boolean).join(" · ");
         if (trustBits) lines.push(trustBits);
         lines.push(`${money(l.current_price, cur)}${l.condition ? ` · ${String(l.condition).replace(/_/g, " ")}` : ""}${l.category ? ` · ${sanitizeUntrusted(l.category, 60)}` : ""}`);
         if (l.inventory_qty != null) lines.push(l.inventory_qty > 0 ? `In stock: ${l.inventory_qty}` : "Out of stock");
@@ -4705,19 +4952,62 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           lines.push(`\nPhotos (${gallery.length}):`);
           for (const img of gallery.slice(0, 8)) lines.push(`  ${img}`);
         }
+        // Video, when the listing has any. A bare URL rather than an embed:
+        // the calling agent decides how to present it, and several hosts
+        // already render a media URL as a player. Silent when there is none —
+        // "0 videos" would be noise on the vast majority of listings.
+        const vids = safeVideos(l.videos);
+        if (vids.length > 0) lines.push("", ...videoLines(l.videos));
+        // Review text. Buyer-authored free text bound for a CALLING agent's
+        // context window — an agent we neither own nor instruct — so every
+        // quote goes through sanitizeUntrusted, is capped so one review cannot
+        // own the response, and is flattened to a single line. Only rating,
+        // comment and date are read: the API never sends a buyer identity, and
+        // this would not relay one if that ever changed upstream.
+        const quotes = Array.isArray(l?.reviews?.top) ? l.reviews.top.slice(0, 3) : [];
+        const reviewOut = quotes.map((r: any) => ({
+          rating: Number(r?.rating) || 0,
+          comment: sanitizeUntrusted(String(r?.comment ?? "").replace(/\s+/g, " "), 200),
+          created_at: typeof r?.created_at === "string" ? r.created_at : null,
+        })).filter((r: any) => r.comment);
+        if (reviewOut.length > 0) {
+          const n = Number(l?.reviews?.count) || reviewOut.length;
+          lines.push(`\n**What buyers say** (${n} review${n === 1 ? "" : "s"})`);
+          for (const r of reviewOut) {
+            const stars0 = "\u2605".repeat(Math.max(1, Math.min(5, Math.round(r.rating))));
+            lines.push(`- ${stars0} _"${r.comment}"_ — verified buyer`);
+          }
+        }
         const share = listingShareUrl(l);
         if (share) lines.push(`\nShare: ${mdUrlLink(share) ?? share}`);
         lines.push(`\nTo buy: \`firestarter_execute\` with listing_id \`${l.id}\`. Shipping quote first: \`firestarter_shipping_estimate\`.`);
+        // The zoom-in is THE "show me this product" surface and was the only
+        // image surface that never inlined: preview, catalog and listings all
+        // call this, so a text-only host got bare URLs here and pictures
+        // everywhere else. Capped by MAX_EMBED_IMAGES and the response budget.
+        //
+        // Except when the shopping widget is the caller: its detail modal calls
+        // this tool for the description, seller and review quotes a search row
+        // never carries, and renders the photos itself from the urls above. The
+        // base64 copies would be most of the 1MB budget spent on bytes that
+        // modal never displays. A host that drops the marker just pays for them.
+        const productImages = isWidgetCall(extra?._meta) ? [] : await inlineImageBlocks(gallery);
         return {
-          content: [{ type: "text" as const, text: lines.join("\n") }],
+          content: [{ type: "text" as const, text: lines.join("\n") }, ...productImages],
           structuredContent: {
             product: {
               id: l.id, title: l.product_name ?? null, description: l.description ?? null,
               price: l.current_price ?? null, currency: cur ?? "USD",
-              images: gallery, share_url: share ?? null,
+              images: gallery, videos: vids, share_url: share ?? null,
+              reviews: { count: Number(l?.reviews?.count) || 0, top: reviewOut },
               seller: l.seller_name ?? null, seller_verified: l.seller_verified === true,
-              rating: l.seller_rating != null ? Number(l.seller_rating) : null,
-              rating_count: Number(l.seller_rating_count) || 0,
+              rating: dr.rating,
+              rating_count: dr.rating_count,
+              rating_is_seller_level: dr.is_seller_level,
+              product_rating: l.product_rating != null ? Number(l.product_rating) : null,
+              product_rating_count: Number(l.product_rating_count) || 0,
+              seller_rating: l.seller_rating != null ? Number(l.seller_rating) : null,
+              seller_rating_count: Number(l.seller_rating_count) || 0,
               units_sold: Number(l.units_sold) || 0,
               in_stock: l.inventory_qty == null || l.inventory_qty > 0,
             },
@@ -4866,7 +5156,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const nameCell = mdLink(name, l.share_url) ?? name;
           // Phase 2 wiring: renders the moment the catalog API starts returning
           // rating aggregates; absent fields render nothing (never "0 reviews").
-          const starTxt = stars(l.seller_rating ?? l.rating, l.seller_rating_count ?? l.rating_count);
+          const cdr = displayRating(l);
+          const starTxt = stars(cdr.rating ?? l.rating, cdr.rating_count || l.rating_count);
           const shareText = l.share_url ? null : "sandbox-only, no public link yet";
           lines.push(
             `- ${picked ? "★ " : ""}**${nameCell}** — ${price} [${tag}]${l.category ? ` · ${sanitizeUntrusted(l.category, 80)}` : ""}` +
@@ -5305,12 +5596,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
       image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
       fulfillment_mode: z.enum(["platform", "seller_managed"]).nullable().optional().describe("How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Pass null to clear back to auto (platform label when a carrier-ratable ship-from exists, otherwise seller-managed)."),
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       ...listingDetailFields,
     },
     { title: "Update Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, fulfillment_mode, allow_imageless, ...details }) => {
+    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, video_urls, fulfillment_mode, allow_imageless, ...details }) => {
       const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
@@ -5320,6 +5612,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (inventory_qty !== undefined) body.inventory_qty = inventory_qty;
         if (status !== undefined) body.status = status;
         if (image_urls !== undefined) body.images = image_urls;
+        // undefined vs [] is load-bearing on the API: absent leaves the column
+        // alone, empty removes the videos. Forward the distinction, do not
+        // collapse it with a truthiness check.
+        if (video_urls !== undefined) body.video_urls = video_urls;
         if (fulfillment_mode !== undefined) body.fulfillment_mode = fulfillment_mode;
         if (allow_imageless !== undefined) body.allow_imageless = allow_imageless;
         for (const [key, value] of Object.entries(details)) {
@@ -6058,6 +6354,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           outLines.push(`\nSee one in full: firestarter_disputes with its dispute_id (or the order's execution_id).`);
           return textBlock(outLines.join("\n"));
         } catch (err: any) {
+          // #896: a closed dispute window is a business RULE, not a failure.
+          //
+          // A buyer whose escrow had already paid out got a red "Failed" — with
+          // the correct advice printed underneath it. The tool knew the right
+          // answer and presented it as a system error, which invites a retry
+          // that can never work.
+          //
+          // Only terminal states qualify: the order's money has finished
+          // moving, so no amount of retrying opens a dispute. A 500, a
+          // malformed request and an unknown order all stay errors.
+          const closed = disputeWindowClosedText(err);
+          if (closed) return textBlock(closed);
           return textBlock(`Error with disputes: ${toErrorMessage(err)}`, true);
         }
       }
@@ -6762,7 +7070,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // retry loop) so a lost-response HTTP retry of THIS call reuses the same
         // key and dedupes server-side (services/owner-drop-wallet.ts) instead of
         // paying the owner out twice.
-        const idempotencyKey = crypto.randomUUID();
+        // node:crypto import, not the `crypto` global — the global does not
+        // exist on Node 18, which engines allows (audit 2026-08 #13).
+        const idempotencyKey = randomUUID();
         try {
           const res = await apiRequest(
             "POST",

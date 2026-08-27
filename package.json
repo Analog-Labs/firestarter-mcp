@@ -1,6 +1,6 @@
 {
   "name": "@analog-labs/firestarter-mcp",
-  "version": "2.7.0",
+  "version": "2.15.1",
   "description": "Firestarter MCP server — AI-native commerce execution: search products, buy with approval, track orders, manage listings, connect Shopify, and monitor prices.",
   "license": "MIT",
   "type": "module",
@@ -24,12 +24,12 @@
     "build:ui": "node scripts/build-shopping-ui.mjs",
     "build": "node scripts/build-shopping-ui.mjs && tsc",
     "build:mcpb": "node scripts/build-mcpb.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "mcp": "tsx src/mcp/server.ts",
     "sync-version": "node scripts/sync-version.mjs",
-    "version": "node scripts/sync-version.mjs && git add mcpb/manifest.json mcp.json src/mcp/mcp.json src/mcp/server.ts",
+    "version": "node scripts/sync-version.mjs && git add mcpb/manifest.json mcp.json src/mcp/mcp.json src/mcp/server.ts src/mcp/route.ts",
     "prepare": "node scripts/build-shopping-ui.mjs && tsc && node scripts/build-mcpb.mjs",
     "sync-manifests": "tsx scripts/sync-manifest-descriptions.ts"
   },
@@ -46,6 +46,7 @@
     "@types/node": "^25.9.1",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.25.12",
+    "jsdom": "^29.1.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },

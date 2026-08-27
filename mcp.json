@@ -2,8 +2,8 @@
   "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
-  "version": "2.7.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 87 tools, 7 resources, 10 prompts.",
+  "version": "2.15.1",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 89 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -128,6 +128,10 @@
           },
           "hold_at_shipped": {
             "description": "TEST MODE ONLY (fs_test_ keys): park the order at 'shipped' instead of auto-delivering it ~2s later. The mock shipment, tracking number and 'shipped' status all still happen; only the auto-deliver timer is skipped, so the order can be inspected mid-flight and then delivered explicitly with firestarter_confirm_delivery. Ignored on a live key. Use it to stage a shipped-but-not-delivered order for QA.",
+            "type": "boolean"
+          },
+          "hold_at_delivered": {
+            "description": "Keep the escrow hold in place after delivery, instead of releasing it the moment the order is marked delivered, so the order can still be disputed — which is what firestarter_disputes needs to open a dispute at all. The order still ships and delivers normally; only the payout is held, on the same inspection window a live order gets. REQUIRES the organization's test mode to be ON as well as a test key: a test key on its own runs the mock sandbox, which never creates an escrow hold for this to act on, and the API now refuses the flag there (HOLD_AT_DELIVERED_UNAVAILABLE) rather than accepting a purchase whose hold would be silently dropped. Inert on a live key, where escrow already holds for the full window.",
             "type": "boolean"
           }
         },
@@ -1073,6 +1077,13 @@
               ]
             }
           },
+          "video_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."
+          },
           "description": {
             "description": "Product description shown to buyers on the listing page. Pass the seller's own wording when they gave one; when they ask you to WRITE one, pass the text you wrote HERE — a description that exists only in the chat is never saved. Can be edited later with firestarter_update_listing.",
             "type": "string"
@@ -1323,7 +1334,7 @@
     },
     {
       "name": "firestarter_payouts",
-      "description": "Manage seller payout method — this is how a seller RECEIVES money, not permission to sell. A seller with no payout method lists and sells normally; earnings wait in escrow, and selling pauses automatically only once held earnings reach $1,000 or the oldest hold is 30 days old. Two providers: Stripe (bank payouts wherever Stripe Connect operates, including much of Asia-Pacific) and PayPal (many countries, but NOT all — its payouts list excludes Pakistan, Bangladesh, Nigeria and Egypt among others). Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list. To check a specific country before the seller invests any effort, call firestarter_payout_eligibility.",
+      "description": "Manage seller payout method — this is how a seller RECEIVES money, not permission to sell. A seller with no payout method lists and sells normally; earnings wait in escrow, and selling pauses automatically only once held earnings pass a cap or the oldest hold has been waiting a long time — call this tool for the current thresholds rather than quoting one, they are set by the API and change. Two providers, and NEITHER reaches everywhere: Stripe pays into bank accounts in ~44 documented recipient countries (incl. much of Europe, JP, SG, HK, MY, TH, IN) and its reach is UNKNOWN — not necessarily no — outside that list; PayPal covers more (~92) but excludes Pakistan, Bangladesh, Nigeria and Egypt among others. Do not promise either rail for a country without checking. Call with no arguments to check current status. Pass `provider` to set up a new method. Stripe eligibility is decided by Stripe from the seller's real country — there is no client-side ineligible-country list. To check a specific country before the seller invests any effort, call firestarter_payout_eligibility.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1331,9 +1342,7 @@
             "type": "string",
             "enum": [
               "stripe",
-              "paypal",
-              "wise",
-              "payoneer"
+              "paypal"
             ],
             "description": "Which payout provider to set up. Omit to check current status. 'stripe' = Stripe Connect (eligibility is Stripe's call, not a fixed list), 'paypal' = PayPal email (global, needs only the account email)."
           },
@@ -1344,21 +1353,13 @@
           "paypal_email": {
             "type": "string",
             "description": "PayPal email for receiving payouts. Required when provider='paypal'."
-          },
-          "wise_recipient_id": {
-            "type": "string",
-            "description": "Wise recipient ID. Required when provider='wise'. Seller creates this in their Wise account first."
-          },
-          "payoneer_email": {
-            "type": "string",
-            "description": "Payoneer account email. Required when provider='payoneer'."
           }
         }
       }
     },
     {
       "name": "firestarter_payout_eligibility",
-      "description": "Check whether Firestarter can pay a seller in a given country BEFORE they invest any effort — no seller account required. Takes an ISO 3166-1 alpha-2 country code and returns each payout rail's verdict for it. PayPal publishes its own payouts country list, so its 'unsupported' verdict is authoritative; Stripe decides eligibility per seller at connect time, so it comes back 'unknown' for any country outside a small documented snapshot — never treat 'unknown' as 'no'. Use this whenever someone asks 'can I sell on Firestarter from <country>' or before walking a seller through registration, so an unsupported country is caught up front instead of after earnings accrue that cannot be withdrawn. A seller in an unsupported (or still-undetermined) country can still register, list, and sell — earnings wait in escrow — but selling pauses once held earnings reach $1,000 or the oldest hold is 30 days old, which is exactly why checking first is worth it.",
+      "description": "Check whether Firestarter can pay a seller in a given country BEFORE they invest any effort — no seller account required. Takes an ISO 3166-1 alpha-2 country code and returns each payout rail's verdict for it. PayPal publishes its own payouts country list, so its 'unsupported' verdict is authoritative; Stripe decides eligibility per seller at connect time, so it comes back 'unknown' for any country outside a small documented snapshot — never treat 'unknown' as 'no'. Use this whenever someone asks 'can I sell on Firestarter from <country>' or before walking a seller through registration, so an unsupported country is caught up front instead of after earnings accrue that cannot be withdrawn. A seller in an unsupported (or still-undetermined) country can still register, list, and sell — earnings wait in escrow — but selling eventually pauses once held earnings pass a cap or the oldest hold has been waiting a long time (call firestarter_payouts for the current thresholds), which is exactly why checking first is worth it.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1902,6 +1903,13 @@
                 "label"
               ]
             }
+          },
+          "video_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."
           }
         },
         "required": [
@@ -2312,6 +2320,34 @@
             "description": "Set to true to remove the spend cap entirely (no limit)."
           }
         }
+      }
+    },
+    {
+      "name": "firestarter_developer_margin",
+      "description": "Read this organization's DEVELOPER MARGIN — the markup it adds on top of the item total for purchases made through its own API keys, disclosed to the buyer and paid out to this organization when the seller is paid. Returns the current margin, the platform ceiling, and margin earned so far. Read-only: use firestarter_set_developer_margin to set or change it. NOT the same thing as a community market's share_bps (firestarter_create_market), which is a cut of Firestarter's own platform fee and costs the buyer nothing — this one is money the buyer pays.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "margin_percent": {
+            "description": "IGNORED here — this tool only reads. Use firestarter_set_developer_margin."
+          }
+        }
+      }
+    },
+    {
+      "name": "firestarter_set_developer_margin",
+      "description": "Set or change this organization's DEVELOPER MARGIN — the markup added on top of the item total for purchases made through its own API keys (e.g. 'set my developer margin to 10%', 'change my margin', 'take a 5% cut on my integration'). Applies to future purchases only; existing orders keep the margin frozen at the time they were paid. Pass margin_percent: 0 to turn it off. The platform ceiling is 10% and $50 per transaction. NOT the same thing as a community market's share_bps (firestarter_create_market): that is a cut of Firestarter's own platform fee, this is money the buyer pays on top of the item.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "margin_percent": {
+            "type": "number",
+            "description": "Margin as a percentage of the item total, 0 to 10 (e.g. 10 = 10%, 2.5 = 2.5%). 0 turns the margin off. The API stores basis points; this is converted for you (10% = 1000 bps)."
+          }
+        },
+        "required": [
+          "margin_percent"
+        ]
       }
     },
     {

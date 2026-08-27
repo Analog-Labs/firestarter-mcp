@@ -1,0 +1,363 @@
+/* Firestarter shopping widget — grid, auto-carousel, and detail view.
+ *
+ * STRUCTURE = the original production stylesheet. An earlier redesign pass
+ * (serif host font, padded "catalog tile" contain-framing) read worse than what
+ * was live, so the original ANATOMY is the design: edge-to-edge cover photos,
+ * bordered cards, chip badges, five-across grid.
+ *
+ * COLOUR is Firestarter's. The widget used to be zinc-grey with a #2563eb focus
+ * ring — generic Tailwind defaults that belonged to no product. The ink / ash /
+ * ember / paper values below are mirrored BY HEX from
+ * apps/web/src/firestarter-v2.css, which is the source of truth, exactly as
+ * apps/api/src/routes/listing-page.ts mirrors them for the public share page.
+ * Copied rather than imported because the widget must be ONE self-contained
+ * document: it is an iframe with no network access, so it can neither @import a
+ * stylesheet nor fetch a webfont. Keep in sync by hex if the web palette moves.
+ *
+ * Two layers of custom property, not one: brand constants that never change,
+ * then SEMANTIC roles that the dark themes redefine. Every colour used to be a
+ * literal hex written three times over (base, prefers-color-scheme, and
+ * [data-theme]) — about forty duplicated declarations that had to be edited in
+ * lockstep or drift apart. Now a theme is a token swap.
+ *
+ * Lives in a real .css file rather than a template literal inside the build
+ * script so it can be edited (and diffed) as CSS. scripts/build-shopping-ui.mjs
+ * inlines it verbatim into the generated HTML.
+ */
+:root {
+  color-scheme: light dark;
+
+  /* ── Brand constants (firestarter-v2.css) ───────────────────────────── */
+  --ink-0: #08070A; --ink-1: #110E0C; --ink-2: #181412;
+  --ink-3: #221C18; --ink-4: #2D2620; --ink-5: #3A322B;
+  --paper-0: #F4EEE6; --paper-1: #EDE6DA; --paper-2: #E2D9CA; --paper-card: #FFFFFF;
+  --ember-200: #FFC78A; --ember-300: #FFA85A; --ember-400: #FF8A30;
+  --ember-500: #ED6A15; --ember-600: #C24D08;
+  --ash-0: #FAF7F2; --ash-1: #E8E1D4; --ash-2: #BAB1A1; --ash-3: #82786A;
+  --body-0: #1C1815; --body-1: #2F2A24; --body-2: #5C5448;
+  --body-line: #D7CCB9; --body-line-soft: #E5DCC9;
+  /* In/out of stock, warm-shifted off the stock browser green/red so they sit
+     in the ember-and-ash palette instead of fighting it. */
+  --ok: #8FB96A; --bad: #E0705A;
+  /* Geist is the web app's face. It cannot be fetched here — the widget iframe
+     has no network — so this stack approximates its neutral grotesque with
+     local faces, and a machine that HAS Geist installed gets the real thing.
+     Same stack, same reasoning, as the public share page. */
+  --font: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+
+  /* ── Semantic roles — LIGHT ─────────────────────────────────────────── */
+  --text: var(--body-0);
+  --text-soft: var(--body-1);
+  --muted: var(--body-2);
+  --card: var(--paper-card);
+  --line: var(--body-line-soft);
+  --line-strong: var(--body-line);
+  --well: var(--paper-1);
+  --hero-bg: var(--paper-0);
+  --accent: var(--ember-500);
+  --price: var(--ember-600);
+  --star: var(--ember-500);
+  --ok-fg: #3F6B22;
+  --ok-bg: rgba(143, 185, 106, .18);
+  --sticky: rgba(244, 238, 230, .86);
+  --sticky-line: rgba(28, 24, 21, .08);
+  --scrim: rgba(28, 24, 21, .66);
+  --scrim-strong: rgba(28, 24, 21, .85);
+  --sel: var(--ember-500);
+  --skel-a: var(--paper-1);
+  --skel-b: var(--paper-2);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { font: 14px/1.4 var(--font);
+  color: var(--text); background: transparent; overflow-y: auto; -webkit-font-smoothing: antialiased; }
+
+/* ── Grid ────────────────────────────────────────────────────────────────
+   Cards at 210px rather than the original 150px: at 150 a photo in a chat
+   column was a thumbnail, and product photos are the reason this widget
+   exists. auto-fill still collapses to one column on a narrow host. */
+/* Fixed column counts rather than auto-fill: auto-fill sized cards to whatever
+   was left over, so a Desktop-width frame showed three enormous tiles. Five
+   across at a normal frame width is the density a catalogue wants, and the
+   count is capped there — beyond five, cards get small before they get useful. */
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px; padding: 4px; }
+@media (min-width: 420px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 580px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 720px) { .grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+.card { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px;
+  overflow: hidden; text-decoration: none; color: inherit; background: var(--card);
+  transition: border-color .12s, transform .12s; }
+a.card:hover, .card.link:hover { border-color: var(--accent); transform: translateY(-2px); }
+.card.link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.media { position: relative; aspect-ratio: 1 / 1; background: var(--well); min-height: 0;
+  overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.media img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.media .ph { display: none; color: var(--muted); font-size: 12px; }
+.media.noimg .ph { display: block; }
+
+/* Two stacked layers so a photo change is a cross-fade rather than a flash of
+   the background while the next file decodes. Only the layer marked .on is
+   visible; the carousel writes the next url into the hidden one, waits for it
+   to load, then swaps the class. */
+.media .shot { opacity: 0; transition: opacity .45s ease; }
+.media .shot.on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .media .shot { transition: none; }
+  .card, a.card:hover, .card.link:hover { transition: none; transform: none; }
+}
+
+/* Progress bars, not dots. The old 6px dots were tap-only targets nobody in a
+   chat transcript noticed, and they said nothing about the rotation; a bar
+   that fills reads as "this is advancing on its own". */
+.bars { position: absolute; bottom: 6px; left: 6px; right: 6px; display: flex; gap: 3px; }
+.bar { flex: 1; height: 3px; padding: 0; border: 0; border-radius: 999px; cursor: pointer;
+  background: rgba(255,255,255,.42); box-shadow: 0 0 0 1px rgba(0,0,0,.18); overflow: hidden; }
+.bar .fill { display: block; height: 100%; width: 0; background: #fff; }
+.bar.on .fill { width: 100%; }
+/* The fill animates only while that photo is the one on screen AND the card is
+   actually rotating — a paused card shows a static full bar, not a lying one. */
+.media.running .bar.on .fill { animation: barfill var(--slide, 3200ms) linear forwards; }
+@keyframes barfill { from { width: 0 } to { width: 100% } }
+@media (prefers-reduced-motion: reduce) { .media.running .bar.on .fill { animation: none; width: 100%; } }
+
+/* Media count, so a card advertises what the modal holds. */
+.mcount { position: absolute; top: 6px; right: 6px; font-size: 10px; padding: 1px 6px;
+  border-radius: 999px; background: var(--scrim); color: #fff; letter-spacing: .02em; }
+
+.body { padding: 9px 11px 11px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.title { font-weight: 600; font-size: 13px; line-height: 1.3; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  min-height: calc(2 * 1.3em); }
+.stars { font-size: 12px; color: var(--star); }
+.stars .count { color: var(--muted); }
+.stars:empty { display: none; }
+.grid.has-stars .stars:empty { display: block; min-height: 1.4em; }
+.meta { display: flex; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; }
+.price { font-weight: 700; flex: none; color: var(--price); }
+.seller { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.badgerow { margin-top: auto; padding-top: 4px; }
+.badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid transparent; }
+.badge.ok { background: var(--ok-bg); color: var(--ok-fg); }
+.badge.muted { background: var(--well); color: var(--muted); }
+.empty { color: var(--muted); text-align: center; padding: 24px; }
+
+/* ── Detail view ─────────────────────────────────────────────────────────
+   One markup, every display mode. It renders IN FLOW (replacing the grid), so
+   the host lays it out and autoResize sizes the frame to it — correct inline,
+   correct in a panel, correct fullscreen. What display mode changes is only the
+   reserve at the bottom: hosts draw their chat composer over the surface, and
+   20px of padding left the last section permanently behind it. */
+.detail { max-width: 1000px; margin: 0 auto; padding: 4px 10px 28px; }
+:root[data-display="fullscreen"] .detail,
+:root[data-display="pip"] .detail { padding-bottom: var(--fs-safe-bottom, 160px); }
+/* Fullscreen is a whole window: a 1000px column stranded in the middle of it
+   reads as a page that failed to load the rest of itself. A pip panel is
+   already narrow, so it keeps the single column and gets no such bump. */
+:root[data-display="fullscreen"] .detail { max-width: 1180px; }
+/* Fill the surface the host just opened. The view is in flow, so a short
+   product (one photo, no description, no reviews — most new listings) reported
+   a small height and left the panel as a card stranded in the dark. */
+:root[data-display="fullscreen"] body,
+:root[data-display="pip"] body { min-height: 100vh; }
+@media (min-width: 900px) {
+  :root[data-display="fullscreen"] .hero { max-height: 68vh; }
+}
+
+.dbar { position: sticky; top: 0; z-index: 3; margin: 0 -10px 10px; padding: 6px 10px;
+  background: var(--sticky); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--sticky-line); }
+.back { font-size: 13px; color: var(--text-soft); background: none; border: 0; cursor: pointer;
+  padding: 6px 8px; border-radius: 8px; font: inherit; font-size: 13px; }
+.back:hover { background: var(--well); }
+.back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* One column until there is genuinely room for two. The breakpoint is on the
+   IFRAME's width, which is what the host gives us — not the device's. */
+.dhead { margin: 2px 0 14px; }
+.dgrid { display: grid; gap: 18px; grid-template-columns: 1fr; align-items: start; }
+@media (min-width: 640px) {
+  .dgrid { grid-template-columns: minmax(260px, 44%) 1fr; gap: 26px; }
+  /* The photos stay put while the reviews scroll past them. */
+  .dmedia { position: sticky; top: 52px; }
+  /* Two columns: the photo no longer competes with the text for the fold, so
+     it goes back to a square. */
+  .hero { height: auto; aspect-ratio: 1 / 1; max-height: 62vh; }
+}
+
+/* Single column (a chat-sized frame, or a docked pip panel): the hero is
+   CAPPED, not square. A full-width 1:1 hero in a ~600px frame is 600px of
+   photo — the product's name, price and seller all land below the fold, so the
+   detail view opens showing nothing but a picture. Height first, contain does
+   the rest. */
+.hero { position: relative; height: min(46vh, 420px); background: var(--hero-bg);
+  border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; }
+/* contain, not cover: this is where a buyer inspects the product, and a
+   cropped hero hides exactly what they opened it to see. */
+.hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 10px; }
+/* Playing: the clip takes the hero, and the photo furniture gets out of its
+   way — a play control layered under nav arrows is a mis-tap waiting. */
+.heroplayer { position: absolute; inset: 0; width: 100%; height: 100%; background: #000;
+  object-fit: contain; }
+.hero.playing img, .hero.playing .nav, .hero.playing .hpos, .hero.playing .ph { display: none; }
+.playfail { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.hero .ph { display: none; color: var(--muted); font-size: 12px; }
+.hero.noimg .ph { display: block; }
+.nav { position: absolute; top: 50%; transform: translateY(-50%); width: 34px; height: 34px;
+  border-radius: 999px; border: 0; cursor: pointer; background: var(--scrim); color: #fff;
+  font-size: 17px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  transition: opacity .15s, background .15s; }
+.nav.prev { left: 10px; } .nav.next { right: 10px; }
+.nav:hover { background: var(--scrim-strong); }
+/* Out of the way of the photo until the pointer is on it — but always there on
+   touch, where there is no hover to reveal them. */
+@media (hover: hover) { .hero .nav { opacity: 0; } .hero:hover .nav, .nav:focus-visible { opacity: 1; } }
+.hpos { position: absolute; bottom: 10px; right: 12px; font-size: 11px; color: #fff;
+  background: var(--scrim); border-radius: 999px; padding: 2px 8px; }
+
+.thumbs { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; padding-bottom: 2px; }
+.thumb { flex: none; width: 58px; height: 58px; padding: 0; background: var(--well);
+  border: 1px solid var(--line); border-radius: 10px; cursor: pointer; overflow: hidden;
+  transition: border-color .12s, transform .12s; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb:hover { transform: translateY(-1px); }
+/* Ember, not ink: the selected thumbnail is the one piece of state in the
+   gallery, and the brand accent is what the rest of the product uses to say
+   "this one". */
+.thumb.sel { border-color: var(--sel); box-shadow: 0 0 0 1px var(--sel); }
+
+/* Video: poster + play chip that opens the file. This is a sandboxed iframe in
+   someone else's client; playing a seller-supplied file here is not ours to
+   decide (#774 D11). */
+.vids { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; }
+.vid { position: relative; flex: 0 0 auto; width: 108px; height: 70px; border-radius: 10px;
+  overflow: hidden; background: var(--ink-1); cursor: pointer; display: inline-flex;
+  align-items: center; justify-content: center; }
+.vid img { width: 100%; height: 100%; object-fit: cover; }
+.playchip { position: absolute; bottom: 6px; left: 6px; font-size: 10.5px; padding: 3px 8px;
+  border-radius: 999px; background: var(--scrim-strong); color: #fff; font-weight: 550; }
+.vid:hover .playchip { background: var(--ember-500); }
+
+.dinfo { min-width: 0; }
+/* The rating is the first thing in the info column now that the title moved
+   up; without this it hugs the gallery on narrow frames. */
+.dinfo > .drating:first-child { margin-top: 0; }
+.dinfo .desc, .dinfo .revtext { max-width: 64ch; }
+.dtitle { font-size: 20px; font-weight: 650; line-height: 1.28; letter-spacing: -.011em; margin: 0; }
+.pricerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.dprice { font-size: 22px; font-weight: 700; letter-spacing: -.015em; color: var(--price); }
+.drating { margin-top: 2px; font-size: 13px; color: var(--star); display: flex; align-items: center;
+  gap: 6px; flex-wrap: wrap; }
+.drating .count { color: var(--muted); }
+/* The fallback has to be labelled: unlabelled seller stars read as this
+   product's, which is the misattribution product-first ratings exist to end. */
+.rlabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; }
+.sellerline { margin-top: 10px; font-size: 13px; color: var(--text-soft); display: flex; align-items: center;
+  gap: 8px; flex-wrap: wrap; }
+.sellerline strong { font-weight: 600; color: inherit; }
+.verified { color: var(--ok-fg); font-size: 11px; background: var(--ok-bg); border-radius: 999px;
+  padding: 1px 8px; }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.chip { font: inherit; font-size: 12.5px; padding: 7px 14px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); cursor: pointer; color: inherit;
+  transition: border-color .12s, transform .12s, background .12s; }
+.chip:hover { border-color: var(--accent); transform: translateY(-1px); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The ember gradient the share page's "Buy now" uses, so the one primary action
+   in the widget and the one on the listing page it links to are the same
+   button. Ink text on ember in both themes — the gradient carries the contrast,
+   so it does not flip. */
+.chip.primary { background: linear-gradient(180deg, var(--ember-400) 0%, var(--ember-500) 100%);
+  color: var(--ink-0); border-color: transparent; font-weight: 650;
+  box-shadow: 0 6px 16px rgba(255, 138, 48, .22); }
+.chip.primary:hover { background: linear-gradient(180deg, var(--ember-300) 0%, var(--ember-400) 100%);
+  border-color: transparent; }
+
+.sec { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.sech { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted);
+  margin: 0 0 10px; font-weight: 600; }
+.desc { font-size: 13.5px; line-height: 1.6; color: var(--text-soft); white-space: pre-wrap; margin: 0; }
+
+.rev { background: var(--well); border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
+.rev:last-child { margin-bottom: 0; }
+.revhead { font-size: 11px; color: var(--muted); display: flex; gap: 7px; align-items: center; }
+.revstars { color: var(--star); letter-spacing: .04em; }
+.revtext { font-size: 13.5px; line-height: 1.55; margin: 5px 0 0; }
+/* Ratings with no written review behind them. Muted, because it is the absence
+   of testimony rather than testimony — but present, because a product nine
+   buyers scored must not render identically to one nobody has touched. */
+.revnote { font-size: 13px; line-height: 1.5; color: var(--muted); margin: 0; }
+
+.links { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Skeletons for what the lazy firestarter_product call fills. They disappear on
+   failure rather than becoming an error: a view that says "couldn't load
+   reviews" is worse than one that simply has none. */
+.skel { height: 11px; border-radius: 5px;
+  background: linear-gradient(90deg, var(--skel-a), var(--skel-b), var(--skel-a));
+  background-size: 200% 100%; animation: shimmer 1.2s linear infinite; margin: 8px 0; }
+.skel.w60 { width: 60%; } .skel.w40 { width: 40%; }
+@keyframes shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }
+@media (prefers-reduced-motion: reduce) {
+  .skel { animation: none; }
+  .chip, .thumb, .nav { transition: none; }
+  .chip:hover, .thumb:hover { transform: none; }
+}
+
+/* ── Dark theme ──────────────────────────────────────────────────────────
+   Two triggers, one palette: the host's explicit choice stamped as
+   [data-theme] by applyDocumentTheme, and the OS preference as a fallback
+   guarded so an explicit light stamp beats a dark OS.
+   Both blocks redefine the SAME semantic tokens and nothing else — the rules
+   above never learn there is a second theme. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --text: var(--ash-0);
+    --text-soft: var(--ash-1);
+    --muted: var(--ash-3);
+    --card: var(--ink-2);
+    --line: var(--ink-4);
+    --line-strong: var(--ink-5);
+    --well: var(--ink-3);
+    --hero-bg: var(--ink-1);
+    --accent: var(--ember-400);
+    --price: var(--ember-200);
+    --star: var(--ember-300);
+    --ok-fg: #B9D89A;
+    --ok-bg: rgba(143, 185, 106, .16);
+    --sticky: rgba(8, 7, 10, .86);
+    --sticky-line: rgba(255, 255, 255, .08);
+    --scrim: rgba(8, 7, 10, .66);
+    --scrim-strong: rgba(8, 7, 10, .88);
+    --sel: var(--ember-400);
+    --skel-a: var(--ink-3);
+    --skel-b: var(--ink-4);
+  }
+}
+:root[data-theme="dark"] {
+  --text: var(--ash-0);
+  --text-soft: var(--ash-1);
+  --muted: var(--ash-3);
+  --card: var(--ink-2);
+  --line: var(--ink-4);
+  --line-strong: var(--ink-5);
+  --well: var(--ink-3);
+  --hero-bg: var(--ink-1);
+  --accent: var(--ember-400);
+  --price: var(--ember-200);
+  --star: var(--ember-300);
+  --ok-fg: #B9D89A;
+  --ok-bg: rgba(143, 185, 106, .16);
+  --sticky: rgba(8, 7, 10, .86);
+  --sticky-line: rgba(255, 255, 255, .08);
+  --scrim: rgba(8, 7, 10, .66);
+  --scrim-strong: rgba(8, 7, 10, .88);
+  --sel: var(--ember-400);
+  --skel-a: var(--ink-3);
+  --skel-b: var(--ink-4);
+}

@@ -42,6 +42,10 @@ const APP_MIME_TYPE = "text/html;profile=mcp-app";
 /** Tools whose results the grid is supposed to render. Losing the wiring on
  *  one of these is the regression this file exists to catch. */
 const GRID_TOOLS = [
+  // The detail view's own tool. It declared the wiring only on its RESULT for a
+  // long time, which Claude Desktop tolerates and ChatGPT ignores — so the
+  // widget simply never rendered there. Registration-level or it does not count.
+  "firestarter_product",
   "firestarter_preview",
   "firestarter_catalog_search",
   "firestarter_listings",
