@@ -3681,6 +3681,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
       base_price: z.number().describe("REQUIRED. Sale price in USD, e.g. 49.99."),
+      description: z.string().optional().describe("Product description shown to buyers on the listing page. Pass the seller's own wording when they gave one; when they ask you to WRITE one, pass the text you wrote HERE — a description that exists only in the chat is never saved. Can be edited later with firestarter_update_listing."),
       category: z.string().optional().describe("Optional. Product category (e.g. 'electronics/audio/earbuds'). Infer a reasonable one from the product name if obvious; otherwise omit — don't ask."),
       floor_price: z.number().optional().describe("Never sell below this price"),
       ceiling_price: z.number().optional().describe("Never surge above this price"),
@@ -3734,6 +3735,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
+        // Echo the saved description (truncated) so the seller can SEE it
+        // stuck — "descriptions not saving" was partly descriptions never
+        // being displayed anywhere after creation.
+        if (listing.description) text += `Description: ${String(listing.description).slice(0, 160)}${String(listing.description).length > 160 ? "…" : ""}\n`;
         text += `Shipping: estimated at checkout by the delivery provider, based on the buyer's destination\n`;
         if (listing.fulfillment_mode === "seller_managed") text += `Fulfillment: seller-managed — each paid order holds in awaiting_shipment until you ship it and add tracking with firestarter_ship_order\n`;
         if (Array.isArray(listing.images) && listing.images.length) text += `Photos: ${listing.images.length} attached\n`;

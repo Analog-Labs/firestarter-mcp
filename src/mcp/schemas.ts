@@ -327,6 +327,10 @@ const sellerListing = z.object({
   /** Listing id (lst_...) — pass to firestarter_update_listing or share. */
   id: z.string(),
   product_name: z.string(),
+  /** Buyer-facing description, null when the seller never set one. Surfaced so
+   *  a seller checking their own listing can SEE the description is saved —
+   *  "descriptions not saving" was partly descriptions never being shown. */
+  description: z.string().nullable(),
   current_price: z.number().nullable(),
   currency: z.string(),
   /** Integer minor units (e.g. cents) in the listing's native currency. */
@@ -372,6 +376,7 @@ export function toSellerListingsStructured(listings: any[]): SellerListingsStruc
     return {
       id: typeof l?.id === "string" ? l.id : "",
       product_name: typeof l?.product_name === "string" ? l.product_name : "",
+      description: typeof l?.description === "string" && l.description.trim() ? l.description : null,
       current_price,
       currency,
       price: { currency, amount_minor: toMinorUnits(current_price, currency) },
