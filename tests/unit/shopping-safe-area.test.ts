@@ -1,12 +1,13 @@
 /**
- * Keeping the detail sheet out from under the host's chat composer.
+ * Keeping the detail view out from under the host's chat composer.
  *
- * The sheet asks for fullscreen and gets the whole widget viewport — but the
- * host keeps drawing its message box over the bottom of that viewport. With
- * only the stylesheet's 20px of bottom padding, the last stretch of the sheet
- * (the seller line, the photo and video links) sat behind that box and could
- * not be scrolled clear of it: the content existed, was laid out, and was
- * permanently unreachable.
+ * When a host puts the widget fullscreen it gets the whole widget viewport —
+ * but the host keeps drawing its message box over the bottom of that
+ * viewport. With only the stylesheet's 20px of bottom padding, the last
+ * stretch of the view (the seller line, the photo and video links) sat behind
+ * that box and could not be scrolled clear of it: the content existed, was
+ * laid out, and was permanently unreachable. The widget no longer asks for
+ * fullscreen itself, but a host can still move it there on its own.
  *
  * Both host families can say how much of the viewport they are covering —
  * hostContext.safeAreaInsets in MCP Apps, window.openai.safeArea in ChatGPT —

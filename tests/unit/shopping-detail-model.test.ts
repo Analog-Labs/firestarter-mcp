@@ -7,7 +7,7 @@
  * identically, so the merge, the labelling and the link set are decided here
  * rather than twice in the DOM code.
  *
- * Pure, so Node can test it — the client half owns the modal element.
+ * Pure, so Node can test it — the client half owns the elements.
  */
 import { describe, it, expect } from "vitest";
 import { detailFetchId, detailModel } from "../../src/mcp/ui/detail.js";
@@ -40,7 +40,7 @@ describe("detailFetchId", () => {
 
   it("returns nothing for an external search result", () => {
     // A Google Shopping id is not a listing id. Calling firestarter_product
-    // with it spends a round trip to earn a 404, and the modal would flash an
+    // with it spends a round trip to earn a 404, and the view would flash an
     // empty reviews section for a product we hold no reviews about.
     expect(detailFetchId(externalOption)).toBeNull();
   });
@@ -52,7 +52,7 @@ describe("detailFetchId", () => {
 
 describe("detailModel — from a row alone", () => {
   it("shows the row's price and photos before any fetch resolves", () => {
-    // The modal must be useful on the frame it opens; the fetch only tops up.
+    // The view must be useful on the frame it opens; the fetch only tops up.
     const m = detailModel(listingRow, null);
     expect(m.price).toBe("USD 24.00");
     expect(m.images).toEqual(["https://img.test/a.jpg", "https://img.test/b.jpg"]);
@@ -218,12 +218,12 @@ describe("detailModel — the reviews note", () => {
 });
 
 describe("detailModel — media links", () => {
-  it("links every photo so a buyer can open the original", () => {
+  it("keeps every photo in gallery order for the hero to open at full size", () => {
+    // There is no separate list of photo links any more: the hero itself is
+    // the way to open the original, and it opens whichever photo is showing.
     const m = detailModel(listingRow, null);
-    expect(m.photoLinks).toEqual([
-      { label: "Photo 1", url: "https://img.test/a.jpg" },
-      { label: "Photo 2", url: "https://img.test/b.jpg" },
-    ]);
+    expect(m.images).toEqual(["https://img.test/a.jpg", "https://img.test/b.jpg"]);
+    expect(m).not.toHaveProperty("photoLinks");
   });
 
   it("links a video by url with its poster, never as an inline player", () => {

@@ -1,17 +1,18 @@
 /**
  * Keeping the detail view clear of whatever the host draws over the widget.
  *
- * The sheet asks for fullscreen and gets the whole widget viewport — but the
+ * When the widget is fullscreen it gets the whole widget viewport — but the
  * host keeps its message composer on top of the bottom of that viewport. The
- * stylesheet reserved 20px, so the last stretch of the sheet (the seller line,
- * the photo and video links) sat behind the composer and could not be scrolled
- * clear of it. Laid out, present, permanently unreachable.
+ * stylesheet reserved 20px, so the last stretch of the detail view (the seller
+ * line, the photo and video links) sat behind the composer and could not be
+ * scrolled clear of it. Laid out, present, permanently unreachable.
  *
- * Both host families can say how much they are covering — `safeAreaInsets` in
- * the MCP Apps host context, `safeArea` on window.openai — but the host that
- * shipped this bug reported nothing at all. So a reported inset can only RAISE
- * the reserve, never lower it: the floor is the defence, the report is the
- * refinement.
+ * The widget no longer asks for fullscreen itself, but a host can still put it
+ * there through its own controls, so the reserve stays. Both host families can
+ * say how much they are covering — `safeAreaInsets` in the MCP Apps host
+ * context, `safeArea` on window.openai — but the host that shipped this bug
+ * reported nothing at all. So a reported inset can only RAISE the reserve,
+ * never lower it: the floor is the defence, the report is the refinement.
  */
 
 /** Enough to clear a chat composer on the hosts we have seen. Deliberately

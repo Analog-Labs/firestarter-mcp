@@ -1,12 +1,12 @@
 /**
- * The detail modal's lazy top-up call, seen from the server.
+ * The detail view's lazy top-up call, seen from the server.
  *
  * When a buyer clicks a card, the widget calls firestarter_product itself
  * (App.callServerTool — the same bridge Claude Desktop and ChatGPT both
  * implement) to fetch the description, seller and review quotes that a search
  * row never carries. That call wants DATA, not pictures: the widget already has
  * the photo urls and renders them straight from the CDN, so inlining the same
- * photos as base64 would push megabytes across the host bridge for a modal that
+ * photos as base64 would push megabytes across the host bridge for a view that
  * displays none of it — and firestarter_product inlines up to the full 1MB
  * result budget.
  *
@@ -106,7 +106,7 @@ describe("firestarter_product", () => {
     expect(res.content.filter((c: any) => c.type === "image")).toEqual([]);
   });
 
-  it("still returns everything the modal renders", async () => {
+  it("still returns everything the detail view renders", async () => {
     // The whole point of the call. Dropping the pictures must not drop the
     // description, the seller, or the review quotes the row never carried.
     const tools = captureTools();

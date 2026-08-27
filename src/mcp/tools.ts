@@ -4971,9 +4971,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       // widget never rendered there for this tool. registerAppTool mirrors it to
       // the legacy flat key for older hosts.
       //
-      // widgetAccessible is what lets the detail modal call this tool for
+      // widgetAccessible is what lets the detail view call this tool for
       // itself: ChatGPT refuses a widget-initiated tools/call without it, and
-      // the modal's description, seller and reviews would never arrive. It is
+      // the view's description, seller and reviews would never arrive. It is
       // granted to this read-only tool alone — nothing that moves money is
       // reachable from a sandboxed iframe rendering third-party product data.
       _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
@@ -5053,11 +5053,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // call this, so a text-only host got bare URLs here and pictures
         // everywhere else. Capped by MAX_EMBED_IMAGES and the response budget.
         //
-        // Except when the shopping widget is the caller: its detail modal calls
+        // Except when the shopping widget is the caller: its detail view calls
         // this tool for the description, seller and review quotes a search row
         // never carries, and renders the photos itself from the urls above. The
         // base64 copies would be most of the 1MB budget spent on bytes that
-        // modal never displays. A host that drops the marker just pays for them.
+        // view never displays. A host that drops the marker just pays for them.
         const productImages = isWidgetCall(extra?._meta) ? [] : await inlineImageBlocks(gallery);
         return {
           content: [{ type: "text" as const, text: lines.join("\n") }, ...productImages],

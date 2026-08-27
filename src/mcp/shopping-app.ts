@@ -20,7 +20,7 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // reinstalled — an updated widget silently renders with the OLD html/css until
 // the URI changes. Bump the segment whenever the generated HTML changes
 // meaningfully; hosts fetch the "new" resource and the stale cache is orphaned.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v7";
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v8";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //
@@ -35,6 +35,10 @@ export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v7";
 // version segment, and `_meta["openai/outputTemplate"]` — ChatGPT's own alias,
 // attached in tools.ts — carries this one. Both serve identical HTML, and a
 // contract test asserts they cannot drift. Do not version this string.
+//
+// v8: the detail view stays in the chat instead of asking the host for a panel
+// or fullscreen, and the hero photo opens at full size in place of the link
+// chips.
 export const SHOPPING_RESULTS_STABLE_URI = "ui://firestarter/shopping-results";
 
 // Origins the sandboxed iframe may load product images from. By default an MCP
@@ -81,7 +85,7 @@ export function registerShoppingApp(server: McpServer): void {
         // its model is told the widget shows, so it can decide when the
         // inline view answers the question and prose is unnecessary.
         "openai/widgetDescription":
-          "An inline product grid: each card rotates the listing's photos, and clicking one opens the product's full detail — photos, video links, price, rating, seller and buyer reviews.",
+          "An inline product grid: each card rotates the listing's photos, and clicking one opens the product's full detail in place — photos (click one to view it full size), video, price, rating, seller and buyer reviews.",
         "openai/widgetPrefersBorder": false,
       },
     }],

@@ -145,110 +145,173 @@ a.card:hover, .card.link:hover { border-color: var(--accent); transform: transla
 .empty { color: var(--muted); text-align: center; padding: 24px; }
 
 /* ── Detail view ─────────────────────────────────────────────────────────
-   One markup, every display mode. It renders IN FLOW (replacing the grid), so
-   the host lays it out and autoResize sizes the frame to it — correct inline,
-   correct in a panel, correct fullscreen. What display mode changes is only the
-   reserve at the bottom: hosts draw their chat composer over the surface, and
-   20px of padding left the last section permanently behind it. */
-.detail { max-width: 1000px; margin: 0 auto; padding: 4px 10px 28px; }
+   One markup, rendered IN FLOW in the chat (replacing the grid). The host
+   sizes the frame's HEIGHT to the content, so inside an inline frame `vh` is
+   circular — a hero sized by vh sized the frame that sized the hero, and came
+   out small — and every cap below is in px instead. Width is the one thing the
+   host decides, so the breakpoints are on the iframe's width, not the device's.
+
+   The view never asks the host for fullscreen or a panel any more (that opened
+   the same product a second time as a modal over the chat). The [data-display]
+   rules cover a host that moves the widget there through its own controls, and
+   they are the only place vh appears, because there the viewport is real. */
+.detail { max-width: 1000px; margin: 0 auto; padding: 2px 8px 10px; }
 :root[data-display="fullscreen"] .detail,
-:root[data-display="pip"] .detail { padding-bottom: var(--fs-safe-bottom, 160px); }
+:root[data-display="pip"] .detail { padding: 0 12px var(--fs-safe-bottom, 160px); }
 /* Fullscreen is a whole window: a 1000px column stranded in the middle of it
-   reads as a page that failed to load the rest of itself. A pip panel is
-   already narrow, so it keeps the single column and gets no such bump. */
+   reads as a page that failed to load the rest of itself. */
 :root[data-display="fullscreen"] .detail { max-width: 1180px; }
-/* Fill the surface the host just opened. The view is in flow, so a short
-   product (one photo, no description, no reviews — most new listings) reported
-   a small height and left the panel as a card stranded in the dark. */
+/* Fill the surface the host opened: a short product (one photo, no description)
+   would otherwise leave the panel as a card stranded in the dark. */
 :root[data-display="fullscreen"] body,
 :root[data-display="pip"] body { min-height: 100vh; }
-@media (min-width: 900px) {
-  :root[data-display="fullscreen"] .hero { max-height: 68vh; }
-}
 
-.dbar { position: sticky; top: 0; z-index: 3; margin: 0 -10px 10px; padding: 6px 10px;
+/* Back: a plain row inline. The inline frame does not scroll on its own, so a
+   sticky, blurred band there is just a dark stripe across the top of the
+   product. Fullscreen and pip DO scroll, and there it pins. */
+.dbar { margin: 0 0 6px; }
+.back { display: inline-flex; align-items: center; min-height: 32px; padding: 4px 10px 4px 6px;
+  border-radius: 8px; border: 0; background: none; cursor: pointer; color: var(--text-soft);
+  font: inherit; font-size: 13px; }
+.back:hover { background: var(--well); color: var(--text); }
+.back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:root[data-display="fullscreen"] .dbar,
+:root[data-display="pip"] .dbar { position: sticky; top: 0; z-index: 3;
+  /* Full-bleed. .detail is a centred, padded column, and a bordered, blurred
+     band that stops at its edges reads as a toolbar missing both ends on any
+     window wider than the column. 50vw − 50% is the column's distance from
+     the viewport edge, whatever the width. */
+  margin: 0 calc(50% - 50vw) 10px; padding: 6px calc(50vw - 50%);
   background: var(--sticky); backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--sticky-line); }
-.back { font-size: 13px; color: var(--text-soft); background: none; border: 0; cursor: pointer;
-  padding: 6px 8px; border-radius: 8px; font: inherit; font-size: 13px; }
-.back:hover { background: var(--well); }
-.back:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* vw counts a classic scrollbar's width; the bleed must not buy a horizontal one. */
+:root[data-display="fullscreen"], :root[data-display="pip"] { overflow-x: hidden; }
+/* The second way out, after the reviews. */
+.dfoot { margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--line); }
 
-/* One column until there is genuinely room for two. The breakpoint is on the
-   IFRAME's width, which is what the host gives us — not the device's. */
-.dhead { margin: 2px 0 14px; }
-.dgrid { display: grid; gap: 18px; grid-template-columns: 1fr; align-items: start; }
-@media (min-width: 640px) {
-  .dgrid { grid-template-columns: minmax(260px, 44%) 1fr; gap: 26px; }
-  /* The photos stay put while the reviews scroll past them. */
-  .dmedia { position: sticky; top: 52px; }
-  /* Two columns: the photo no longer competes with the text for the fold, so
-     it goes back to a square. */
-  .hero { height: auto; aspect-ratio: 1 / 1; max-height: 62vh; }
+/* Name and price lead, above the gallery: in a chat-sized frame a full-width
+   hero pushed them under the fold, so opening a product showed a photo and
+   nothing that said WHICH product. */
+.dhead { margin: 0 0 14px; }
+.dtitle { font-size: 20px; font-weight: 650; line-height: 1.28; letter-spacing: -.011em; margin: 0;
+  overflow-wrap: anywhere; }
+.pricerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.dprice { font-size: 22px; font-weight: 700; letter-spacing: -.015em; color: var(--price); }
+/* A phone-width frame: one notch down, so the name and price still share the
+   first screen with the photo. */
+@media (max-width: 419px) {
+  .dtitle { font-size: 18px; }
+  .dprice { font-size: 20px; }
 }
 
-/* Single column (a chat-sized frame, or a docked pip panel): the hero is
-   CAPPED, not square. A full-width 1:1 hero in a ~600px frame is 600px of
-   photo — the product's name, price and seller all land below the fold, so the
-   detail view opens showing nothing but a picture. Height first, contain does
-   the rest. */
-.hero { position: relative; height: min(46vh, 420px); background: var(--hero-bg);
-  border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+/* One column until there is genuinely room for two. min-width: 0 on both
+   columns is load-bearing: a grid item's automatic minimum is its min-content
+   width, and with aspect-ratio on the hero a height cap transfers into that
+   width — which is how the media column once outgrew its track and pushed the
+   whole info column underneath the photo. */
+.dgrid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: start; }
+.dmedia, .dinfo { min-width: 0; }
+@media (min-width: 600px) {
+  .dgrid { grid-template-columns: minmax(260px, 46%) minmax(0, 1fr); gap: 24px; }
+  /* Fullscreen and pip scroll: the photos stay put while the reviews go by. */
+  :root[data-display="fullscreen"] .dmedia,
+  :root[data-display="pip"] .dmedia { position: sticky; top: 52px; }
+}
+@media (min-width: 900px) { .dgrid { gap: 32px; } }
+
+/* Single column: 4:3 and capped in px, not square. A full-width square hero in
+   a 600px frame is 600px of photo before the name, price or seller; the cap
+   only bites on a wide single column, a phone gets the whole width. */
+.hero { position: relative; width: 100%; max-width: 100%; aspect-ratio: 4 / 3; max-height: 360px;
+  background: var(--hero-bg); border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
   display: flex; align-items: center; justify-content: center; }
-/* contain, not cover: this is where a buyer inspects the product, and a
+/* Two columns: the photo no longer competes with the text for the fold, so it
+   goes back to a square, sized by its column. Declared AFTER the base rule —
+   same specificity, so order is what makes it win. */
+@media (min-width: 600px) { .hero { aspect-ratio: 1 / 1; max-height: 460px; } }
+@media (min-width: 900px) { :root[data-display="fullscreen"] .hero { max-height: 68vh; } }
+/* The photo is a button: it opens the file at full size through the host, in
+   place of the "Photo 1 / Photo 2" chips that used to sit at the bottom of the
+   view. contain, not cover — this is where a buyer inspects the product, and a
    cropped hero hides exactly what they opened it to see. */
-.hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 10px; }
+.zoom { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
+  background: none; cursor: zoom-in; display: block; appearance: none; -webkit-appearance: none;
+  border-radius: 14px; }
+.zoom img { display: block; width: 100%; height: 100%; object-fit: contain; padding: 10px; }
+.zoom:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.zoomhint { position: absolute; bottom: 10px; left: 12px; font-size: 11px; color: #fff;
+  background: var(--scrim); border-radius: 999px; padding: 2px 8px; pointer-events: none; }
+/* Like the arrows: out of the photo's way until the pointer is on it, always
+   there on touch where there is no hover to reveal it. focus-visible, not
+   focus-within — a mouse click leaves the button focused, and the hint would
+   stay pinned over the photo until focus went elsewhere. */
+@media (hover: hover) {
+  .zoomhint { opacity: 0; transition: opacity .15s; }
+  .hero:hover .zoomhint, .zoom:focus-visible + .zoomhint { opacity: 1; }
+}
 /* Playing: the clip takes the hero, and the photo furniture gets out of its
-   way — a play control layered under nav arrows is a mis-tap waiting. */
+   way — a zoom target or play control layered under nav arrows is a mis-tap
+   waiting. */
 .heroplayer { position: absolute; inset: 0; width: 100%; height: 100%; background: #000;
   object-fit: contain; }
-.hero.playing img, .hero.playing .nav, .hero.playing .hpos, .hero.playing .ph { display: none; }
-.playfail { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.hero.playing .zoom, .hero.playing .zoomhint, .hero.playing .nav, .hero.playing .hpos,
+.hero.playing .ph { display: none; }
+/* Centred by auto margins, not a transform: it is also a .chip, whose hover
+   rule sets transform and would replace a translate(-50%,-50%) wholesale,
+   jumping the button half its size off centre under the pointer. */
+.playfail { position: absolute; inset: 0; margin: auto; width: fit-content; height: fit-content;
+  max-width: calc(100% - 24px); }
 .hero .ph { display: none; color: var(--muted); font-size: 12px; }
 .hero.noimg .ph { display: block; }
-.nav { position: absolute; top: 50%; transform: translateY(-50%); width: 34px; height: 34px;
+/* A photo that did not load: the button stays for the next paint to reuse,
+   but a dead url is not offered as something to open. */
+.hero.noimg .zoom, .hero.noimg .zoomhint { display: none; }
+/* Nothing to show does not need a photo's worth of room: a 460px empty square
+   beside two lines of text reads as a load that failed. */
+.hero.noimg { aspect-ratio: auto; height: 160px; }
+.nav { position: absolute; top: 50%; transform: translateY(-50%); width: 36px; height: 36px;
   border-radius: 999px; border: 0; cursor: pointer; background: var(--scrim); color: #fff;
-  font-size: 17px; line-height: 1; display: flex; align-items: center; justify-content: center;
-  transition: opacity .15s, background .15s; }
+  font-size: 18px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  padding: 0; transition: opacity .15s, background .15s; }
 .nav.prev { left: 10px; } .nav.next { right: 10px; }
 .nav:hover { background: var(--scrim-strong); }
+.nav:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Out of the way of the photo until the pointer is on it — but always there on
    touch, where there is no hover to reveal them. */
 @media (hover: hover) { .hero .nav { opacity: 0; } .hero:hover .nav, .nav:focus-visible { opacity: 1; } }
 .hpos { position: absolute; bottom: 10px; right: 12px; font-size: 11px; color: #fff;
   background: var(--scrim); border-radius: 999px; padding: 2px 8px; }
 
-.thumbs { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; padding-bottom: 2px; }
-.thumb { flex: none; width: 58px; height: 58px; padding: 0; background: var(--well);
+.thumbs { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; padding: 2px;
+  scrollbar-width: thin; }
+.thumb { flex: none; width: 56px; height: 56px; padding: 0; background: var(--well);
   border: 1px solid var(--line); border-radius: 10px; cursor: pointer; overflow: hidden;
   transition: border-color .12s, transform .12s; }
-.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb:hover { transform: translateY(-1px); }
+.thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Ember, not ink: the selected thumbnail is the one piece of state in the
    gallery, and the brand accent is what the rest of the product uses to say
    "this one". */
 .thumb.sel { border-color: var(--sel); box-shadow: 0 0 0 1px var(--sel); }
 
-/* Video: poster + play chip that opens the file. This is a sandboxed iframe in
-   someone else's client; playing a seller-supplied file here is not ours to
-   decide (#774 D11). */
-.vids { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; }
+/* Video: poster + play chip. The clip plays in the hero (detail.client.ts
+   playVideo), never autoplays, and never makes noise unasked. */
+.vids { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; padding: 2px;
+  scrollbar-width: thin; }
 .vid { position: relative; flex: 0 0 auto; width: 108px; height: 70px; border-radius: 10px;
   overflow: hidden; background: var(--ink-1); cursor: pointer; display: inline-flex;
   align-items: center; justify-content: center; }
 .vid img { width: 100%; height: 100%; object-fit: cover; }
+.vid:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .playchip { position: absolute; bottom: 6px; left: 6px; font-size: 10.5px; padding: 3px 8px;
   border-radius: 999px; background: var(--scrim-strong); color: #fff; font-weight: 550; }
 .vid:hover .playchip { background: var(--ember-500); }
 
-.dinfo { min-width: 0; }
 /* The rating is the first thing in the info column now that the title moved
    up; without this it hugs the gallery on narrow frames. */
 .dinfo > .drating:first-child { margin-top: 0; }
 .dinfo .desc, .dinfo .revtext { max-width: 64ch; }
-.dtitle { font-size: 20px; font-weight: 650; line-height: 1.28; letter-spacing: -.011em; margin: 0; }
-.pricerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-.dprice { font-size: 22px; font-weight: 700; letter-spacing: -.015em; color: var(--price); }
 .drating { margin-top: 2px; font-size: 13px; color: var(--star); display: flex; align-items: center;
   gap: 6px; flex-wrap: wrap; }
 .drating .count { color: var(--muted); }
@@ -256,14 +319,14 @@ a.card:hover, .card.link:hover { border-color: var(--accent); transform: transla
    product's, which is the misattribution product-first ratings exist to end. */
 .rlabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
   border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; }
-.sellerline { margin-top: 10px; font-size: 13px; color: var(--text-soft); display: flex; align-items: center;
+.sellerline { margin-top: 8px; font-size: 13px; color: var(--text-soft); display: flex; align-items: center;
   gap: 8px; flex-wrap: wrap; }
 .sellerline strong { font-weight: 600; color: inherit; }
 .verified { color: var(--ok-fg); font-size: 11px; background: var(--ok-bg); border-radius: 999px;
   padding: 1px 8px; }
 
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
-.chip { font: inherit; font-size: 12.5px; padding: 7px 14px; border-radius: 999px;
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.chip { font: inherit; font-size: 12.5px; min-height: 34px; padding: 6px 14px; border-radius: 999px;
   border: 1px solid var(--line); background: var(--card); cursor: pointer; color: inherit;
   transition: border-color .12s, transform .12s, background .12s; }
 .chip:hover { border-color: var(--accent); transform: translateY(-1px); }
@@ -278,22 +341,22 @@ a.card:hover, .card.link:hover { border-color: var(--accent); transform: transla
 .chip.primary:hover { background: linear-gradient(180deg, var(--ember-300) 0%, var(--ember-400) 100%);
   border-color: transparent; }
 
-.sec { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.sec { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .sech { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted);
   margin: 0 0 10px; font-weight: 600; }
-.desc { font-size: 13.5px; line-height: 1.6; color: var(--text-soft); white-space: pre-wrap; margin: 0; }
+.desc { font-size: 13.5px; line-height: 1.6; color: var(--text-soft); white-space: pre-wrap; margin: 0;
+  overflow-wrap: anywhere; }
 
 .rev { background: var(--well); border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
 .rev:last-child { margin-bottom: 0; }
-.revhead { font-size: 11px; color: var(--muted); display: flex; gap: 7px; align-items: center; }
+.revhead { font-size: 11px; color: var(--muted); display: flex; gap: 7px; align-items: center;
+  flex-wrap: wrap; }
 .revstars { color: var(--star); letter-spacing: .04em; }
-.revtext { font-size: 13.5px; line-height: 1.55; margin: 5px 0 0; }
+.revtext { font-size: 13.5px; line-height: 1.55; margin: 5px 0 0; overflow-wrap: anywhere; }
 /* Ratings with no written review behind them. Muted, because it is the absence
    of testimony rather than testimony — but present, because a product nine
    buyers scored must not render identically to one nobody has touched. */
 .revnote { font-size: 13px; line-height: 1.5; color: var(--muted); margin: 0; }
-
-.links { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* Skeletons for what the lazy firestarter_product call fills. They disappear on
    failure rather than becoming an error: a view that says "couldn't load
@@ -305,7 +368,7 @@ a.card:hover, .card.link:hover { border-color: var(--accent); transform: transla
 @keyframes shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }
 @media (prefers-reduced-motion: reduce) {
   .skel { animation: none; }
-  .chip, .thumb, .nav { transition: none; }
+  .chip, .thumb, .nav, .zoomhint { transition: none; }
   .chip:hover, .thumb:hover { transform: none; }
 }
 

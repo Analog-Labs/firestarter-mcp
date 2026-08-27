@@ -60,8 +60,9 @@ function route(sc: Record<string, unknown>): void {
 let host: Host | null = null;
 
 /**
- * One delegated listener for the whole document: render() rewrites innerHTML
- * (dropping per-node listeners), and the detail sheet lives outside #root.
+ * One delegated listener for the whole document: every render rewrites
+ * innerHTML, dropping per-node listeners, and the grid and the detail view
+ * take turns inside #root.
  *
  * Order is load-bearing. A photo bar and a link chip both sit INSIDE a card,
  * and the card itself opens the detail view — without the early returns, every

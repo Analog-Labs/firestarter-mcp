@@ -1,5 +1,5 @@
 /**
- * The detail view's content rules — what the modal says, and where each fact
+ * The detail view's content rules — what the view says, and where each fact
  * came from.
  *
  * Two things mount this model. firestarter_product delivers a complete product
@@ -61,9 +61,10 @@ export interface DetailLink {
 
 export interface DetailModel {
   title: string;
+  /** Every photo in gallery order. The hero opens the one on screen at full
+   *  size through the host, so there is no separate list of photo links. */
   images: string[];
   videos: DetailVideo[];
-  photoLinks: { label: string; url: string }[];
   price: string;
   badge: { text: string; cls: string } | null;
   /** `label` names the FALLBACK only: seller stars standing in for a product
@@ -87,7 +88,7 @@ export interface DetailModel {
  *
  * External results (Google Shopping and friends) carry a source-specific id.
  * Calling firestarter_product with one spends a round trip to earn a 404, and
- * the modal would sit on a loading skeleton for reviews we do not hold.
+ * the view would sit on a loading skeleton for reviews we do not hold.
  */
 export function detailFetchId(item: unknown): string | null {
   const id = (item as { id?: unknown })?.id;
@@ -105,8 +106,8 @@ function httpsList(v: unknown): string[] {
 
 /** Playable clips off any payload shape, https-only and capped. Exported so
  *  the grid can count them for the card's media chip without re-deriving the
- *  filter — a card that advertises a video the modal then refuses to show is
- *  worse than a card that stays quiet. */
+ *  filter — a card that advertises a video the detail view then refuses to
+ *  show is worse than a card that stays quiet. */
 export function videosOf(v: unknown): DetailVideo[] {
   if (!Array.isArray(v)) return [];
   const out: DetailVideo[] = [];
@@ -211,7 +212,6 @@ export function detailModel(item: unknown, fetched: FetchedDetail | null): Detai
     title: cleanText(it.title) ?? cleanText(it.product_name) ?? "Untitled",
     images,
     videos,
-    photoLinks: images.map((url, i) => ({ label: `Photo ${i + 1}`, url })),
     price: priceLabel(it),
     badge: badgeFor(it),
     rating: stars ? { ...stars, label: sellerLevel ? "seller rating" : null } : null,
