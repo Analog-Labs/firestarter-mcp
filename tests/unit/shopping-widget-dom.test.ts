@@ -14,6 +14,9 @@
  * without one too).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { renderGrid, showShotFromBar, stopCarousels } from "../../src/mcp/ui/grid.client.js";
 import { showDetail, closeDetail, renderDetailPage } from "../../src/mcp/ui/detail.client.js";
 import { SLIDE_MS } from "../../src/mcp/ui/carousel.js";
@@ -46,17 +49,14 @@ const EXTERNAL = {
 
 let root: HTMLElement;
 
-function fakeHost(overrides: Partial<Host> = {}): Host & { modes: string[]; calls: any[] } {
-  const modes: string[] = [];
+function fakeHost(overrides: Partial<Host> = {}): Host & { calls: any[] } {
   const calls: any[] = [];
   return {
-    modes,
     calls,
     openLink: () => {},
     callTool: async (name, args) => { calls.push({ name, args }); return null; },
-    setDisplayMode: (mode) => { modes.push(mode); },
     ...overrides,
-  } as Host & { modes: string[]; calls: any[] };
+  } as Host & { calls: any[] };
 }
 
 /** jsdom never loads an image; the carousel waits for onload before swapping. */
@@ -71,7 +71,7 @@ beforeEach(() => {
 
 afterEach(() => {
   stopCarousels();
-  closeDetail(fakeHost());
+  closeDetail();
   vi.useRealTimers();
 });
 
@@ -182,17 +182,100 @@ describe("the detail view", () => {
     expect(root.querySelector(".hero img")?.getAttribute("src")).toBe(PHOTOS[0]);
   });
 
-  it("asks the host for a detail surface, and gives it back on close", () => {
-    // The view asks for an INTENT, not a mode. Which surface that becomes —
-    // the docked pip panel where a host offers one, fullscreen where it does
-    // not — is host.client.ts's ladder to resolve against availableDisplayModes
-    // (see shopping-display-mode.test.ts). Naming a concrete mode here would
-    // pin the view to a decision that is not its to make.
-    const host = fakeHost();
-    showDetail(root, ROW, host, {});
-    expect(host.modes).toEqual(["detail"]);
-    closeDetail(host);
-    expect(host.modes).toEqual(["detail", "inline"]);
+  it("stays in the chat: nothing in the client can ask the host for a panel or fullscreen", () => {
+    // Asking for a display mode on open is what made Claude Desktop show the
+    // same product a second time as a modal over the transcript. The request
+    // lived in host.client.ts, which no jsdom test can exercise (it needs the
+    // host bridge), so the guard is on the source: a regression that re-adds
+    // the request has to re-add these identifiers to do it.
+    const ui = resolve(dirname(fileURLToPath(import.meta.url)), "../../src/mcp/ui");
+    for (const file of ["host.client.ts", "detail.client.ts", "shopping-results.client.ts", "grid.client.ts"]) {
+      const src = readFileSync(resolve(ui, file), "utf8");
+      expect(`${file}: ${src.match(/requestDisplayMode|availableDisplayModes|setDisplayMode/g) ?? "clean"}`).toBe(`${file}: clean`);
+    }
+  });
+
+  it("offers the way back at the bottom as well as the top", () => {
+    // Inline, nothing can pin the top bar (the frame does not scroll on its
+    // own), and a touch host has no Escape key: a buyer who has read to the
+    // bottom of a phone-width view needs a way out from there.
+    const onBack = vi.fn();
+    showDetail(root, ROW, fakeHost(), { onBack });
+    const exits = root.querySelectorAll<HTMLElement>("[data-close]");
+    expect(exits).toHaveLength(2);
+    expect(root.querySelector(".detail")!.lastElementChild!.contains(exits[1])).toBe(true);
+    exits[1].click();
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a previous product's gallery answer arrow keys in the next one", () => {
+    // The gallery listeners used to be added to the persistent #root on every
+    // paint and never removed. A one-photo product has no gallery of its own,
+    // so ArrowRight there ran the PREVIOUS product's closure: its hero and
+    // zoom link swapped to a photo of a different product, with no thumbnails
+    // to recover from it.
+    const onBack = vi.fn(() => { root.innerHTML = ""; });
+    showDetail(root, ROW, fakeHost(), { onBack });
+    closeDetail();
+    const single = { ...ROW, id: "lst_single", product_name: "Single photo", images: ["https://img.test/solo.jpg"] };
+    showDetail(root, single, fakeHost(), {});
+
+    root.querySelector<HTMLElement>(".back")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+
+    expect(root.querySelector<HTMLImageElement>("#hero")?.getAttribute("src")).toBe("https://img.test/solo.jpg");
+    expect(root.querySelector(".zoom")?.getAttribute("data-url")).toBe("https://img.test/solo.jpg");
+  });
+
+  it("keeps the zoom button through a photo that fails to load, and moves on with the gallery", () => {
+    // One purged CDN object used to delete the button that carries the url,
+    // so photos 2..N paged through the counter with nothing in the hero and
+    // nothing to click. The chips this replaced never had that failure mode.
+    showDetail(root, ROW, fakeHost(), {});
+    const hero = root.querySelector<HTMLImageElement>("#hero")!;
+    // jsdom does not run inline handler attributes; execute the attribute body
+    // the way the browser would, as the image's own handler.
+    new Function(hero.getAttribute("onerror")!).call(hero);
+
+    const box = root.querySelector(".hero")!;
+    expect(box.classList.contains("noimg")).toBe(true);
+    expect(root.querySelector(".hero .zoom")).not.toBeNull();
+
+    (root.querySelector(".nav.next") as HTMLElement).click();
+    expect(box.classList.contains("noimg")).toBe(false);
+    expect(hero.getAttribute("src")).toBe(PHOTOS[1]);
+    expect(root.querySelector(".zoom")?.getAttribute("data-url")).toBe(PHOTOS[1]);
+  });
+
+  it("opens the photo on screen at full size from the hero, and follows the gallery", () => {
+    // The hero IS the way to enlarge a photo — the row of "Photo 1 / Photo 2"
+    // chips it replaces sat at the bottom of the view, nowhere near the photo
+    // a buyer would be squinting at. It carries data-url so the document-level
+    // link handler opens it through the host like any other outbound link,
+    // and the url must move with the hero or the buyer enlarges the wrong shot.
+    showDetail(root, ROW, fakeHost(), {});
+    const zoom = root.querySelector<HTMLElement>(".hero .zoom")!;
+    expect(zoom.tagName).toBe("BUTTON");
+    expect(zoom.getAttribute("data-url")).toBe(PHOTOS[0]);
+    expect(zoom.querySelector("img")?.getAttribute("src")).toBe(PHOTOS[0]);
+
+    (root.querySelector(".nav.next") as HTMLElement).click();
+    expect(zoom.getAttribute("data-url")).toBe(PHOTOS[1]);
+    expect(zoom.getAttribute("aria-label")).toContain("2 of 3");
+
+    (root.querySelectorAll(".thumb")[2] as HTMLElement).click();
+    expect(zoom.getAttribute("data-url")).toBe(PHOTOS[2]);
+  });
+
+  it("no longer lists the photos as link chips", () => {
+    showDetail(root, ROW, fakeHost(), {});
+    expect(root.textContent).not.toContain("Open a photo at full size");
+    expect(root.textContent).not.toContain("Photo 1");
+  });
+
+  it("opens nothing from a hero that has no photo", () => {
+    showDetail(root, { ...ROW, images: [], image_url: null }, fakeHost(), {});
+    expect(root.querySelector(".hero")?.classList.contains("noimg")).toBe(true);
+    expect(root.querySelector(".hero [data-url]")).toBeNull();
   });
 
   it("goes back to the results it came from", () => {
@@ -291,7 +374,9 @@ describe("video", () => {
     video.dispatchEvent(new Event("error"));
 
     expect(root.querySelector(".hero video")).toBeNull();
-    expect(root.querySelector(".hero [data-url]")?.getAttribute("data-url")).toBe("https://img.test/clip.mp4");
+    expect(root.querySelector(".hero .playfail")?.getAttribute("data-url")).toBe("https://img.test/clip.mp4");
+    // And the photo is back to being the way to open the photo, not the clip.
+    expect(root.querySelector(".hero .zoom")?.getAttribute("data-url")).toBe(PHOTOS[0]);
   });
 });
 

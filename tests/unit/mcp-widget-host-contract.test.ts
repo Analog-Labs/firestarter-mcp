@@ -7,7 +7,7 @@
  * have to be declared, and each fails silently when it is not:
  *
  *   1. ChatGPT refuses a widget-initiated tools/call unless the target tool is
- *      marked `openai/widgetAccessible`. Without it the detail modal opens and
+ *      marked `openai/widgetAccessible`. Without it the detail view opens and
  *      its description, seller and reviews never arrive — no error, just a
  *      skeleton that never fills.
  *   2. Claude Desktop caches the ui:// resource BY URI and never re-reads it.
@@ -77,7 +77,7 @@ beforeAll(async () => {
 
 describe("widget-initiated tool calls", () => {
   it("marks firestarter_product callable from the widget", () => {
-    // The detail modal's whole top-up path. ChatGPT gates it on this key.
+    // The detail view's whole top-up path. ChatGPT gates it on this key.
     expect(toolMeta.get("firestarter_product")?.["openai/widgetAccessible"]).toBe(true);
   });
 

@@ -1,7 +1,7 @@
 /**
  * How the widget identifies its own tool calls to the server.
  *
- * The detail modal tops itself up by calling firestarter_product through the
+ * The detail view tops itself up by calling firestarter_product through the
  * host bridge. That call wants DATA — the widget renders photos straight from
  * the CDN and has no use for the base64 copies firestarter_product inlines for
  * text-only agents, which can be most of the 1MB result budget.

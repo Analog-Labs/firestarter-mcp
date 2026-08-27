@@ -8,7 +8,7 @@
  *
  * `window.openai` is kept only as a fallback for a ChatGPT surface that has not
  * finished adopting the standard bridge: without it, a failed handshake there
- * would leave the widget rendering nothing at all. It implements the same three
+ * would leave the widget rendering nothing at all. It implements the same two
  * verbs and is otherwise invisible to the rest of the code.
  *
  * Excluded from the Node build (`*.client.ts`) — it touches DOM and host
@@ -16,10 +16,19 @@
  */
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
 import { reportsOwnSize, sheetBottomInset } from "./safe-area.js";
-import { preferredDetailMode, type DetailDisplayMode } from "./display-mode.js";
 import { WIDGET_SURFACE_KEY, WIDGET_SURFACE } from "./widget-call.js";
 
-/** What the view needs from whichever host it woke up inside. */
+/**
+ * What the view needs from whichever host it woke up inside.
+ *
+ * Deliberately no way to ask for a display mode. The detail view used to
+ * request one on every card click (a docked panel where offered, fullscreen
+ * otherwise), and on Claude Desktop that opened the product a second time as a
+ * modal over the chat — the same view, framed as if it were a different page.
+ * Everything renders in the inline frame now; if a host moves the widget
+ * fullscreen through its own controls, the context change below still tells
+ * the stylesheet.
+ */
 export interface Host {
   /** Navigate OUT of the sandbox. A bare <a target="_blank"> is blocked on any
    *  host that omits allow-popups, which turns every card into a dead link. */
@@ -28,20 +37,15 @@ export interface Host {
    *  the host refuses, the call fails, or it returns nothing usable. Never
    *  throws: everything it feeds is optional enrichment. */
   callTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
-  /** Ask for a bigger surface (the detail view) or give it back (the grid).
-   *  Advisory — a host may decline, and the view stays usable either way. */
-  setDisplayMode(mode: "detail" | "inline"): void;
 }
 
 interface OpenAiBridge {
   toolOutput?: unknown;
   theme?: unknown;
   displayMode?: unknown;
-  availableDisplayModes?: unknown;
   safeArea?: unknown;
   callTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   openExternal?: (params: { href: string }) => void;
-  requestDisplayMode?: (params: { mode: string }) => void;
 }
 
 function openAiBridge(): OpenAiBridge | null {
@@ -59,18 +63,19 @@ function adoptTheme(theme: unknown): void {
 /**
  * Publish what the host is doing to the document, for the stylesheet to react
  * to: how much of the bottom it is covering with its own chrome, and which
- * display mode we are in.
+ * display mode it has put us in.
  *
- * The composer bug came from having neither. The detail view reserved 20px at
- * the bottom of a surface the host was drawing a message box over, so its last
- * section was unreachable — and inline, where nothing is covered, the same
- * reserve would just be dead space. One attribute and one variable let the CSS
- * get both cases right.
+ * The composer bug came from having neither. A fullscreen detail view reserved
+ * 20px at the bottom of a surface the host was drawing a message box over, so
+ * its last section was unreachable — and inline, where nothing is covered, the
+ * same reserve would just be dead space. One attribute and one variable let
+ * the CSS get both cases right. The widget never asks for a mode itself any
+ * more, so this only ever reflects a change the host made on its own.
  */
-function applyHostChrome(context: unknown, mode?: string): void {
+function applyHostChrome(context: unknown): void {
   const el = document.documentElement;
   el.style.setProperty("--fs-safe-bottom", `${sheetBottomInset(context)}px`);
-  const dm = mode ?? (context as { displayMode?: unknown } | undefined)?.displayMode;
+  const dm = (context as { displayMode?: unknown } | undefined)?.displayMode;
   if (dm === "fullscreen" || dm === "pip" || dm === "inline") el.setAttribute("data-display", String(dm));
 }
 
@@ -126,7 +131,7 @@ export async function connectHost(handlers: {
             name,
             arguments: args,
             // Tells the server this is the widget topping itself up, so it can
-            // skip inlining base64 photos the modal never renders. Optional by
+            // skip inlining base64 photos the view never renders. Optional by
             // construction — a host that strips _meta only costs us bytes.
             _meta: { [WIDGET_SURFACE_KEY]: WIDGET_SURFACE },
           });
@@ -135,35 +140,6 @@ export async function connectHost(handlers: {
           return null;
         }
       },
-      setDisplayMode: (want) => {
-        // "detail" is an INTENT, not a mode. The host publishes what it can
-        // actually do in availableDisplayModes, and pip — the docked side
-        // panel — is the best of those for a product the buyer is reading
-        // against what the agent just said. Asking for a mode the host never
-        // offered only buys a refusal, so the ladder resolves it here.
-        const mode: DetailDisplayMode =
-          want === "inline" ? "inline" : preferredDetailMode((app.getHostContext() as any)?.availableDisplayModes);
-        // Stamped optimistically: a host that grants the request may never send
-        // a context change, and the reserve has to be in place before the view
-        // paints, not a frame later. Then corrected from the host's ANSWER — a
-        // denied panel must not leave an inline frame reserving 160px of
-        // dead space for chrome that is not there.
-        applyHostChrome(app.getHostContext(), mode);
-        // Silenced BEFORE the request, not after: the detail view repaints in
-        // the same tick, and a resize notification racing the host's decision
-        // about the panel is the whole failure being fixed here.
-        syncSizeReporting(mode);
-        void app.requestDisplayMode({ mode })
-          .then((res) => {
-            const granted = res?.mode ?? mode;
-            applyHostChrome(app.getHostContext(), granted);
-            syncSizeReporting(granted);
-          })
-          .catch(() => {
-            applyHostChrome(app.getHostContext(), "inline");
-            syncSizeReporting("inline");
-          });
-      },
     };
   } catch (err) {
     const bridge = openAiBridge();
@@ -171,7 +147,7 @@ export async function connectHost(handlers: {
       handlers.onError(err instanceof Error ? err.message : String(err));
       throw err;
     }
-    // ChatGPT surface without the standard bridge. Same three verbs.
+    // ChatGPT surface without the standard bridge. Same two verbs.
     adoptTheme(bridge.theme);
     applyHostChrome(bridge);
     window.addEventListener("openai:set_globals", () => {
@@ -191,13 +167,6 @@ export async function connectHost(handlers: {
         } catch {
           return null;
         }
-      },
-      setDisplayMode: (want) => {
-        const b = openAiBridge();
-        const mode: DetailDisplayMode =
-          want === "inline" ? "inline" : preferredDetailMode((b as { availableDisplayModes?: unknown } | null)?.availableDisplayModes);
-        applyHostChrome(b, mode);
-        bridge.requestDisplayMode?.({ mode });
       },
     };
   }
