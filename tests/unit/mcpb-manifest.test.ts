@@ -26,6 +26,7 @@ const MCPB_DIR = resolve(API_ROOT, "mcpb");
 const manifest = JSON.parse(readFileSync(resolve(MCPB_DIR, "manifest.json"), "utf8"));
 const toolsSource = readFileSync(resolve(API_ROOT, "src", "mcp", "tools.ts"), "utf8");
 const serverSource = readFileSync(resolve(API_ROOT, "src", "mcp", "server.ts"), "utf8");
+const pkg = JSON.parse(readFileSync(resolve(API_ROOT, "package.json"), "utf8"));
 
 /** Tool names as registered at runtime: server.tool("firestarter_x", ...). */
 function registeredToolNames(): Set<string> {
@@ -121,6 +122,11 @@ describe("mcpb/manifest.json — bundle contract", () => {
     const declared = serverSource.match(/version:\s*"([^"]+)"/)?.[1];
     expect(declared).toBe(manifest.version);
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
+    // Anchored on package.json, not just on each other. Comparing these two
+    // alone is a relative check: it passes when BOTH are stale, which is what
+    // drift actually looks like — it stayed green through the 2.12.1 release
+    // with both sitting at 2.12.0. version-parity.test.ts covers the rest.
+    expect(manifest.version).toBe(pkg.version);
   });
 
   it("advertises only tools that are actually registered", () => {

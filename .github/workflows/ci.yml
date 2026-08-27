@@ -30,6 +30,21 @@ jobs:
 
       - run: npm ci
 
+      # The same invariant release.yml enforces, run here too. There it is the
+      # last gate before publishing, which means drift is only discovered after
+      # the merge: 2.12.1 reached main with five of six files still saying
+      # 2.12.0 and took the release down. On a PR this fails in seconds, and
+      # the fix is one command.
+      - name: Check every declared version agrees
+        run: |
+          set -euo pipefail
+          node scripts/sync-version.mjs
+          if ! git diff --quiet; then
+            echo "::error::version drift — run 'npm run sync-version' and commit the result:"
+            git --no-pager diff --stat
+            exit 1
+          fi
+
       - name: Typecheck
         run: npm run typecheck
 

@@ -2,7 +2,7 @@
   "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
-  "version": "2.15.0",
+  "version": "2.15.1",
   "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 89 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
@@ -746,17 +746,17 @@
     },
     {
       "name": "firestarter_upload_image",
-      "description": "Upload a product photo and get back a permanent public URL, accepted by firestarter_list and firestarter_update_listing image_urls. Two input forms: image_url takes the photo's existing URL (e.g. the hosted URL of an image attached in this conversation), which the server fetches and re-hosts — the reliable form whenever a URL exists; image_base64 (data-URI format, max 6 MB) covers a photo that exists at no URL. Downloading a linked image and rebuilding it as a base64 data-URI is this tool's known failure mode — image_url exists to avoid it. Returns the hosted URL on success.",
+      "description": "Upload a product photo and get back a permanent public URL, accepted by firestarter_list and firestarter_update_listing image_urls. Two input forms: image_url takes the photo's existing URL (e.g. the hosted URL of an image attached in this conversation), which the server fetches and re-hosts — the reliable form whenever a URL exists; image_base64 (data-URI format, max 6 MB) covers a photo that exists at no URL. Downloading a linked image and rebuilding it as a base64 data-URI is this tool's known failure mode — image_url exists to avoid it, and the server now refuses a base64 payload that arrived cut short instead of storing a photo that renders broken. Returns the hosted URL on success.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "image_base64": {
             "type": "string",
-            "description": "Fallback when the photo exists at no URL: the image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' before passing it here. Max 6 MB."
+            "description": "Fallback when the photo exists at no URL: the image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' — the declared type need not be right, the server reads the real one from the bytes. Max 6 MB. The payload must be the WHOLE file: the server rejects one that was cut short rather than storing a broken photo, and a long base64 string frequently does not survive being emitted as a tool argument. If that error comes back, do not retry the same way — use image_url."
           },
           "filename": {
             "type": "string",
-            "description": "Optional original filename (used to detect format: png, webp, gif). Defaults to jpeg if omitted."
+            "description": "Optional original filename, kept only as a label. It does NOT decide the image format — the server reads that from the bytes — so a .jpg name on PNG data is harmless and a wrong extension can no longer mislabel the stored photo."
           },
           "image_url": {
             "description": "PREFERRED. Public URL of the photo (e.g. the hosted URL of an image attached in this conversation). The server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB). Pass this whenever the image exists at any URL.",
