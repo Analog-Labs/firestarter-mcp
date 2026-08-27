@@ -20,7 +20,53 @@ import { listingDetailFields } from "../schemas/listing-details.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const API_REQUEST_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_API_TIMEOUT_MS || 12_000);
+export const API_REQUEST_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_API_TIMEOUT_MS || 12_000);
+
+// ─── Server-side image-ingest budgets we must outlast (commerce#849) ─────────
+//
+// These mirror constants in apps/api/src/services/image-store.ts. They live
+// here as named values, not as magic numbers folded into a timeout, because a
+// client budget is only ever right RELATIVE to what the server is allowed to
+// spend — and the two move in different repos on different release trains.
+// If the API's figures change, these are what has to change with them.
+//
+//   MAX_IMAGE_FETCH_REDIRECTS = 3  → up to 4 hops
+//   IMAGE_FETCH_TIMEOUT_MS    = 10_000 per hop
+//   INGEST_BUDGET_MS          = 20_000 for a whole listing (up to 12 photos)
+/** One remote image, worst case: 4 redirect hops at 10s each. */
+export const SERVER_SINGLE_IMAGE_INGEST_WORST_CASE_MS = 40_000;
+/** A listing write's whole-gallery ingest budget, server-side. */
+export const SERVER_LISTING_INGEST_BUDGET_MS = 20_000;
+
+// commerce#849: firestarter_upload_image makes the API fetch and re-host a
+// remote image — the SAME server-side work as a dispute attachment, which
+// already carries 60s for exactly this reason. On the plain 12s budget the
+// client abandoned uploads the server was still completing, so a seller saw
+// "the upload timed out" and retried until their Claude quota ran out, which
+// is the report in #849 verbatim.
+export const UPLOAD_IMAGE_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_UPLOAD_IMAGE_TIMEOUT_MS || 60_000);
+// A listing create/update carrying image_urls ingests the whole gallery inside
+// the request (20s budget), then runs prohibited-item checks and the activation
+// gates on top. 12s could not cover the ingest alone.
+export const LISTING_WRITE_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_LISTING_WRITE_TIMEOUT_MS || 45_000);
+
+/**
+ * The budget for one listing write: the longer one only when the body actually
+ * carries media the API has to go and fetch.
+ *
+ * A timeout is a ceiling, not a delay, so widening it unconditionally would
+ * cost nothing in the happy path — but it would also make a genuinely hung
+ * text-only PATCH hang four times as long before the agent could say so.
+ * Media is the thing that makes the request slow, so media is what earns the
+ * headroom.
+ */
+export function listingWriteTimeoutMs(body: Record<string, unknown>): number {
+  const images = body.images;
+  const videos = body.video_urls;
+  const carriesMedia =
+    (Array.isArray(images) && images.length > 0) || (Array.isArray(videos) && videos.length > 0);
+  return carriesMedia ? LISTING_WRITE_TIMEOUT_MS : API_REQUEST_TIMEOUT_MS;
+}
 // Listing import fetches the source page server-side (10s cap) and may run an
 // LLM extraction on top - it needs more than the default API budget.
 const IMPORT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_IMPORT_TIMEOUT_MS || 25_000);
@@ -30,7 +76,7 @@ const VERIFY_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_VERIFY_TIMEOUT_MS |
 // own worst case is a redirect chain at ~10s a hop. A 25s client timeout gave
 // up while the server was still succeeding — reported as a failed attach while
 // the blob was stored and referenced by nothing.
-const ATTACHMENT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_ATTACHMENT_TIMEOUT_MS || 60_000);
+export const ATTACHMENT_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_ATTACHMENT_TIMEOUT_MS || 60_000);
 /** The dispute message endpoint stores at most this many attachments. */
 const MAX_DISPUTE_ATTACHMENTS = 5;
 // Keyless preview runs a live multi-source product search (Google Shopping +
@@ -60,6 +106,17 @@ export interface SellingGate {
   hold_cap_cents?: number;
   max_age_days?: number;
   age_min_cents?: number;
+}
+
+/**
+ * Is this the message toErrorMessage produces for a timeout/abort?
+ *
+ * Callers that need to give timeout-specific advice ask here rather than
+ * re-sniffing the raw error, so there is one definition of "timed out" and it
+ * cannot drift from the string toErrorMessage actually returns.
+ */
+export function isTimeoutMessage(msg: string): boolean {
+  return /timed out|aborted/i.test(msg);
 }
 
 /**
@@ -3822,7 +3879,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     async ({ image_url, image_base64, filename }) => {
       try {
         if (image_url) {
-          const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_url, filename });
+          const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_url, filename }, UPLOAD_IMAGE_TIMEOUT_MS);
           const url = (res as any)?.url;
           if (!url) {
             return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The URL must point to a public JPEG, PNG, WebP, or GIF under 6 MB." }], isError: true };
@@ -3847,7 +3904,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const res = await apiRequest("POST", "/v1/sellers/upload-image", {
           image_base64,
           filename,
-        });
+        }, UPLOAD_IMAGE_TIMEOUT_MS);
         const url = (res as any)?.url;
         if (!url) {
           return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The image may be invalid or too large (max 6 MB)." }], isError: true };
@@ -3855,6 +3912,21 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         return { content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.` }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
+        // commerce#849: toErrorMessage answers every timeout with "retry in a
+        // few seconds". On an upload that is an instruction to repeat a request
+        // that will fail identically — the reporter followed it until their
+        // Claude quota ran out — and it is not even reliably true that nothing
+        // happened, since the API can finish an ingest after the client stops
+        // waiting. Say what to do DIFFERENTLY instead.
+        if (isTimeoutMessage(msg)) {
+          const nextStep = image_base64 && !image_url
+            ? "Do not resend the same base64 — a large data URI is the slow path. Get a public URL for the photo and pass it as image_url instead."
+            : "Do not immediately repeat the same call. Check the listing first: the upload may have completed on the server after this call stopped waiting.";
+          return {
+            content: [{ type: "text" as const, text: `The image upload didn't return in time. ${nextStep}` }],
+            isError: true,
+          };
+        }
         return { content: [{ type: "text" as const, text: `Error uploading image: ${msg}` }], isError: true };
       }
     }
@@ -3969,7 +4041,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         for (const [key, value] of Object.entries(details)) {
           if (value !== undefined) body[key] = value;
         }
-        const listing = await apiRequest("POST", "/v1/listings", body);
+        const listing = await apiRequest("POST", "/v1/listings", body, listingWriteTimeoutMs(body));
         let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
@@ -5543,7 +5615,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Object.keys(body).length === 0) {
           return { content: [{ type: "text" as const, text: "No pricing changes provided. Specify at least one field to update." }], isError: true };
         }
-        const listing = await apiRequest("PATCH", `/v1/listings/${listing_id}`, body);
+        const listing = await apiRequest("PATCH", `/v1/listings/${listing_id}`, body, listingWriteTimeoutMs(body));
         let text = `**Listing ${listing_id} updated**\n`;
         if (listing.base_price !== undefined) text += `Base price: $${listing.base_price}\n`;
         if (listing.floor_price != null) text += `Floor: $${listing.floor_price}\n`;
@@ -5619,7 +5691,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (Object.keys(body).length === 0) {
           return { content: [{ type: "text" as const, text: "No updates provided. Specify at least one field to change." }], isError: true };
         }
-        const listing = await apiRequest("PATCH", `/v1/listings/${listing_id}`, body);
+        const listing = await apiRequest("PATCH", `/v1/listings/${listing_id}`, body, listingWriteTimeoutMs(body));
         let text = `**Listing ${listing_id} updated**\n`;
         if (listing.product_name) text += `Name: ${listing.product_name}\n`;
         if (listing.description) text += `Description: ${listing.description.slice(0, 100)}${listing.description.length > 100 ? "..." : ""}\n`;
