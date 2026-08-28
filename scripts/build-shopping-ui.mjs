@@ -43,7 +43,12 @@ const js = result.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 // template literal in here, so it can be edited and diffed as CSS. Inlined
 // verbatim: the widget must be one self-contained document — an iframe with no
 // network access cannot fetch a stylesheet.
-const css = readFileSync(join(apiRoot, "src/mcp/ui/shopping.css"), "utf8");
+//
+// Line endings normalized because this is the ONE place worktree bytes reach
+// the committed output raw: on a Windows checkout (autocrlf) the CSS arrives
+// as CRLF, the \r ride into the generated string literal, and CI's LF
+// checkout then regenerates a different file — failing the drift check.
+const css = readFileSync(join(apiRoot, "src/mcp/ui/shopping.css"), "utf8").replace(/\r\n/g, "\n");
 
 const html = `<!doctype html>
 <html lang="en">
