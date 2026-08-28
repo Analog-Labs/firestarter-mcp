@@ -107,6 +107,12 @@
     "idempotentHint": false,
     "openWorldHint": false
   },
+  "firestarter_delete_market": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
+  },
   "firestarter_delete_ship_from": {
     "readOnlyHint": false,
     "destructiveHint": true,
