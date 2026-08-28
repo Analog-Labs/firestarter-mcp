@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "firestarter",
   "display_name": "Firestarter",
-  "version": "2.17.2",
+  "version": "2.17.3",
   "description": "AI-native commerce execution: search products, buy with approval, track orders, manage listings, connect Shopify, and monitor prices.",
   "long_description": "Firestarter gives Claude the ability to find, buy, ship, and track real products, and to run a seller business end to end.\n\n**Buying** — describe what you want in plain language. Claude finds matching products, verifies the seller, and returns ranked options with real pricing and delivery choices. Nothing is ever paid for without your explicit approval: purchases stop at an approval step, and a card is requested only after you confirm. Browsing, price comparison, and shipping quotes never require a payment method.\n\n**After the sale** — track deliveries, request returns, pull receipts, and open a dispute if an order goes wrong.\n\n**Selling** — create and reprice listings, import a catalog, sync a Shopify store, review incoming orders, buy shipping labels, and monitor payouts.\n\nAfter installing, paste your Firestarter API key (`fs_live_...` for live orders or `fs_test_...` for sandbox) from firestarter.network/dashboard. The key is stored in your OS keychain, never in plaintext. All requests go to https://api.firestarter.network over TLS.",
   "author": {

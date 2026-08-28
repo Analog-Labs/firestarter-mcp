@@ -206,6 +206,14 @@ let lampId;
     "B3 draft reply STOPS the model instead of offering a second tool call");
   ok(!/if no drop zone is visible[^.]*call/i.test(created.text), "B4 no conditional call-me instruction remains");
 
+  // The field regression (2026-08-28 ×2): the model chains a detail edit in
+  // the SAME turn as the create, while the listing is still photoless — that
+  // reply must NOT render a second drop zone on top of the first.
+  const chained = await call("firestarter_update_listing", { listing_id: lampId, description: "Single-origin, chained edit." });
+  ok(!chained.isError && !chained.structuredContent?.upload_request,
+    "B5 a chained detail edit does NOT open a second drop zone");
+  ok(/ALREADY displayed above/.test(chained.text), "B6 …its reply points at the existing zone instead");
+
   // The widget's exact sequence: upload → attach → activate.
   const up = await call("firestarter_upload_image", { image_base64: TINY_JPEG_DATA_URI, filename: "lamp.jpg" });
   const url = up.structuredContent?.url;

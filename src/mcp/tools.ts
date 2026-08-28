@@ -2197,6 +2197,37 @@ export interface RegisterToolsOptions {
 export function registerTools(server: McpServer, apiKey: string, apiBase: string, onAuthError?: () => void, opts?: RegisterToolsOptions) {
   const apiRequest = makeApiRequest(apiKey, apiBase, onAuthError);
   const localFiles = opts?.localFiles === true;
+
+  // ── Drop-zone dedupe ───────────────────────────────────────────────────
+  // One drop zone per listing per conversation stretch, enforced HERE because
+  // instruction-level "don't open a second zone" text demonstrably fails: a
+  // model with legitimate follow-up edits (add a description right after
+  // creating the draft) chains an update_listing in the same turn, and that
+  // reply would re-render the zone while the seller is looking at the first
+  // one (field report ×2, 2026-08-28). The server process outlives the call,
+  // so it can simply remember. TTL rather than forever: a zone from an old
+  // conversation shouldn't suppress a genuinely new one. Explicit paths
+  // (upload_image with listing_id, an image_urls:[] gallery wipe) bypass the
+  // guard — those are stated intent to (re)show it.
+  const ZONE_DEDUPE_TTL_MS = 15 * 60_000;
+  const recentZones = new Map<string, number>();
+  const zoneRecentlyIssued = (id: unknown): boolean => {
+    if (typeof id !== "string" || !id) return false;
+    const t = recentZones.get(id);
+    if (t === undefined) return false;
+    if (Date.now() - t >= ZONE_DEDUPE_TTL_MS) { recentZones.delete(id); return false; }
+    return true;
+  };
+  const markZoneIssued = (id: unknown): void => {
+    if (typeof id !== "string" || !id) return;
+    if (recentZones.size > 500) {
+      // Bounded: evict expired entries first, oldest after — the map tracks a
+      // conversation, not a catalog.
+      for (const [k, t] of recentZones) if (Date.now() - t >= ZONE_DEDUPE_TTL_MS) recentZones.delete(k);
+      while (recentZones.size > 500) recentZones.delete(recentZones.keys().next().value as string);
+    }
+    recentZones.set(id, Date.now());
+  };
   /** Sandbox key: several real-money guarantees do not apply — say so where we make them. */
   const isTestKey = typeof apiKey === "string" && apiKey.startsWith("fs_test");
 
@@ -4043,6 +4074,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             }
           }
           if (product_name) uploadRequest.product_name = String(product_name).slice(0, 120);
+          // Explicit request → always issue, but record it so a chained
+          // list/update reply doesn't add a second zone on top.
+          markZoneIssued(uploadRequest.listing_id);
           const attachNote = uploadRequest.listing_id
             ? ` Every dropped photo attaches to listing ${uploadRequest.listing_id} at full quality${uploadRequest.activate ? " and activation is requested automatically" : ""}.`
             : " The hosted URLs will be reported back in the conversation.";
@@ -4286,6 +4320,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             existing_image_urls: [],
             activate: shouldActivateAfterPhoto(listing),
           };
+          markZoneIssued(listing.id);
         }
         return { content: [{ type: "text" as const, text }], structuredContent: structured };
       } catch (err: any) {
@@ -5919,16 +5954,27 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // to a photoless draft keeps the one-drop path in reach.
         const structured: Record<string, unknown> = { listing: listingSummaryStructured(listing) };
         if (!(Array.isArray(listing?.images) && listing.images.length)) {
-          structured.upload_request = {
-            listing_id,
-            product_name: listing?.product_name,
-            existing_image_urls: [],
-            activate: shouldActivateAfterPhoto(listing),
-          };
-          // Same STOP phrasing as firestarter_list: the model cannot see the
-          // widget, so any conditional fallback would fire immediately and
-          // open a duplicate drop zone.
-          text += `\nThis listing has no photo — this reply already displays a photo DROP ZONE on hosts that render widgets. Tell the seller to drop the photo(s) onto it, do NOT call firestarter_upload_image now (that would duplicate the zone), and END YOUR TURN. A \`[photo-upload widget]\` note will report the result.`;
+          // A zone for this listing was just displayed (usually by the
+          // firestarter_list reply moments ago, while the model chains a
+          // detail edit in the same turn): DON'T render a second one — the
+          // seller is looking at the first. An explicit image_urls:[] wipe is
+          // stated intent to redo the photos and bypasses the guard.
+          const explicitWipe = Array.isArray(image_urls) && image_urls.length === 0;
+          if (explicitWipe || !zoneRecentlyIssued(listing_id)) {
+            structured.upload_request = {
+              listing_id,
+              product_name: listing?.product_name,
+              existing_image_urls: [],
+              activate: shouldActivateAfterPhoto(listing),
+            };
+            markZoneIssued(listing_id);
+            // Same STOP phrasing as firestarter_list: the model cannot see the
+            // widget, so any conditional fallback would fire immediately and
+            // open a duplicate drop zone.
+            text += `\nThis listing has no photo — this reply already displays a photo DROP ZONE on hosts that render widgets. Tell the seller to drop the photo(s) onto it, do NOT call firestarter_upload_image now (that would duplicate the zone), and END YOUR TURN. A \`[photo-upload widget]\` note will report the result.`;
+          } else {
+            text += `\nThis listing still has no photo. Its drop zone is ALREADY displayed above in this conversation — no new one was added. Tell the seller to drop the photo(s) onto the existing zone and END YOUR TURN; a \`[photo-upload widget]\` note will report the result.`;
+          }
         }
         return { content: [{ type: "text" as const, text }], structuredContent: structured };
       } catch (err: any) {
