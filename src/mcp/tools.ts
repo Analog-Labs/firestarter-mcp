@@ -3931,13 +3931,27 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // base64 is the fallback for images that exist nowhere as a URL, because a
   // data URI rebuilt from a linked image does not survive being emitted as a
   // tool argument (same mechanism as the dispute-photo fix, commerce#749).
-  const uploadSuccessResult = (url: string) => ({
-    content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.` }],
+  const uploadSuccessResult = (url: string, note = "") => ({
+    content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.${note}` }],
     // The widget reads the hosted URL from here — the drop zone's own upload
     // calls land in this handler, and regexing it back out of prose is the
     // fragile alternative.
     structuredContent: { url },
   });
+  /**
+   * A base64 upload that SUCCEEDS can still be a quality disaster: an agent
+   * with a code sandbox reads the chat attachment, compresses it until the
+   * base64 fits its output budget, and this handler stores the result without
+   * complaint — a real 360 KB product photo arriving as 9.7 KB (field report,
+   * 2026-08-28). The store cannot know the original, so the tell is size: a
+   * product PHOTO under this many bytes is almost always a re-compression.
+   * Soft-worded because small legitimate images exist (logos, graphics) —
+   * this warns and points at the lossless paths, it never refuses.
+   */
+  const SUSPICIOUS_BASE64_BYTES = 150 * 1024;
+  const compressedUploadNote = (approxBytes: number) =>
+    approxBytes >= SUSPICIOUS_BASE64_BYTES ? "" :
+      `\n\n⚠️ This image is only ${Math.max(1, Math.round(approxBytes / 1024))} KB. If it began as a photo attached in the chat, it was almost certainly re-compressed on the way here and lost most of its quality — do not list it as-is. Call this tool again with NO image to display the drop zone and have the seller drop the ORIGINAL file${localFiles ? ", or pass the file's path as image_path" : ""}, then replace the photo.`;
   registerToolCompat(
     server,
     "firestarter_upload_image",
@@ -4060,7 +4074,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (!url) {
           return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The image may be invalid or too large (max 6 MB)." }], isError: true };
         }
-        return uploadSuccessResult(url);
+        return uploadSuccessResult(url, compressedUploadNote(approxBytes));
       } catch (err: any) {
         const msg = toErrorMessage(err);
         // commerce#849: toErrorMessage answers every timeout with "retry in a

@@ -259,7 +259,8 @@ let lampId;
     const png = join(dir, "photo.png");
     writeFileSync(png, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(128)]));
     const r = await call("firestarter_upload_image", { image_path: png });
-    ok(!r.isError && /^http/.test(r.structuredContent?.url ?? ""), "H1 image_path reads the file and returns the hosted URL");
+    ok(!r.isError && /^http/.test(r.structuredContent?.url ?? "") && !/re-compressed/.test(r.text),
+      "H1 image_path reads the file, returns the hosted URL, and never carries the compression warning");
 
     const missing = await call("firestarter_upload_image", { image_path: join(dir, "nope.jpg") });
     ok(missing.isError && /could not read/i.test(missing.text), "H2 missing file → clean error");
@@ -320,6 +321,13 @@ let lampId;
   const before = apiCalls.length;
   const r = await call("firestarter_upload_image", { image_base64: `data:image/jpeg;base64,${"A".repeat(9 * 1024 * 1024)}` });
   ok(r.isError && /too large/i.test(r.text) && apiCalls.length === before, "M1 >6MB base64 refused without an API round-trip");
+}
+
+// N. Silent quality loss: a suspiciously small base64 upload succeeds but WARNS
+{
+  const r = await call("firestarter_upload_image", { image_base64: TINY_JPEG_DATA_URI });
+  ok(!r.isError && /re-compressed/.test(r.text) && /NO image/.test(r.text),
+    "N1 tiny base64 upload carries the quality warning and points at the drop zone");
 }
 
 child.kill();
