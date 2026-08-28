@@ -25,10 +25,13 @@ const server = new McpServer({
   // Kept in lockstep with mcpb/manifest.json — this string is what every
   // connecting client sees in the initialize handshake, so a drift makes an
   // installed extension misreport which build it is.
-  version: "2.16.0",
+  version: "2.17.0",
 });
 
-registerTools(server, API_KEY, API_BASE);
+// localFiles: this stdio build IS a local process on the user's machine, so
+// firestarter_upload_image may advertise image_path and read the disk itself.
+// The hosted transports (route.ts) must never pass this.
+registerTools(server, API_KEY, API_BASE, undefined, { localFiles: true });
 
 const apiRequest = makeApiRequest(API_KEY, API_BASE);
 registerResources(server, apiRequest);

@@ -20,7 +20,10 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // reinstalled — an updated widget silently renders with the OLD html/css until
 // the URI changes. Bump the segment whenever the generated HTML changes
 // meaningfully; hosts fetch the "new" resource and the stale cache is orphaned.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v8";
+// v9: seller views — the photo drop zone (upload_request), the listing card
+// (listing), and the single-upload confirmation (url). Bytes travel widget →
+// host bridge → firestarter_upload_image, never through the model.
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v9";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //
@@ -85,7 +88,7 @@ export function registerShoppingApp(server: McpServer): void {
         // its model is told the widget shows, so it can decide when the
         // inline view answers the question and prose is unnecessary.
         "openai/widgetDescription":
-          "An inline product grid: each card rotates the listing's photos, and clicking one opens the product's full detail in place — photos (click one to view it full size), video, price, rating, seller and buyer reviews.",
+          "An inline product grid: each card rotates the listing's photos, and clicking one opens the product's full detail in place — photos (click one to view it full size), video, price, rating, seller and buyer reviews. For sellers it renders the created/updated listing as a card, and — when a listing still needs its photo — a drag-and-drop upload zone that attaches the seller's original photo files to the listing losslessly and activates it.",
         "openai/widgetPrefersBorder": false,
       },
     }],

@@ -86,14 +86,89 @@ describe("firestarter_upload_image", () => {
     expect(res.content[0].text).toContain("https://cdn.test/blob/rehosted.jpg");
   });
 
-  it("errors without calling the API when neither image_url nor image_base64 is given (#819)", async () => {
+  // A call with NO image is the drop-zone request: the widget renders an
+  // interactive uploader from structuredContent.upload_request, and the bytes
+  // travel widget → host bridge → this tool, never through the model. The old
+  // behavior (a bare error) is exactly what pushed agents back toward
+  // fabricating base64.
+  it("displays the drop zone (not an error) when called with no image", async () => {
     const tools = captureTools();
     const calls = installFetch(() => ({ status: 200, json: {} }));
 
     const res = await tools.firestarter_upload_image({});
 
+    expect(calls).toHaveLength(0); // no listing_id → nothing to look up
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent?.upload_request).toBeTruthy();
+    expect(res.content[0].text).toMatch(/drop zone/i);
+  });
+
+  it("primes the drop zone with the listing's existing gallery and activation intent", async () => {
+    const tools = captureTools();
+    const calls = installFetch((method, url) => {
+      if (method === "GET" && url.includes("/v1/listings/lst_abc")) {
+        return {
+          status: 200,
+          json: {
+            id: "lst_abc",
+            product_name: "Walnut Desk Lamp",
+            status: "draft",
+            images: ["https://api.test/v1/img/aa11"],
+            activation_blocked: [{ code: "NEEDS_IMAGE", message: "Add a product photo" }],
+          },
+        };
+      }
+      return { status: 404, json: {} };
+    });
+
+    const res = await tools.firestarter_upload_image({ listing_id: "lst_abc" });
+
+    expect(calls).toHaveLength(1);
+    expect(res.isError).toBeFalsy();
+    const req = res.structuredContent?.upload_request;
+    expect(req?.listing_id).toBe("lst_abc");
+    expect(req?.product_name).toBe("Walnut Desk Lamp");
+    // image_urls replaces the gallery wholesale — the widget must know what
+    // already exists or an added photo would delete the rest (commerce#775).
+    expect(req?.existing_image_urls).toEqual(["https://api.test/v1/img/aa11"]);
+    // NEEDS_IMAGE is the only gate → the widget should activate after attach.
+    expect(req?.activate).toBe(true);
+  });
+
+  it("still shows the drop zone when the listing lookup fails", async () => {
+    const tools = captureTools();
+    installFetch(() => ({ status: 500, json: { error: "boom" } }));
+
+    const res = await tools.firestarter_upload_image({ listing_id: "lst_gone" });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent?.upload_request?.listing_id).toBe("lst_gone");
+  });
+
+  it("returns the hosted URL in structuredContent for the widget to read", async () => {
+    const tools = captureTools();
+    installFetch(() => ({ status: 200, json: { url: "https://cdn.test/v1/img/bb22" } }));
+
+    const res = await tools.firestarter_upload_image({
+      image_base64: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBD",
+    });
+
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent?.url).toBe("https://cdn.test/v1/img/bb22");
+  });
+
+  // image_path is the stdio/MCPB build's local-disk path: gated on the
+  // localFiles option so the HOSTED transports never advertise an argument
+  // they cannot honor (the file is on the user's machine, not the server's).
+  it("does not accept image_path unless registered with localFiles", async () => {
+    const tools = captureTools(); // no opts → hosted shape
+    const calls = installFetch(() => ({ status: 200, json: {} }));
+
+    const res = await tools.firestarter_upload_image({ image_path: "C:/photos/lamp.jpg" });
+
+    // The unknown key is not honored as a file read: no upload happens; the
+    // no-image branch answers with the drop zone instead.
     expect(calls).toHaveLength(0);
-    expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/image_url|image_base64/);
+    expect(res.structuredContent?.upload_request).toBeTruthy();
   });
 });

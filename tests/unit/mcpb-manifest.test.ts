@@ -28,10 +28,15 @@ const toolsSource = readFileSync(resolve(API_ROOT, "src", "mcp", "tools.ts"), "u
 const serverSource = readFileSync(resolve(API_ROOT, "src", "mcp", "server.ts"), "utf8");
 const pkg = JSON.parse(readFileSync(resolve(API_ROOT, "package.json"), "utf8"));
 
-/** Tool names as registered at runtime: server.tool("firestarter_x", ...). */
+/** Tool names as registered at runtime — both registration forms: the classic
+ *  server.tool("firestarter_x", ...) and the widget-carrying
+ *  registerToolCompat(server, "firestarter_x", ...). */
 function registeredToolNames(): Set<string> {
   const names = new Set<string>();
   for (const m of toolsSource.matchAll(/server\.tool\(\s*\n?\s*"([a-z0-9_]+)"/g)) {
+    names.add(m[1]);
+  }
+  for (const m of toolsSource.matchAll(/registerToolCompat\(\s*server,\s*\n?\s*"([a-z0-9_]+)"/g)) {
     names.add(m[1]);
   }
   return names;
