@@ -25,7 +25,7 @@ const server = new McpServer({
   // Kept in lockstep with mcpb/manifest.json — this string is what every
   // connecting client sees in the initialize handshake, so a drift makes an
   // installed extension misreport which build it is.
-  version: "2.17.0",
+  version: "2.17.1",
 });
 
 // localFiles: this stdio build IS a local process on the user's machine, so

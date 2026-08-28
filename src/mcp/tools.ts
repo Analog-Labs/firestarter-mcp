@@ -3943,7 +3943,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_upload_image",
     {
       description:
-        "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, ALWAYS call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64)"
+        "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64)"
         + (localFiles ? "; image_path when the photo is a file on THIS computer (this local build reads it directly — cheap and lossless)" : "")
         + "; image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL.",
       inputSchema: {
@@ -4032,8 +4032,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const attachNote = uploadRequest.listing_id
             ? ` Every dropped photo attaches to listing ${uploadRequest.listing_id} at full quality${uploadRequest.activate ? " and activation is requested automatically" : ""}.`
             : " The hosted URLs will be reported back in the conversation.";
+          // Same STOP phrasing as the firestarter_list draft reply — a
+          // conditional fallback here would be executed immediately by a model
+          // that cannot see whether the widget rendered.
           return {
-            content: [{ type: "text" as const, text: `An upload drop zone is displayed — ask the seller to drop the product photo(s) onto it, or click it to pick files (several at once is fine; the first becomes the cover, and more can be dropped afterwards to grow the gallery).${attachNote}\n\nIf no drop zone is visible (this host doesn't render widgets): upload in the dashboard (https://firestarter.network/seller) or provide a public image URL instead. Do NOT re-encode a chat-attached photo as base64 — that path truncates the image and can stall.` }],
+            content: [{ type: "text" as const, text: `An upload drop zone is displayed — tell the seller to drop the product photo(s) onto it, or click it to pick files (several at once is fine; the first becomes the cover, and more can be dropped afterwards to grow the gallery).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: send them to the dashboard uploader (https://firestarter.network/seller) or take a public photo URL from them. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.` }],
             structuredContent: summary ? { upload_request: uploadRequest, listing: summary } : { upload_request: uploadRequest },
           };
         }
@@ -4240,7 +4243,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // path still yields a valid, encoded link (never `...?a=b?edit=`).
           const uploaderUrl = new URL(SELLER_DASHBOARD_URL);
           uploaderUrl.searchParams.set("edit", String(listing.id));
-          text += `\n\n📷 **Add a photo.** A drop zone is displayed with this reply — the seller can drop the photo(s) straight onto it (the original files upload at full quality, attach to this listing, and it goes live automatically). If no drop zone is visible on this client: call \`firestarter_upload_image\` with NO image and listing_id \`${listing.id}\` to display one, pass a public photo URL, or ${mdLink("drag-and-drop it in the dashboard", uploaderUrl.toString()) ?? `open ${uploaderUrl.toString()}`}. Never re-encode a chat-attached photo as base64.`;
+          // Phrased as a STOP, not a fallback menu. The model cannot see
+          // whether the host rendered the widget, so a conditional "if no drop
+          // zone is visible, call X" reads as an instruction and gets executed
+          // immediately — which is exactly the double-drop-zone bug: a second
+          // upload_image call in the same turn, before the seller could touch
+          // the first zone. The rule is therefore unconditional: end the turn;
+          // act again only on the seller's word or the widget's own note.
+          text += `\n\n📷 **Add a photo.** This reply already displays a photo DROP ZONE on hosts that render widgets. Tell the seller to drop the photo(s) onto it — the original files upload at full quality, attach to this listing, and it goes live automatically; a \`[photo-upload widget]\` note will report the result. Do NOT call firestarter_upload_image or any other tool now — that would open a second, duplicate drop zone. END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: ${mdLink("send them to the dashboard uploader", uploaderUrl.toString()) ?? `send them to ${uploaderUrl.toString()}`}, or take a public photo URL from them. Never re-encode a chat-attached photo as base64.`;
         }
         // Surface payout warnings — listing is active but seller should
         // connect Stripe to actually receive earnings.
@@ -5901,6 +5911,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             existing_image_urls: [],
             activate: shouldActivateAfterPhoto(listing),
           };
+          // Same STOP phrasing as firestarter_list: the model cannot see the
+          // widget, so any conditional fallback would fire immediately and
+          // open a duplicate drop zone.
+          text += `\nThis listing has no photo — this reply already displays a photo DROP ZONE on hosts that render widgets. Tell the seller to drop the photo(s) onto it, do NOT call firestarter_upload_image now (that would duplicate the zone), and END YOUR TURN. A \`[photo-upload widget]\` note will report the result.`;
         }
         return { content: [{ type: "text" as const, text }], structuredContent: structured };
       } catch (err: any) {
