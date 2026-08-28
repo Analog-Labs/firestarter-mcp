@@ -56,6 +56,8 @@ let routes: {
   getPicks?: (id: string) => Response;
   putPicks?: (id: string, body: any) => Response;
   patchProgram?: (id: string, body: any) => Response;
+  deleteProgram?: (id: string) => Response;
+  createProgram?: (body: any) => Response;
   connectStatus?: () => Response;
   connectStart?: (body: any) => Response;
   communities?: () => Response;
@@ -105,7 +107,18 @@ beforeEach(() => {
       if (method === "GET" && u.endsWith("/v1/attribution/earnings")) {
         return routes.earnings ? routes.earnings() : json(200, {});
       }
-      if (method === "GET" && u.endsWith("/v1/attribution/programs")) {
+      if (method === "DELETE" && u.includes("/v1/attribution/programs/")) {
+        const id = decodeURIComponent(u.split("/v1/attribution/programs/")[1]);
+        return routes.deleteProgram ? routes.deleteProgram(id) : json(200, { deleted: true, mode: "deleted", program_id: id });
+      }
+      if (method === "POST" && u.split("?")[0].endsWith("/v1/attribution/programs")) {
+        return routes.createProgram
+          ? routes.createProgram(init?.body ? JSON.parse(init.body) : {})
+          : json(201, { program: { id: "apg_new", override_bps: 1000 }, max_self_serve_bps: 2000, override_bps_capped: false });
+      }
+      // Match the PATH and ignore the query: the owner list carries
+      // ?include_archived=1, and an endsWith on the bare path silently 404s it.
+      if (method === "GET" && u.split("?")[0].endsWith("/v1/attribution/programs")) {
         return routes.programs ? routes.programs() : json(200, { programs: [] });
       }
       return json(404, { error: `unhandled ${method} ${u}` });
@@ -231,6 +244,92 @@ describe("firestarter_my_markets (owner list)", () => {
     routes.programs = () => json(200, { programs: [] });
     const t = textOf(await captureTools()["firestarter_my_markets"]({}));
     expect(t).toContain("don't own any markets");
+  });
+
+  it("marks archived markets and reports the slot count the list cannot show", async () => {
+    routes.programs = () => json(200, {
+      market_slots: { used: 3, limit: 3, can_create: false },
+      programs: [
+        { id: "apg_1", display_name: "Analog", status: "active", override_bps: 1000, type: "community", member_count: 4, links: [{ code: "ABCD123456" }] },
+        { id: "apg_old", display_name: "Retired", status: "disabled", archived_at: "2026-07-04T00:00:00Z", override_bps: 1000, type: "community", member_count: 0, links: [] },
+      ],
+    });
+    const t = textOf(await captureTools()["firestarter_my_markets"]({}));
+    expect(t).toContain("ARCHIVED");
+    expect(t).toContain("3 of 3 market slots used");
+    // The half an owner cannot work out for themselves.
+    expect(t).toMatch(/archived market keeps its slot/i);
+  });
+});
+
+describe("firestarter_delete_market", () => {
+  it("reports a hard delete as gone for good, with the slot freed", async () => {
+    routes.deleteProgram = (id) => json(200, {
+      deleted: true, mode: "deleted", program_id: id,
+      slots: { used: 1, limit: 3, can_create: true },
+    });
+    const t = textOf(await captureTools()["firestarter_delete_market"]({ program_id: "apg_x", confirm: true }));
+    expect(t).toContain("Market deleted");
+    expect(t).toMatch(/slot is free again/i);
+  });
+
+  it("reports an archive as permanent, naming both things that cannot be undone", async () => {
+    routes.deleteProgram = (id) => json(200, {
+      deleted: true, mode: "archived", program_id: id, already_archived: false,
+      slug_released: "analog",
+      slots: { used: 3, limit: 3, can_create: false },
+    });
+    const t = textOf(await captureTools()["firestarter_delete_market"]({ program_id: "apg_x", confirm: true }));
+    expect(t).toContain("Market archived");
+    // Both consequences, because neither is recoverable and neither is obvious.
+    expect(t).toMatch(/keeps using one of your 3 market slots permanently/i);
+    expect(t).toContain("/m/analog");
+    expect(t).toMatch(/links you already shared will follow whoever does/i);
+  });
+
+  it("does not repeat the permanence warning when the market was already archived", async () => {
+    routes.deleteProgram = (id) => json(200, {
+      deleted: true, mode: "archived", program_id: id, already_archived: true, slug_released: null,
+    });
+    const t = textOf(await captureTools()["firestarter_delete_market"]({ program_id: "apg_x", confirm: true }));
+    expect(t).toContain("Already archived");
+    expect(t).toMatch(/nothing changed/i);
+    expect(t).not.toMatch(/released back to the pool/i);
+  });
+
+  it("says nothing was removed when the id is not the caller's", async () => {
+    routes.deleteProgram = () => json(404, { code: "PROGRAM_NOT_FOUND", error: "Attribution program not found for this organization" });
+    const res = await captureTools()["firestarter_delete_market"]({ program_id: "apg_nope", confirm: true });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/nothing was removed/i);
+  });
+});
+
+describe("firestarter_create_market — the two refusals", () => {
+  it("tells an owner at the cap that retrying will not help", async () => {
+    routes.createProgram = () => json(409, {
+      code: "MARKET_LIMIT_REACHED",
+      error: "You already have 3 community markets, which is the maximum (3).",
+    });
+    const res = await captureTools()["firestarter_create_market"]({ share_bps: 1000 });
+    expect(res.isError).toBe(true);
+    const t = textOf(res);
+    expect(t).toMatch(/maximum/i);
+    expect(t).toMatch(/Retrying will not help/i);
+  });
+
+  it("tells an unproven owner what unlocks a second market", async () => {
+    routes.createProgram = () => json(409, {
+      code: "MARKET_UNPROVEN",
+      error: "You already have a community market. Land your first member (share your market link) or connect payouts before creating another.",
+    });
+    const res = await captureTools()["firestarter_create_market"]({ share_bps: 1000 });
+    expect(res.isError).toBe(true);
+    const t = textOf(res);
+    expect(t).toContain("firestarter_market_link");
+    expect(t).toContain("firestarter_connect_payouts");
+    // A different problem from the cap, and it must not read like one.
+    expect(t).not.toMatch(/Retrying will not help/i);
   });
 });
 

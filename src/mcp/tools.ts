@@ -6474,6 +6474,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (err instanceof ApiError && err.code === "INVALID_SLUG") {
             return { content: [{ type: "text" as const, text: `That handle isn't valid: ${toErrorMessage(err)}. The market was not created — retry with a valid handle, or omit it.` }], isError: true };
           }
+          // Two refusals an owner fixes differently. Flattened into "Error
+          // creating market", an agent has nothing to tell them to do next.
+          if (err instanceof ApiError && err.code === "MARKET_LIMIT_REACHED") {
+            return { content: [{ type: "text" as const, text: `${toErrorMessage(err)}\n\nList what you have with firestarter_my_markets. Retrying will not help — a slot only comes back from deleting a market that has no members and no earnings; one that has either is archived instead and keeps its slot.` }], isError: true };
+          }
+          if (err instanceof ApiError && err.code === "MARKET_UNPROVEN") {
+            return { content: [{ type: "text" as const, text: `${toErrorMessage(err)}\n\nGet the share link for the market you already have (firestarter_market_link) and give it to one person, or connect payouts (firestarter_connect_payouts). Either unlocks a second market.` }], isError: true };
+          }
           return { content: [{ type: "text" as const, text: `Error creating market: ${toErrorMessage(err)}` }], isError: true };
         }
       }
@@ -6599,17 +6607,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       { title: "My Markets", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       async () => {
         try {
-          const res = await apiRequest("GET", "/v1/attribution/programs");
+          const res = await apiRequest("GET", "/v1/attribution/programs?include_archived=1");
           const programs: any[] = Array.isArray(res?.programs) ? res.programs : [];
           if (programs.length === 0) {
             return { content: [{ type: "text" as const, text: "You don't own any markets yet. Create one with firestarter_create_market." }] };
           }
           const blocks = programs.map((p) => {
             const name = typeof p.display_name === "string" && p.display_name.trim() ? p.display_name.trim() : "(unnamed market)";
+            const archived = Boolean(p.archived_at);
             const code = Array.isArray(p.links) && p.links[0]?.code ? p.links[0].code : null;
             const url = p.slug ? `${MARKET_LINK_BASE}/${p.slug}` : code ? `${MARKET_LINK_BASE}/${code}` : "(no share link yet — mint one with firestarter_market_link)";
             return [
-              `**${name}**${p.type && p.type !== "community" ? ` (${p.type})` : ""}`,
+              `**${name}**${archived ? " — ARCHIVED" : ""}${p.type && p.type !== "community" ? ` (${p.type})` : ""}`,
               `Program id: \`${p.id}\` · Status: ${p.status}`,
               `URL: ${mdUrlLink(url) ?? url}${code ? ` · Share code: \`${code}\`` : ""}`,
               // commerce#769: a bare "Members: 0" beside real sales and real
@@ -6623,9 +6632,55 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               `Your share: ${(Number(p.override_bps ?? 0) / 100).toFixed(2)}% of the platform fee · ${membersText(p)}`,
             ].join("\n");
           });
-          return { content: [{ type: "text" as const, text: `**Your markets (${programs.length}):**\n\n${blocks.join("\n\n")}` }] };
+          // The slot count is the server's, not derived here: it counts ARCHIVED
+          // markets, which this list hides by default, so an owner refused a
+          // create otherwise has no way to see what is holding their slots.
+          const slots = res?.market_slots;
+          const slotLine = slots
+            ? `\n\n${slots.used} of ${slots.limit} market slots used.${slots.can_create ? "" : " You cannot create another right now — an archived market keeps its slot, and only a market with no members and no earnings can be deleted to free one."}`
+            : "";
+          return { content: [{ type: "text" as const, text: `**Your markets (${programs.length}):**\n\n${blocks.join("\n\n")}${slotLine}` }] };
         } catch (err: any) {
           return { content: [{ type: "text" as const, text: `Couldn't list your markets: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "firestarter_delete_market",
+      "Remove a community market you own. What this does depends on the market, and the two outcomes are NOT equivalent — say which one happened. A market that never had a member and never earned anything is DELETED outright, along with its share links and shelf, and its market slot is freed. A market that has members or earnings cannot be deleted (its records are referenced by member bindings and by the fee ledger); it is ARCHIVED instead: it stops earning immediately and disappears from the public listings, but two things are permanent — it keeps using one of the owner's 3 market slots forever, and its vanity handle goes back into the pool, so anyone can claim /m/<handle> next and old links to it will follow whoever does. Use only when the owner has clearly asked to delete, remove, or close a specific market. `confirm` must be true, and you must only set it after the owner has confirmed THAT market by name — never on a vague 'tidy up my markets'. Read the market list first with firestarter_my_markets if you are unsure which one they mean.",
+      {
+        program_id: z.string().describe("The market/program id (apg_...) to remove, from firestarter_my_markets. Removing the wrong one is not undoable, so confirm the NAME with the owner before calling."),
+        confirm: z.literal(true).describe("Attestation that the owner has confirmed removing this specific market by name. Never pass this on your own initiative or to retry a failed call."),
+      },
+      { title: "Delete Market", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      async ({ program_id }) => {
+        try {
+          const res = await apiRequest("DELETE", `/v1/attribution/programs/${program_id}`);
+          const slots = res?.slots;
+          const slotLine = slots ? ` You are now using ${slots.used} of ${slots.limit} market slots.` : "";
+
+          if (res?.mode === "deleted") {
+            return { content: [{ type: "text" as const, text: `**Market deleted.** \`${program_id}\` had no members and no earnings, so it and its share links are gone for good and its slot is free again.${slotLine}` }] };
+          }
+
+          const released = typeof res?.slug_released === "string" && res.slug_released ? res.slug_released : null;
+          const already = res?.already_archived === true;
+          const lines = [
+            already
+              ? `**Already archived.** \`${program_id}\` was retired earlier; nothing changed.`
+              : `**Market archived.** \`${program_id}\` has members or earnings on record, so it could not be deleted outright. It has stopped earning and is off the public listings, and its records are kept.`,
+          ];
+          if (!already) {
+            lines.push(`Two things that cannot be undone: it keeps using one of your ${slots?.limit ?? 3} market slots permanently — deleting it later is not possible, which is the same reason it could not be deleted now — and${released ? ` the handle \`/m/${released}\` is released back to the pool, so anyone can claim it and links you already shared will follow whoever does.` : " its handle, if it had one, was released back to the pool."}`);
+          }
+          if (slots) lines.push(`You are using ${slots.used} of ${slots.limit} market slots.`);
+          return { content: [{ type: "text" as const, text: lines.join("\n\n") }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: `No market on your account has the id \`${program_id}\` — nothing was removed. List yours with firestarter_my_markets and check the id.` }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Error removing market: ${toErrorMessage(err)}. Nothing was removed.` }], isError: true };
         }
       }
     );
