@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.17.3",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 90 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 91 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -2471,6 +2471,40 @@
         "required": [
           "program_id"
         ]
+      }
+    },
+    {
+      "name": "firestarter_set_market_avatar",
+      "description": "Set the avatar image on a community market you own. FOR A PICTURE ATTACHED IN THE CHAT, call this with program_id and NO image input: an interactive DROP ZONE is displayed, the owner drops the file onto it, and the ORIGINAL uploads at full quality and is set as the avatar automatically. Never re-encode a chat attachment as base64 yourself — model-emitted base64 is fabricated or truncated. Use image_url when the picture already exists at a public URL (the server fetches and re-hosts it — always prefer this). image_base64 is a last resort for bytes that exist at no URL. To change the market's name, tagline or discoverability use firestarter_update_market.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id (from firestarter_create_market or firestarter_my_markets)."
+          },
+          "image_url": {
+            "type": "string",
+            "description": "PREFERRED when a URL exists. Public URL of the image; the server fetches and re-hosts it (JPEG, PNG, WebP or GIF under 6 MB)."
+          },
+          "image_base64": {
+            "type": "string",
+            "description": "LAST RESORT — only for bytes that exist at no URL. NEVER for a chat-attached picture: call with no image instead to display the lossless drop zone. Data-URI format, max 6 MB."
+          },
+          "market_name": {
+            "type": "string",
+            "description": "Optional market name, used only to title the drop zone so the owner sees which market the avatar is for."
+          }
+        },
+        "required": [
+          "program_id"
+        ]
+      },
+      "annotations": {
+        "title": "Set Market Avatar",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": true
       }
     },
     {

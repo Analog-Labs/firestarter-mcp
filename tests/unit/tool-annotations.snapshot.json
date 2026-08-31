@@ -340,6 +340,11 @@
     "idempotentHint": true,
     "openWorldHint": false
   },
+  "firestarter_set_market_avatar": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "openWorldHint": true
+  },
   "firestarter_set_market_handle": {
     "readOnlyHint": false,
     "destructiveHint": false,
