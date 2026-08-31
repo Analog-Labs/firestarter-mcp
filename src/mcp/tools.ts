@@ -17,6 +17,7 @@ import { isWidgetCall } from "./ui/widget-call.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
 import { sanitizeUntrusted, neutralizeAuthority } from "./untrusted.js";
 import { safeVideos, videoLines, displayRating } from "./media.js";
+import { currentBearer } from "./request-context.js";
 import { getPlatformAdapters } from "../platform.js";
 import { listingDetailFields } from "../schemas/listing-details.js";
 
@@ -626,14 +627,19 @@ export class ApiError extends Error {
 }
 
 export function makeApiRequest(
-  apiKey: string,
+  // The key the session was built with. Over Streamable HTTP it is only the
+  // fallback: each call sends the Bearer of the request that triggered it
+  // (see request-context.ts), which is how a refreshed OAuth token reaches
+  // the API without the session being torn down.
+  sessionApiKey: string,
   apiBase: string,
-  // commerce#824: lets the transport learn that this key's upstream said
-  // "credential dead" mid-session, so it can answer the NEXT request with a
-  // real HTTP 401 + WWW-Authenticate instead of letting the client retry a
-  // dead OAuth grant forever. Only fired for fs_oauth_ bearers — a refresh
-  // cannot resurrect a revoked raw API key.
-  onAuthError?: () => void,
+  // commerce#824: lets the transport learn that a key's upstream said
+  // "credential dead" mid-session, so it can answer the NEXT request carrying
+  // that key with a real HTTP 401 + WWW-Authenticate instead of letting the
+  // client retry a dead OAuth grant forever. Only fired for fs_oauth_ bearers —
+  // a refresh cannot resurrect a revoked raw API key. Receives the key that
+  // failed, because the session may since have moved on to a refreshed one.
+  onAuthError?: (apiKey: string) => void,
 ) {
   return async function apiRequest(
     method: string,
@@ -642,6 +648,7 @@ export function makeApiRequest(
     timeoutMs: number = API_REQUEST_TIMEOUT_MS,
     extraHeaders?: Record<string, string>,
   ) {
+    const apiKey = currentBearer(sessionApiKey);
     const url = `${apiBase}${path}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
@@ -670,7 +677,7 @@ export function makeApiRequest(
         apiKey.startsWith("fs_oauth_") &&
         (data?.code === "EXPIRED_KEY" || data?.code === "INVALID_KEY")
       ) {
-        onAuthError?.();
+        onAuthError?.(apiKey);
       }
       // data.error is a STRING on every commerce errorResponse, but anything
       // nonstandard in front of the API (a proxy's JSON error page, a
@@ -2194,7 +2201,7 @@ export interface RegisterToolsOptions {
   localFiles?: boolean;
 }
 
-export function registerTools(server: McpServer, apiKey: string, apiBase: string, onAuthError?: () => void, opts?: RegisterToolsOptions) {
+export function registerTools(server: McpServer, apiKey: string, apiBase: string, onAuthError?: (apiKey: string) => void, opts?: RegisterToolsOptions) {
   const apiRequest = makeApiRequest(apiKey, apiBase, onAuthError);
   const localFiles = opts?.localFiles === true;
 
