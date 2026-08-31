@@ -1083,6 +1083,10 @@
               "type": "string"
             },
             "description": "Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."
+          },
+          "description": {
+            "description": "Product description shown to buyers on the listing page. Pass the seller's own wording when they gave one; when they ask you to WRITE one, pass the text you wrote HERE — a description that exists only in the chat is never saved. Can be edited later with firestarter_update_listing.",
+            "type": "string"
           }
         },
         "required": [
