@@ -2,7 +2,7 @@
   "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
-  "version": "2.15.1",
+  "version": "2.17.3",
   "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 90 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
@@ -746,20 +746,28 @@
     },
     {
       "name": "firestarter_upload_image",
-      "description": "Upload a product photo and get back a permanent public URL, accepted by firestarter_list and firestarter_update_listing image_urls. Two input forms: image_url takes the photo's existing URL (e.g. the hosted URL of an image attached in this conversation), which the server fetches and re-hosts — the reliable form whenever a URL exists; image_base64 (data-URI format, max 6 MB) covers a photo that exists at no URL. Downloading a linked image and rebuilding it as a base64 data-URI is this tool's known failure mode — image_url exists to avoid it, and the server now refuses a base64 payload that arrived cut short instead of storing a photo that renders broken. Returns the hosted URL on success.",
+      "description": "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64); image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "image_base64": {
             "type": "string",
-            "description": "Fallback when the photo exists at no URL: the image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' — the declared type need not be right, the server reads the real one from the bytes. Max 6 MB. The payload must be the WHOLE file: the server rejects one that was cut short rather than storing a broken photo, and a long base64 string frequently does not survive being emitted as a tool argument. If that error comes back, do not retry the same way — use image_url."
+            "description": "LAST RESORT — only for bytes produced programmatically that exist at no URL and in no file. NEVER for a chat-attached photo: model-emitted base64 is fabricated or truncated; call with NO image instead to display the lossless drop zone. Data-URI format, max 6 MB, unreliable above ~1 MB; the server rejects a payload that arrives cut short."
           },
           "filename": {
             "type": "string",
             "description": "Optional original filename, kept only as a label. It does NOT decide the image format — the server reads that from the bytes — so a .jpg name on PNG data is harmless and a wrong extension can no longer mislabel the stored photo."
           },
           "image_url": {
-            "description": "PREFERRED. Public URL of the photo (e.g. the hosted URL of an image attached in this conversation). The server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB). Pass this whenever the image exists at any URL.",
+            "description": "PREFERRED when a URL exists. Public URL of the photo; the server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB).",
+            "type": "string"
+          },
+          "listing_id": {
+            "description": "When displaying the drop zone for a listing that needs its photo: the listing (lst_...) to attach uploads to. The widget attaches every dropped photo to it and requests activation automatically.",
+            "type": "string"
+          },
+          "product_name": {
+            "description": "Optional product name to title the drop zone with, so the seller sees which listing the photo is for.",
             "type": "string"
           }
         }
@@ -797,7 +805,7 @@
     },
     {
       "name": "firestarter_list",
-      "description": "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts a photo URL already available in the conversation (e.g. one returned by firestarter_upload_image). The listing goes live instantly unless something blocks activation (e.g. no product photo yet — see allow_imageless), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
+      "description": "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts photo URLs that already exist (e.g. hosted URLs returned by firestarter_upload_image); for a photo ATTACHED IN THE CHAT, create the listing WITHOUT image_urls — the draft response displays a drop zone the seller drops the photo onto, which attaches it losslessly and activates the listing (never re-encode an attachment as base64). The listing goes live instantly unless something blocks activation (e.g. no product photo yet — see allow_imageless), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -831,7 +839,7 @@
           },
           "image_urls": {
             "type": "array",
-            "description": "Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."
+            "description": "Public product photo URLs (first is the primary image), e.g. hosted URLs returned by firestarter_upload_image. For a photo the seller ATTACHED IN THE CHAT, do NOT try to pass it here — create the listing without photos and the draft response displays a drop zone that uploads the original file losslessly. Never rebuild an attachment as a base64 data-URI, and never ask the seller to re-send a photo already in the conversation."
           },
           "shipping": {
             "type": "number",
@@ -1723,7 +1731,7 @@
           },
           "image_urls": {
             "type": "array",
-            "description": "Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."
+            "description": "Replace the listing's photos with these public image URLs (replaces the WHOLE gallery — include existing photos to keep them). For a photo the seller ATTACHED IN THE CHAT, call firestarter_upload_image with NO image and this listing_id instead: a drop zone appears and the original file attaches losslessly. Never rebuild an attachment as a base64 data-URI, and never ask the seller to re-send a photo already in the conversation."
           },
           "fulfillment_mode": {
             "description": "How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Pass null to clear back to auto (platform label when a carrier-ratable ship-from exists, otherwise seller-managed).",

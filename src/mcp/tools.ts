@@ -4,6 +4,8 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createHash, randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { basename } from "node:path";
 import { z } from "zod";
 import { marginCentsFor } from "../lib/margin.js";
 import { isRelevantMatch } from "../lib/relevance.js";
@@ -2131,8 +2133,101 @@ async function fetchAccountLine(apiRequest: ReturnType<typeof makeApiRequest>): 
   }
 }
 
-export function registerTools(server: McpServer, apiKey: string, apiBase: string, onAuthError?: () => void) {
+/**
+ * The listing fields the widget's seller views render (uploader.client.ts):
+ * a compact card, and the drop zone's sense of what the listing already holds.
+ * Kept small on purpose — this rides in structuredContent next to the text.
+ */
+function listingSummaryStructured(listing: any): Record<string, unknown> {
+  const images = Array.isArray(listing?.images)
+    ? listing.images.filter((u: unknown): u is string => typeof u === "string" && /^https?:\/\//.test(u))
+    : [];
+  const blocked = Array.isArray(listing?.activation_blocked)
+    ? listing.activation_blocked
+        .map((b: any) => String(b?.message ?? b?.code ?? "")).filter(Boolean)
+    : [];
+  const summary: Record<string, unknown> = {
+    id: listing?.id,
+    title: listing?.product_name ?? undefined,
+    price: typeof listing?.base_price === "number" ? listing.base_price : undefined,
+    status: listing?.status ?? undefined,
+    images,
+  };
+  const share = listingShareUrl(listing);
+  if (share) summary.share_url = share;
+  if (blocked.length) summary.blocked = blocked;
+  return summary;
+}
+
+/**
+ * Should the widget request ACTIVATION after attaching a photo? Only when the
+ * missing photo is the whole story: any other gate (price, moderation,
+ * verification) would make the activation PATCH fail wholesale, so the widget
+ * then attaches without flipping status and reports what still blocks.
+ * Unknown blocks (no activation_blocked on the payload) err toward attempting
+ * — the server is the authority and its refusal is reported, not guessed at.
+ */
+function shouldActivateAfterPhoto(listing: any): boolean {
+  if (listing?.status !== "draft") return false;
+  const blocks = Array.isArray(listing?.activation_blocked) ? listing.activation_blocked : null;
+  if (!blocks || blocks.length === 0) return true;
+  return blocks.every((b: any) => b?.code === "NEEDS_IMAGE");
+}
+
+/** Magic-byte sniff for the four formats the API accepts. Local-path uploads
+ *  only — everywhere else the server sniffs for itself. */
+function sniffImageMimeLocal(bytes: Buffer): string | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+  if (bytes.length >= 4 && bytes.toString("latin1", 0, 4) === "GIF8") return "image/gif";
+  if (bytes.length >= 12 && bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 12) === "WEBP") return "image/webp";
+  return null;
+}
+
+export interface RegisterToolsOptions {
+  /**
+   * True only on the stdio/MCPB build, whose server is a LOCAL process that can
+   * read the user's disk. Gates firestarter_upload_image's `image_path` input:
+   * the hosted transports must never advertise a path argument they cannot
+   * honor (the file is on the user's machine, not the server's).
+   */
+  localFiles?: boolean;
+}
+
+export function registerTools(server: McpServer, apiKey: string, apiBase: string, onAuthError?: () => void, opts?: RegisterToolsOptions) {
   const apiRequest = makeApiRequest(apiKey, apiBase, onAuthError);
+  const localFiles = opts?.localFiles === true;
+
+  // ── Drop-zone dedupe ───────────────────────────────────────────────────
+  // One drop zone per listing per conversation stretch, enforced HERE because
+  // instruction-level "don't open a second zone" text demonstrably fails: a
+  // model with legitimate follow-up edits (add a description right after
+  // creating the draft) chains an update_listing in the same turn, and that
+  // reply would re-render the zone while the seller is looking at the first
+  // one (field report ×2, 2026-08-28). The server process outlives the call,
+  // so it can simply remember. TTL rather than forever: a zone from an old
+  // conversation shouldn't suppress a genuinely new one. Explicit paths
+  // (upload_image with listing_id, an image_urls:[] gallery wipe) bypass the
+  // guard — those are stated intent to (re)show it.
+  const ZONE_DEDUPE_TTL_MS = 15 * 60_000;
+  const recentZones = new Map<string, number>();
+  const zoneRecentlyIssued = (id: unknown): boolean => {
+    if (typeof id !== "string" || !id) return false;
+    const t = recentZones.get(id);
+    if (t === undefined) return false;
+    if (Date.now() - t >= ZONE_DEDUPE_TTL_MS) { recentZones.delete(id); return false; }
+    return true;
+  };
+  const markZoneIssued = (id: unknown): void => {
+    if (typeof id !== "string" || !id) return;
+    if (recentZones.size > 500) {
+      // Bounded: evict expired entries first, oldest after — the map tracks a
+      // conversation, not a catalog.
+      for (const [k, t] of recentZones) if (Date.now() - t >= ZONE_DEDUPE_TTL_MS) recentZones.delete(k);
+      while (recentZones.size > 500) recentZones.delete(recentZones.keys().next().value as string);
+    }
+    recentZones.set(id, Date.now());
+  };
   /** Sandbox key: several real-money guarantees do not apply — say so where we make them. */
   const isTestKey = typeof apiKey === "string" && apiKey.startsWith("fs_test");
 
@@ -3867,27 +3962,131 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // base64 is the fallback for images that exist nowhere as a URL, because a
   // data URI rebuilt from a linked image does not survive being emitted as a
   // tool argument (same mechanism as the dispute-photo fix, commerce#749).
-  server.tool(
+  const uploadSuccessResult = (url: string, note = "") => ({
+    content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.${note}` }],
+    // The widget reads the hosted URL from here — the drop zone's own upload
+    // calls land in this handler, and regexing it back out of prose is the
+    // fragile alternative.
+    structuredContent: { url },
+  });
+  /**
+   * A base64 upload that SUCCEEDS can still be a quality disaster: an agent
+   * with a code sandbox reads the chat attachment, compresses it until the
+   * base64 fits its output budget, and this handler stores the result without
+   * complaint — a real 360 KB product photo arriving as 9.7 KB (field report,
+   * 2026-08-28). The store cannot know the original, so the tell is size: a
+   * product PHOTO under this many bytes is almost always a re-compression.
+   * Soft-worded because small legitimate images exist (logos, graphics) —
+   * this warns and points at the lossless paths, it never refuses.
+   */
+  const SUSPICIOUS_BASE64_BYTES = 150 * 1024;
+  const compressedUploadNote = (approxBytes: number) =>
+    approxBytes >= SUSPICIOUS_BASE64_BYTES ? "" :
+      `\n\n⚠️ This image is only ${Math.max(1, Math.round(approxBytes / 1024))} KB. If it began as a photo attached in the chat, it was almost certainly re-compressed on the way here and lost most of its quality — do not list it as-is. Call this tool again with NO image to display the drop zone and have the seller drop the ORIGINAL file${localFiles ? ", or pass the file's path as image_path" : ""}, then replace the photo.`;
+  registerToolCompat(
+    server,
     "firestarter_upload_image",
-    "Upload a product photo and get back a permanent public URL, accepted by firestarter_list and firestarter_update_listing image_urls. Two input forms: image_url takes the photo's existing URL (e.g. the hosted URL of an image attached in this conversation), which the server fetches and re-hosts — the reliable form whenever a URL exists; image_base64 (data-URI format, max 6 MB) covers a photo that exists at no URL. Downloading a linked image and rebuilding it as a base64 data-URI is this tool's known failure mode — image_url exists to avoid it, and the server now refuses a base64 payload that arrived cut short instead of storing a photo that renders broken. Returns the hosted URL on success.",
     {
-      image_url: z.string().optional().describe("PREFERRED. Public URL of the photo (e.g. the hosted URL of an image attached in this conversation). The server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB). Pass this whenever the image exists at any URL."),
-      image_base64: z.string().optional().describe("Fallback when the photo exists at no URL: the image as a base64 data-URI string (e.g. 'data:image/jpeg;base64,/9j/4AAQ...'). If the client provides raw base64 without the data-URI prefix, prepend 'data:image/jpeg;base64,' — the declared type need not be right, the server reads the real one from the bytes. Max 6 MB. The payload must be the WHOLE file: the server rejects one that was cut short rather than storing a broken photo, and a long base64 string frequently does not survive being emitted as a tool argument. If that error comes back, do not retry the same way — use image_url."),
-      filename: z.string().optional().describe("Optional original filename, kept only as a label. It does NOT decide the image format — the server reads that from the bytes — so a .jpg name on PNG data is harmless and a wrong extension can no longer mislabel the stored photo."),
+      description:
+        "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64)"
+        + (localFiles ? "; image_path when the photo is a file on THIS computer (this local build reads it directly — cheap and lossless)" : "")
+        + "; image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL.",
+      inputSchema: {
+        image_url: z.string().optional().describe("PREFERRED when a URL exists. Public URL of the photo; the server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB)."),
+        ...(localFiles ? {
+          image_path: z.string().optional().describe("Absolute path of an image file on THIS computer (JPEG, PNG, WebP, or GIF under 6 MB). This local build reads the file from disk itself — no bytes travel through the conversation. Use for any photo the seller references by file location."),
+        } : {}),
+        image_base64: z.string().optional().describe("LAST RESORT — only for bytes produced programmatically that exist at no URL and in no file. NEVER for a chat-attached photo: model-emitted base64 is fabricated or truncated; call with NO image instead to display the lossless drop zone. Data-URI format, max 6 MB, unreliable above ~1 MB; the server rejects a payload that arrives cut short."),
+        filename: z.string().optional().describe("Optional original filename, kept only as a label. It does NOT decide the image format — the server reads that from the bytes — so a .jpg name on PNG data is harmless and a wrong extension can no longer mislabel the stored photo."),
+        listing_id: z.string().optional().describe("When displaying the drop zone for a listing that needs its photo: the listing (lst_...) to attach uploads to. The widget attaches every dropped photo to it and requests activation automatically."),
+        product_name: z.string().optional().describe("Optional product name to title the drop zone with, so the seller sees which listing the photo is for."),
+      },
+      annotations: { title: "Upload Product Image", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+      // The drop zone renders on the same widget resource as the shopping
+      // grid; widgetAccessible lets the widget's own upload/attach calls
+      // through on hosts that gate widget-originated tool calls.
+      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
     },
-    { title: "Upload Product Image", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ image_url, image_base64, filename }) => {
+    async ({ image_url, image_path, image_base64, filename, listing_id, product_name }: {
+      image_url?: string; image_path?: string; image_base64?: string; filename?: string;
+      listing_id?: string; product_name?: string;
+    }) => {
       try {
+        // Local build only: read the file ourselves — ~20 tokens through the
+        // model for any file size, and the bytes never touch the conversation.
+        if (image_path && localFiles) {
+          let bytes: Buffer;
+          try {
+            const info = await stat(image_path);
+            if (!info.isFile()) {
+              return { content: [{ type: "text" as const, text: `Error: ${image_path} is not a file.` }], isError: true };
+            }
+            if (info.size > 6 * 1024 * 1024) {
+              return { content: [{ type: "text" as const, text: `Error: ${image_path} is ${(info.size / 1024 / 1024).toFixed(1)} MB — the limit is 6 MB. Ask the seller for a smaller export of the photo.` }], isError: true };
+            }
+            bytes = await readFile(image_path);
+          } catch {
+            return { content: [{ type: "text" as const, text: `Error: could not read ${image_path}. Check the path — it must be a file this machine can open.` }], isError: true };
+          }
+          const mime = sniffImageMimeLocal(bytes);
+          if (!mime) {
+            return { content: [{ type: "text" as const, text: `Error: ${image_path} is not a supported image. JPEG, PNG, WebP, or GIF only.` }], isError: true };
+          }
+          const dataUri = `data:${mime};base64,${bytes.toString("base64")}`;
+          const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_base64: dataUri, filename: filename || basename(image_path) }, UPLOAD_IMAGE_TIMEOUT_MS);
+          const url = (res as any)?.url;
+          if (!url) {
+            return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The file may not be a valid image." }], isError: true };
+          }
+          return uploadSuccessResult(url);
+        }
         if (image_url) {
           const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_url, filename }, UPLOAD_IMAGE_TIMEOUT_MS);
           const url = (res as any)?.url;
           if (!url) {
             return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The URL must point to a public JPEG, PNG, WebP, or GIF under 6 MB." }], isError: true };
           }
-          return { content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.` }] };
+          return uploadSuccessResult(url);
         }
         if (!image_base64) {
-          return { content: [{ type: "text" as const, text: "Error: pass image_url (preferred — any public URL of the photo) or image_base64." }], isError: true };
+          // No image input at all: this is the DROP ZONE request. Look the
+          // listing up (best-effort) so the widget knows the existing gallery
+          // — image_urls replaces wholesale, forgetting them would delete
+          // them — and whether a photo is the only thing blocking activation.
+          const uploadRequest: Record<string, unknown> = {};
+          let summary: Record<string, unknown> | null = null;
+          if (listing_id) {
+            const id = cleanListingId(listing_id);
+            uploadRequest.listing_id = id;
+            try {
+              const listing = await apiRequest("GET", `/v1/listings/${id}`);
+              summary = listingSummaryStructured(listing);
+              uploadRequest.existing_image_urls = summary.images;
+              uploadRequest.activate = shouldActivateAfterPhoto(listing);
+              if (!product_name && typeof (listing as any)?.product_name === "string") {
+                uploadRequest.product_name = (listing as any).product_name;
+              }
+            } catch {
+              // The drop zone still works without the lookup; the widget just
+              // starts from an empty gallery and attempts activation.
+              uploadRequest.existing_image_urls = [];
+              uploadRequest.activate = true;
+            }
+          }
+          if (product_name) uploadRequest.product_name = String(product_name).slice(0, 120);
+          // Explicit request → always issue, but record it so a chained
+          // list/update reply doesn't add a second zone on top.
+          markZoneIssued(uploadRequest.listing_id);
+          const attachNote = uploadRequest.listing_id
+            ? ` Every dropped photo attaches to listing ${uploadRequest.listing_id} at full quality${uploadRequest.activate ? " and activation is requested automatically" : ""}.`
+            : " The hosted URLs will be reported back in the conversation.";
+          // Same STOP phrasing as the firestarter_list draft reply — a
+          // conditional fallback here would be executed immediately by a model
+          // that cannot see whether the widget rendered.
+          return {
+            content: [{ type: "text" as const, text: `An upload drop zone is displayed — tell the seller to drop the product photo(s) onto it, or click it to pick files (several at once is fine; the first becomes the cover, and more can be dropped afterwards to grow the gallery).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: send them to the dashboard uploader (https://firestarter.network/seller) or take a public photo URL from them. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.` }],
+            structuredContent: summary ? { upload_request: uploadRequest, listing: summary } : { upload_request: uploadRequest },
+          };
         }
         const base64Part = String(image_base64).includes(",") ? String(image_base64).split(",", 2)[1] : String(image_base64);
         const normalized = base64Part.replace(/\s+/g, "");
@@ -3909,7 +4108,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (!url) {
           return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The image may be invalid or too large (max 6 MB)." }], isError: true };
         }
-        return { content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.` }] };
+        return uploadSuccessResult(url, compressedUploadNote(approxBytes));
       } catch (err: any) {
         const msg = toErrorMessage(err);
         // commerce#849: toErrorMessage answers every timeout with "retry in a
@@ -3920,14 +4119,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // waiting. Say what to do DIFFERENTLY instead.
         if (isTimeoutMessage(msg)) {
           const nextStep = image_base64 && !image_url
-            ? "Do not resend the same base64 — a large data URI is the slow path. Get a public URL for the photo and pass it as image_url instead."
+            ? "Do not resend the same base64 — a large data URI is the slow path. For a chat-attached photo, call this tool again with NO image to display the drop zone; otherwise get a public URL and pass it as image_url."
             : "Do not immediately repeat the same call. Check the listing first: the upload may have completed on the server after this call stopped waiting.";
           return {
             content: [{ type: "text" as const, text: `The image upload didn't return in time. ${nextStep}` }],
             isError: true,
           };
         }
-        return { content: [{ type: "text" as const, text: `Error uploading image: ${msg}` }], isError: true };
+        // A base64 payload that arrived broken (truncated/invalid): hand the
+        // agent the working path, not an invitation to retry the same way.
+        const brokenBase64Hint = image_base64 && !image_url
+          ? " For a photo attached in this chat, call this tool again with NO image to display the drop zone — never rebuild the base64."
+          : "";
+        return { content: [{ type: "text" as const, text: `Error uploading image: ${msg}${brokenBase64Hint}` }], isError: true };
       }
     }
   );
@@ -3986,11 +4190,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   );
 
   // Tool: firestarter_list
-  server.tool(
+  registerToolCompat(
+    server,
     "firestarter_list",
-    "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts a photo URL already available in the conversation (e.g. one returned by firestarter_upload_image). The listing goes live instantly unless something blocks activation (e.g. no product photo yet — see allow_imageless), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
     {
-      product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
+      description:
+        "List (create) a product for sale on Firestarter. ONLY two fields are required: product_name and base_price (USD). Everything else is OPTIONAL with sensible defaults, so a listing can be created from minimal information and refined afterwards; the response echoes the resulting settings. Defaults when omitted: inventory unlimited, shipping = estimated live at checkout by the delivery provider (based on the buyer's destination; sellers no longer set a flat/free rate), ship-from = account default address, ships worldwide (cross-border buyers get a duties disclosure; restrict with shipping_policy). Also optionally settable: brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, and size/color variants — all of them can be filled in later with firestarter_update_listing. image_urls accepts photo URLs that already exist (e.g. hosted URLs returned by firestarter_upload_image); for a photo ATTACHED IN THE CHAT, create the listing WITHOUT image_urls — the draft response displays a drop zone the seller drops the photo onto, which attaches it losslessly and activates the listing (never re-encode an attachment as base64). The listing goes live instantly unless something blocks activation (e.g. no product photo yet — see allow_imageless), in which case it's saved as a draft and the response lists exactly what to fix. To VIEW or edit listings you already have, use firestarter_listings / firestarter_update_listing instead; to BROWSE other sellers' products, use firestarter_catalog_search.",
+      inputSchema: {
+        product_name: z.string().describe("REQUIRED. What's being sold, e.g. 'Logitech MX Master 3S Wireless Mouse'."),
       base_price: z.number().describe("REQUIRED. Sale price in USD, e.g. 49.99."),
       description: z.string().optional().describe("Product description shown to buyers on the listing page. Pass the seller's own wording when they gave one; when they ask you to WRITE one, pass the text you wrote HERE — a description that exists only in the chat is never saved. Can be edited later with firestarter_update_listing."),
       category: z.string().optional().describe("Optional. Product category (e.g. 'electronics/audio/earbuds'). Infer a reasonable one from the product name if obvious; otherwise omit — don't ask."),
@@ -3998,7 +4205,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       ceiling_price: z.number().optional().describe("Never surge above this price"),
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
-      image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image). If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image), e.g. hosted URLs returned by firestarter_upload_image. For a photo the seller ATTACHED IN THE CHAT, do NOT try to pass it here — create the listing without photos and the draft response displays a drop zone that uploads the original file losslessly. Never rebuild an attachment as a base64 data-URI, and never ask the seller to re-send a photo already in the conversation."),
       video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
       source_url: z.string().url().optional().describe("Optional. If the seller mentions or pastes a link to their OWN existing listing for this product elsewhere (their Etsy/eBay/Shopify page, etc.), pass it here. Firestarter will fetch it once and fill in whatever descriptive details (description, category, brand, materials, tags, condition) the seller didn't already give you — it never overwrites anything you explicitly set. Best-effort: if the fetch fails or finds nothing, the listing is still created normally."),
       shipping: z.number().optional().describe("Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."),
@@ -4019,9 +4226,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       allow_duplicate: z.boolean().optional().describe("Create this listing even though the seller already has one with the same name. Only pass true if the seller confirms they genuinely want a second, separate listing."),
       ...listingDetailFields,
+      },
+      annotations: { title: "Create Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+      // MCP Apps: a draft that needs its photo renders the drop zone right in
+      // this tool's reply — one step, not a follow-up upload_image call; a
+      // clean create renders the listing card.
+      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
     },
-    { title: "Create Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, video_urls, source_url, shipping, ship_from, shipping_policy, fulfillment_mode, allow_imageless, allow_duplicate, ...details }) => {
+    async ({ product_name, base_price, category, floor_price, ceiling_price, dynamic_pricing, inventory_qty, image_urls, video_urls, source_url, shipping, ship_from, shipping_policy, fulfillment_mode, allow_imageless, allow_duplicate, ...details }: any) => {
       try {
         const body: any = { product_name, base_price };
         if (category) body.category = category;
@@ -4074,16 +4286,24 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         } else {
           text += `\n**Sandbox-only listing.** No public share link is created in test mode. It remains available through test-mode catalog and listing tools.`;
         }
-        // No photo on the listing → give a concrete way to add one. A photo the
-        // seller attached in chat can't be forwarded into the listing (MCP tool
-        // args are JSON URLs only; the client never uploads the file), so deep
-        // link straight to this listing's uploader in the seller dashboard.
-        if (!(Array.isArray(listing.images) && listing.images.length)) {
+        // No photo on the listing → this reply CARRIES the drop zone (widget
+        // hosts render it inline via structuredContent.upload_request below),
+        // so the seller drops the photo on the listing confirmation itself —
+        // no follow-up tool call. Non-widget hosts get the dashboard deep link.
+        const needsPhoto = !(Array.isArray(listing.images) && listing.images.length);
+        if (needsPhoto) {
           // Build via URL so a base with an existing query string / trailing
           // path still yields a valid, encoded link (never `...?a=b?edit=`).
           const uploaderUrl = new URL(SELLER_DASHBOARD_URL);
           uploaderUrl.searchParams.set("edit", String(listing.id));
-          text += `\n\n📷 **Add a photo.** Send a photo in this chat and I'll upload it with \`firestarter_upload_image\`, then attach the URL to your listing. Or ${mdLink("drag-and-drop it in the dashboard", uploaderUrl.toString()) ?? `open ${uploaderUrl.toString()}`}.`;
+          // Phrased as a STOP, not a fallback menu. The model cannot see
+          // whether the host rendered the widget, so a conditional "if no drop
+          // zone is visible, call X" reads as an instruction and gets executed
+          // immediately — which is exactly the double-drop-zone bug: a second
+          // upload_image call in the same turn, before the seller could touch
+          // the first zone. The rule is therefore unconditional: end the turn;
+          // act again only on the seller's word or the widget's own note.
+          text += `\n\n📷 **Add a photo.** This reply already displays a photo DROP ZONE on hosts that render widgets. Tell the seller to drop the photo(s) onto it — the original files upload at full quality, attach to this listing, and it goes live automatically; a \`[photo-upload widget]\` note will report the result. Do NOT call firestarter_upload_image or any other tool now — that would open a second, duplicate drop zone. END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: ${mdLink("send them to the dashboard uploader", uploaderUrl.toString()) ?? `send them to ${uploaderUrl.toString()}`}, or take a public photo URL from them. Never re-encode a chat-attached photo as base64.`;
         }
         // Surface payout warnings — listing is active but seller should
         // connect Stripe to actually receive earnings.
@@ -4094,7 +4314,20 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             }
           }
         }
-        return { content: [{ type: "text" as const, text }] };
+        // Widget payload: the listing card, plus the drop zone whenever the
+        // gallery is empty (activate only when the photo is the sole gate —
+        // see shouldActivateAfterPhoto).
+        const structured: Record<string, unknown> = { listing: listingSummaryStructured(listing) };
+        if (needsPhoto) {
+          structured.upload_request = {
+            listing_id: listing.id,
+            product_name: listing.product_name,
+            existing_image_urls: [],
+            activate: shouldActivateAfterPhoto(listing),
+          };
+          markZoneIssued(listing.id);
+        }
+        return { content: [{ type: "text" as const, text }], structuredContent: structured };
       } catch (err: any) {
         const msg = toErrorMessage(err);
         // The REST 403 carries code NO_SELLER_PROFILE but its message is a plain
@@ -5657,24 +5890,32 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   );
 
   // Tool: firestarter_update_listing
-  server.tool(
+  registerToolCompat(
+    server,
     "firestarter_update_listing",
-    "Update a listing's product details — name, description, category, inventory, status, brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, or variants. Use this to rename a product, change its description, update stock levels, pause/reactivate a listing, or fill in/correct any of those detail fields. Also activates imported drafts (status 'active') - drafts need a positive price and at least one photo. High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code for the seller, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
     {
-      listing_id: z.string().describe("The listing ID to update"),
+      description:
+        "Update a listing's product details — name, description, category, inventory, status, brand, condition, sku, return policy, dispatch time, country of origin, physical dimensions/weight, materials, tags, or variants. Use this to rename a product, change its description, update stock levels, pause/reactivate a listing, or fill in/correct any of those detail fields. Also activates imported drafts (status 'active') - drafts need a positive price and at least one photo. High-value (>= $500) and luxury-category drafts additionally require a possession-verification photo: activation returns the instructions and an FS-XXXX code for the seller, and firestarter_verify submits the seller's photo. For pricing changes, use firestarter_reprice instead.",
+      inputSchema: {
+        listing_id: z.string().describe("The listing ID to update"),
       product_name: z.string().optional().describe("New product name/title"),
       description: z.string().optional().describe("New product description"),
       category: z.string().optional().describe("New category (e.g. 'sports/tennis')"),
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
-      image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs. If the seller attached a photo in this conversation, call firestarter_upload_image FIRST (pass its hosted URL as image_url — never rebuild it as a base64 data-URI) to get a permanent URL, then pass it here. Never ask them to re-send a photo already in the conversation."),
+      image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs (replaces the WHOLE gallery — include existing photos to keep them). For a photo the seller ATTACHED IN THE CHAT, call firestarter_upload_image with NO image and this listing_id instead: a drop zone appears and the original file attaches losslessly. Never rebuild an attachment as a base64 data-URI, and never ask the seller to re-send a photo already in the conversation."),
       video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
       fulfillment_mode: z.enum(["platform", "seller_managed"]).nullable().optional().describe("How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Pass null to clear back to auto (platform label when a carrier-ratable ship-from exists, otherwise seller-managed)."),
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       ...listingDetailFields,
+      },
+      annotations: { title: "Update Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+      // MCP Apps: renders the listing card (or the drop zone, when the update
+      // leaves a draft still photoless). widgetAccessible lets the drop zone's
+      // own attach/activate calls through on hosts that gate widget calls.
+      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
     },
-    { title: "Update Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, video_urls, fulfillment_mode, allow_imageless, ...details }) => {
+    async ({ listing_id: rawListingId, product_name, description, category, inventory_qty, status, image_urls, video_urls, fulfillment_mode, allow_imageless, ...details }: any) => {
       const listing_id = cleanListingId(rawListingId);
       try {
         const body: any = {};
@@ -5713,7 +5954,34 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // commerce#768: a category change can trip the possession gate on a
         // live listing, which succeeds AND takes the listing offline.
         text += regateNoticeText(listing);
-        return { content: [{ type: "text" as const, text }] };
+        // Widget payload: the listing card — plus the drop zone when the
+        // update leaves the gallery empty, so "remove the photos" or an edit
+        // to a photoless draft keeps the one-drop path in reach.
+        const structured: Record<string, unknown> = { listing: listingSummaryStructured(listing) };
+        if (!(Array.isArray(listing?.images) && listing.images.length)) {
+          // A zone for this listing was just displayed (usually by the
+          // firestarter_list reply moments ago, while the model chains a
+          // detail edit in the same turn): DON'T render a second one — the
+          // seller is looking at the first. An explicit image_urls:[] wipe is
+          // stated intent to redo the photos and bypasses the guard.
+          const explicitWipe = Array.isArray(image_urls) && image_urls.length === 0;
+          if (explicitWipe || !zoneRecentlyIssued(listing_id)) {
+            structured.upload_request = {
+              listing_id,
+              product_name: listing?.product_name,
+              existing_image_urls: [],
+              activate: shouldActivateAfterPhoto(listing),
+            };
+            markZoneIssued(listing_id);
+            // Same STOP phrasing as firestarter_list: the model cannot see the
+            // widget, so any conditional fallback would fire immediately and
+            // open a duplicate drop zone.
+            text += `\nThis listing has no photo — this reply already displays a photo DROP ZONE on hosts that render widgets. Tell the seller to drop the photo(s) onto it, do NOT call firestarter_upload_image now (that would duplicate the zone), and END YOUR TURN. A \`[photo-upload widget]\` note will report the result.`;
+          } else {
+            text += `\nThis listing still has no photo. Its drop zone is ALREADY displayed above in this conversation — no new one was added. Tell the seller to drop the photo(s) onto the existing zone and END YOUR TURN; a \`[photo-upload widget]\` note will report the result.`;
+          }
+        }
+        return { content: [{ type: "text" as const, text }], structuredContent: structured };
       } catch (err: any) {
         // Activation can trip the possession-verification gate - surface the
         // code + photo instructions instead of a flattened error string.

@@ -23,6 +23,7 @@ import { esc } from "./escape.js";
 import { renderGrid, showShotFromBar, stopCarousels } from "./grid.client.js";
 import { connectHost, type Host } from "./host.client.js";
 import type { ShoppingItem } from "./shopping-item.js";
+import { renderListingCard, renderUploadDone, renderUploader, type ListingSummary, type UploadRequest } from "./uploader.client.js";
 
 const root = document.getElementById("root")!;
 
@@ -39,6 +40,30 @@ function route(sc: Record<string, unknown>): void {
     // A new tool result owns the surface: drop whatever detail view was open
     // before it repaints, without letting its back handler flash the old grid.
     resetDetail();
+    // Seller-side shapes first: the photo drop zone (a listing that still
+    // needs its photo), the listing card, and the single-upload confirmation.
+    // These come from firestarter_list / firestarter_update_listing /
+    // firestarter_upload_image; buyer-side grids and details stay below.
+    if (sc.upload_request && typeof sc.upload_request === "object") {
+      stopCarousels();
+      items = [];
+      renderUploader(root, sc.upload_request as UploadRequest,
+        sc.listing && typeof sc.listing === "object" ? (sc.listing as ListingSummary) : undefined,
+        () => host);
+      return;
+    }
+    if (sc.listing && typeof sc.listing === "object") {
+      stopCarousels();
+      items = [];
+      renderListingCard(root, sc.listing as ListingSummary);
+      return;
+    }
+    if (typeof sc.url === "string" && /^https:\/\//.test(sc.url)) {
+      stopCarousels();
+      items = [];
+      renderUploadDone(root, sc.url);
+      return;
+    }
     if (sc.product && typeof sc.product === "object") {
       stopCarousels();
       items = [];

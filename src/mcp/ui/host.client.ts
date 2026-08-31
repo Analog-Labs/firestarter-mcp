@@ -37,6 +37,27 @@ export interface Host {
    *  the host refuses, the call fails, or it returns nothing usable. Never
    *  throws: everything it feeds is optional enrichment. */
   callTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+  /**
+   * Call one of our own tools and keep the WHOLE outcome: success flag, the
+   * text content, and structuredContent. The uploader needs all three — a
+   * failed listing update carries its reason in the text (e.g. a verification
+   * gate), and swallowing it into `null` would leave the seller staring at a
+   * drop zone that silently did nothing. Returns null only when the bridge
+   * itself is unavailable or threw (host refused the call). Never throws.
+   */
+  callToolFull(name: string, args: Record<string, unknown>): Promise<{
+    ok: boolean;
+    text: string;
+    structured: Record<string, unknown> | null;
+  } | null>;
+  /**
+   * Tell the MODEL what just happened inside the widget (an upload finishing,
+   * an activation failing) without producing a user-visible message. The next
+   * turn's context includes it, so the agent narrates reality instead of
+   * guessing. Best-effort: a host without the verb loses the note and nothing
+   * else — the uploader's own status line still shows the outcome.
+   */
+  tellModel(text: string): Promise<void>;
 }
 
 interface OpenAiBridge {
@@ -123,22 +144,42 @@ export async function connectHost(handlers: {
     adoptTheme(ctx?.theme);
     applyHostChrome(ctx);
     syncSizeReporting(ctx?.displayMode);
+    const callServer = async (name: string, args: Record<string, unknown>) => {
+      return app.callServerTool({
+        name,
+        arguments: args,
+        // Tells the server this is the widget topping itself up, so it can
+        // skip inlining base64 photos the view never renders. Optional by
+        // construction — a host that strips _meta only costs us bytes.
+        _meta: { [WIDGET_SURFACE_KEY]: WIDGET_SURFACE },
+      });
+    };
     return {
       openLink: (url) => { void app.openLink({ url }).catch(() => { /* grid stays usable */ }); },
       callTool: async (name, args) => {
         try {
-          const res = await app.callServerTool({
-            name,
-            arguments: args,
-            // Tells the server this is the widget topping itself up, so it can
-            // skip inlining base64 photos the view never renders. Optional by
-            // construction — a host that strips _meta only costs us bytes.
-            _meta: { [WIDGET_SURFACE_KEY]: WIDGET_SURFACE },
-          });
+          const res = await callServer(name, args);
           return res?.isError ? null : structuredOf(res);
         } catch {
           return null;
         }
+      },
+      callToolFull: async (name, args) => {
+        try {
+          const res = await callServer(name, args);
+          const text = (Array.isArray(res?.content) ? res.content : [])
+            .map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : ""))
+            .filter(Boolean)
+            .join(" ");
+          return { ok: !res?.isError, text, structured: structuredOf(res) };
+        } catch {
+          return null;
+        }
+      },
+      tellModel: async (text) => {
+        try {
+          await app.updateModelContext({ content: [{ type: "text", text }] });
+        } catch { /* a host without the verb just loses the note */ }
       },
     };
   } catch (err) {
@@ -168,6 +209,22 @@ export async function connectHost(handlers: {
           return null;
         }
       },
+      callToolFull: async (name, args) => {
+        if (typeof bridge.callTool !== "function") return null;
+        try {
+          const res = (await bridge.callTool(name, args)) as { isError?: boolean; content?: unknown } | null;
+          const text = (Array.isArray(res?.content) ? res.content : [])
+            .map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : ""))
+            .filter(Boolean)
+            .join(" ");
+          return { ok: !res?.isError, text, structured: structuredOf(res) };
+        } catch {
+          return null;
+        }
+      },
+      // The legacy window.openai bridge has no model-context verb; the
+      // uploader's status line is the seller's record there.
+      tellModel: async () => { /* no-op on the fallback bridge */ },
     };
   }
 }

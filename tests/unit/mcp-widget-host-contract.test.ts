@@ -84,10 +84,13 @@ describe("widget-initiated tool calls", () => {
   it("does not hand the widget any tool that spends money", () => {
     // A sandboxed iframe rendering third-party product data must never be able
     // to reach a tool that charges a card or moves a payout, whatever a host
-    // decides to let it call.
+    // decides to let it call. The seller pair (upload_image, update_listing)
+    // is the photo drop zone's upload/attach/activate path — both write
+    // listing data under the caller's own API key, and neither can touch a
+    // card, an order, or a payout.
     for (const [name, meta] of toolMeta) {
       if (meta["openai/widgetAccessible"] !== true) continue;
-      expect(name).toMatch(/^firestarter_(product|preview|catalog_search)$/);
+      expect(name).toMatch(/^firestarter_(product|preview|catalog_search|upload_image|update_listing)$/);
     }
   });
 });
