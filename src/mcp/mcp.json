@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.17.3",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 89 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 90 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -2483,6 +2483,28 @@
       "inputSchema": {
         "type": "object",
         "properties": {}
+      }
+    },
+    {
+      "name": "firestarter_delete_market",
+      "description": "Remove a community market you own. What this does depends on the market, and the two outcomes are NOT equivalent — say which one happened. A market that never had a member and never earned anything is DELETED outright, along with its share links and shelf, and its market slot is freed. A market that has members or earnings cannot be deleted (its records are referenced by member bindings and by the fee ledger); it is ARCHIVED instead: it stops earning immediately and disappears from the public listings, but two things are permanent — it keeps using one of the owner's 3 market slots forever, and its vanity handle goes back into the pool, so anyone can claim /m/<handle> next and old links to it will follow whoever does. Use only when the owner has clearly asked to delete, remove, or close a specific market. `confirm` must be true, and you must only set it after the owner has confirmed THAT market by name — never on a vague 'tidy up my markets'. Read the market list first with firestarter_my_markets if you are unsure which one they mean.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "description": "The market/program id (apg_...) to remove, from firestarter_my_markets. Removing the wrong one is not undoable, so confirm the NAME with the owner before calling."
+          },
+          "confirm": {
+            "type": "boolean",
+            "const": true,
+            "description": "Attestation that the owner has confirmed removing this specific market by name. Never pass this on your own initiative or to retry a failed call."
+          }
+        },
+        "required": [
+          "program_id",
+          "confirm"
+        ]
       }
     },
     {
