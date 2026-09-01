@@ -6,10 +6,13 @@
  * retry ("Same auth error again", #819/#820).
  *
  * Pinned here: once a tool call on an fs_oauth_ session hits an upstream
- * credential 401, the NEXT request on that session answers HTTP 401 with the
- * RFC 6750 WWW-Authenticate challenge — the signal claude.ai needs to refresh
- * the token and reinitialize. Raw API keys (fs_live_/fs_test_) keep today's
- * behavior: their 401s mean revoked/invalid, where a refresh cannot help.
+ * credential 401, the NEXT request presenting THAT token answers HTTP 401 with
+ * the RFC 6750 WWW-Authenticate challenge — the signal claude.ai needs to
+ * refresh. The session itself survives: the refreshed token rides it and the
+ * calls it triggers reach the API under the refreshed token, so the client's
+ * retry-after-refresh succeeds without a reinitialize. Raw API keys
+ * (fs_live_/fs_test_) keep today's behavior: their 401s mean revoked/invalid,
+ * where a refresh cannot help.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 
@@ -81,22 +84,30 @@ describe("expired fs_oauth_ grant → transport-level 401 challenge (commerce#82
     expect(next.headers.get("WWW-Authenticate")).toBeTruthy();
   });
 
-  it("the dead session is dropped — reusing its id after the 401 is a plain 404", async () => {
-    const key = "fs_oauth_expired_grant_2";
-    const sid = await openSession(key);
+  it("the session survives the challenge — the refreshed token rides it, and upstream sees the refreshed token", async () => {
+    const dead = "fs_oauth_expired_grant_2";
+    const sid = await openSession(dead);
 
     stub401("INVALID_KEY");
-    await callTool(key, sid);
+    await callTool(dead, sid);
 
     const challenged = await app.request("/", {
-      method: "POST", headers: headers(key, sid), body: JSON.stringify(CALL),
+      method: "POST", headers: headers(dead, sid), body: JSON.stringify(CALL),
     });
     expect(challenged.status).toBe(401);
 
-    const gone = await app.request("/", {
-      method: "POST", headers: headers(key, sid), body: JSON.stringify(CALL),
-    });
-    expect(gone.status).toBe(404);
+    // What claude.ai does next: same mcp-session-id, new access token.
+    const upstream: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: RequestInit) => {
+      upstream.push(String((init?.headers as Record<string, string> | undefined)?.Authorization ?? ""));
+      return new Response(JSON.stringify({ balance_cents: 0, currency: "USD" }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }));
+    const refreshed = await callTool("fs_oauth_refreshed_grant_2", sid);
+    expect(refreshed.status).toBe(200);
+    expect(upstream.length).toBeGreaterThan(0);
+    expect(upstream.every((h) => h === "Bearer fs_oauth_refreshed_grant_2")).toBe(true);
   });
 
   it("a raw fs_live_ key's upstream 401 does NOT kill the session — refresh can't help there", async () => {

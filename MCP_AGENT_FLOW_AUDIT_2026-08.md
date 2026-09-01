@@ -365,6 +365,8 @@ Yet quantity is plainly a first-class server concept: option rendering reads `op
 
 ## 9. HTTP transport: session id is not bound to the API key — Medium
 
+> **Update 2026-08-31:** the key-hash binding that closed this finding broke OAuth clients — an `fs_oauth_` access token is replaced on every refresh, so claude.ai's first call after a refresh got 404 on its live session ("Unable to reach Firestarter", hourly). The property is now held the way the MCP spec intends: every upstream call carries the Bearer of the request that triggered it (`src/mcp/request-context.ts`), so a session id confers no authority on its own. Pinned in `tests/integration/mcp-session-binding.test.ts`.
+
 **Where:** [route.ts](src/mcp/route.ts) `app.all("/")`, and the mount at [`apps/api/src/index.ts:266`](../firestarter-commerce/apps/api/src/index.ts#L266)
 
 ```ts

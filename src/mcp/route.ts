@@ -12,6 +12,7 @@ import { wwwAuthenticateChallenge } from "./oauth-metadata.js";
 import { SERVER_IDENTITY } from "./identity.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
+import { requestBearer } from "./request-context.js";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -38,23 +39,32 @@ const MAX_SESSIONS = Number(process.env.MCP_MAX_SESSIONS || 1_000);
 
 interface SessionEntry {
   transport: WebStandardStreamableHTTPServerTransport;
-  /** SHA-256 of the API key this session was created with. */
-  keyHash: Buffer;
   lastSeen: number;
   /**
-   * commerce#824: set when an upstream call 401'd this session's fs_oauth_
-   * grant (expired or revoked). The next request on the session answers with
-   * a transport-level 401 + WWW-Authenticate so the client runs its refresh
-   * flow — instead of retrying a dead token against tool results forever.
+   * commerce#824: SHA-256 of an fs_oauth_ Bearer that an upstream call on this
+   * session 401'd (expired or revoked). The next request presenting THAT
+   * Bearer answers with a transport-level 401 + WWW-Authenticate so the client
+   * runs its refresh flow — instead of retrying a dead token against tool
+   * results forever. Keyed to the token, not the session: the refreshed token
+   * that follows must ride the same session (see below), so the flag has to
+   * clear the moment a different Bearer shows up.
    */
-  auth: { failed: boolean };
+  auth: { failedKeyHash: Buffer | null };
 }
 
-// Map of session ID → session. The transport is bound to the API key it was
-// built with, so a request that presents a DIFFERENT key must not be allowed to
-// ride it: the key was previously read once at creation and then never checked
-// again, meaning anyone holding a leaked mcp-session-id operated as that
-// session's owner — buying, changing payout destinations, withdrawing balances.
+// Map of session ID → session.
+//
+// A session id is a transport handle, not a credential. Authorization arrives
+// on every request, and every upstream call is made with the Bearer of the
+// request that triggered it (request-context.ts) — so whoever presents a
+// leaked mcp-session-id acts only as the credential THEY present, never as the
+// session's creator. That is the property an earlier version protected by
+// binding each session to the SHA-256 of its creating key and answering any
+// other key with 404. The binding was wrong for OAuth: an fs_oauth_ access
+// token is replaced on every refresh (hourly), and claude.ai's first call
+// after a refresh — on the session it was mid-conversation with — got
+// "Session not found". The user saw "Unable to reach Firestarter" and the
+// shopping widget failed to render, once an hour, for every OAuth client.
 const sessions = new Map<string, SessionEntry>();
 
 const hashKey = (apiKey: string): Buffer => createHash("sha256").update(apiKey).digest();
@@ -111,7 +121,7 @@ export function mcpApiBase(): string {
  * bound to a caller's API key. Shared by every transport (Streamable HTTP,
  * stdio, WebSocket) so they expose an identical toolset.
  */
-export function buildMcpServer(apiKey: string, apiBase: string, onAuthError?: () => void): McpServer {
+export function buildMcpServer(apiKey: string, apiBase: string, onAuthError?: (apiKey: string) => void): McpServer {
   const server = new McpServer({
     // Kept in lockstep with server.ts and mcpb/manifest.json by
     // scripts/sync-version.mjs. This is the version every REMOTE client sees in
@@ -137,15 +147,14 @@ function createTransport(apiKey: string, apiBase: string): WebStandardStreamable
   // Shared mutable box: buildMcpServer needs the callback before the transport
   // (and its session entry) exists, so the flag lives here and the entry
   // carries a reference to it.
-  const auth = { failed: false };
-  const server = buildMcpServer(apiKey, apiBase, () => { auth.failed = true; });
-  const keyHash = hashKey(apiKey);
+  const auth: SessionEntry["auth"] = { failedKeyHash: null };
+  const server = buildMcpServer(apiKey, apiBase, (failedKey) => { auth.failedKeyHash = hashKey(failedKey); });
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     onsessioninitialized: (sessionId: string) => {
       const now = Date.now();
-      sessions.set(sessionId, { transport, keyHash, lastSeen: now, auth });
+      sessions.set(sessionId, { transport, lastSeen: now, auth });
       // Re-sweep AFTER inserting, so the cap holds including this session. The
       // request-path sweep runs before creation and would otherwise leave the
       // map sitting one over.
@@ -193,34 +202,33 @@ app.all("/", async (c) => {
 
   if (sessionId) {
     const entry = sessions.get(sessionId);
-    // A session is only reusable by the key that created it. Mismatch returns
-    // the SAME 404 as an unknown session id on purpose: distinguishing the two
-    // would confirm that a given session id exists, which is exactly what an
-    // attacker probing leaked ids wants to learn.
-    if (!entry || !sameKey(entry.keyHash, hashKey(apiKey))) {
+    if (!entry) {
       return c.json({ error: "Session not found" }, 404);
     }
     // commerce#824: a prior call on this session hit an upstream credential
-    // 401 for its fs_oauth_ grant — most likely simple expiry (grants live
-    // one hour). Answer with the RFC 6750 challenge so the client refreshes
-    // and reinitializes; the session is unsalvageable either way, because a
-    // refreshed token hashes to a different key and could never ride it.
-    if (entry.auth.failed) {
-      dropSession(sessionId, entry);
-      return c.json(
-        { error: "OAuth authorization expired. Refresh the access token and reinitialize." },
-        401,
-        { "WWW-Authenticate": wwwAuthenticateChallenge() },
-      );
+    // 401 for the fs_oauth_ grant being presented again now — most likely
+    // simple expiry (grants live one hour). Answer with the RFC 6750 challenge
+    // so the client refreshes. The session is kept: the refreshed token rides
+    // it, and the client's retry-after-refresh lands without a reinitialize.
+    if (entry.auth.failedKeyHash) {
+      if (sameKey(entry.auth.failedKeyHash, hashKey(apiKey))) {
+        return c.json(
+          { error: "OAuth authorization expired. Refresh the access token and retry." },
+          401,
+          { "WWW-Authenticate": wwwAuthenticateChallenge() },
+        );
+      }
+      entry.auth.failedKeyHash = null;
     }
     entry.lastSeen = now;
-    return entry.transport.handleRequest(c.req.raw);
+    // Every upstream call this request triggers carries THIS request's Bearer.
+    return requestBearer.run(apiKey, () => entry.transport.handleRequest(c.req.raw));
   }
 
   // New session — create transport (only for POST with initialize)
   if (c.req.method === "POST") {
     const transport = createTransport(apiKey, apiBase);
-    return transport.handleRequest(c.req.raw);
+    return requestBearer.run(apiKey, () => transport.handleRequest(c.req.raw));
   }
 
   // GET/DELETE without session ID
