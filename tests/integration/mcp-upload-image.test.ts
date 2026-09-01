@@ -309,3 +309,82 @@ describe("firestarter_upload_image — dispute evidence (#1007)", () => {
     expect(res.content[0].text).toContain("Hosted URL");
   });
 });
+
+/**
+ * ChatGPT binds the user's chat attachment into the call itself.
+ *
+ * `_meta["openai/fileParams"]` names the input fields the host should resolve
+ * an attachment into; it passes `{ download_url, file_id, mime_type?,
+ * file_name? }` for each. That download URL is signed and short-lived, so the
+ * server ingests it at call time and keeps its own re-hosted copy.
+ *
+ * This is the one host where a chat attachment reaches us with no friction and
+ * no model-emitted bytes at all — the failure mode behind #958. Every other
+ * host ignores the metadata, so it is purely additive.
+ */
+describe("firestarter_upload_image — a host-bound chat attachment", () => {
+  const OAI = "https://files.oaiusercontent.com/file-abc?sig=xyz";
+  const HOSTED = "https://cdn.test/blob/rehosted.jpg";
+
+  it("ingests the host's signed URL server-side and re-hosts it", async () => {
+    const tools = captureTools();
+    const calls = installFetch(() => ({ status: 200, json: { url: HOSTED } }));
+
+    const res = await tools.firestarter_upload_image({
+      image_file: { download_url: OAI, file_id: "file-abc", mime_type: "image/jpeg", file_name: "sofa.jpg" },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://api.test/v1/sellers/upload-image");
+    // The SERVER fetches it. The bytes never pass through the model, which is
+    // the entire point of the binding.
+    expect(calls[0].body).toEqual({ image_url: OAI, filename: "sofa.jpg" });
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toEqual({ url: HOSTED });
+  });
+
+  it("prefers the bound file over a base64 the model guessed at in the same call", async () => {
+    const tools = captureTools();
+    const calls = installFetch(() => ({ status: 200, json: { url: HOSTED } }));
+
+    await tools.firestarter_upload_image({
+      image_file: { download_url: OAI, file_id: "file-abc" },
+      // A model that fills this in has fabricated it — the real bytes are the
+      // ones behind the host's URL.
+      image_base64: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBD",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toEqual({ image_url: OAI, filename: undefined });
+  });
+
+  it("carries a bound attachment onto a dispute like any other input", async () => {
+    const tools = captureTools();
+    const calls = installFetch((_m, url) => {
+      if (url.endsWith("/v1/sellers/upload-image")) return { status: 200, json: { url: HOSTED } };
+      if (url.endsWith("/attachments")) return { status: 200, json: { url: HOSTED } };
+      return { status: 200, json: { ok: true } };
+    });
+
+    await tools.firestarter_upload_image({
+      image_file: { download_url: OAI, file_id: "file-abc" },
+      dispute_id: "disp_abc",
+    });
+
+    expect(calls.map((c) => c.url)).toEqual([
+      "http://api.test/v1/sellers/upload-image",
+      "http://api.test/buyer/disputes/disp_abc/attachments",
+      "http://api.test/buyer/disputes/disp_abc/messages",
+    ]);
+  });
+
+  it("falls through to the drop zone when the host attached nothing", async () => {
+    const tools = captureTools();
+    const calls = installFetch(() => ({ status: 200, json: {} }));
+    // A host that does not implement fileParams sends no such field; one that
+    // does but had no attachment can send a stub. Neither may become an upload.
+    const res = await tools.firestarter_upload_image({ image_file: { file_id: "file-abc" } as any });
+    expect(calls).toHaveLength(0);
+    expect(res.structuredContent.upload_request).toBeDefined();
+  });
+});

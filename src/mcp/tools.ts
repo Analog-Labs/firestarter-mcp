@@ -4042,6 +4042,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64)"
         + (localFiles ? "; image_path when the photo is a file on THIS computer (this local build reads it directly — cheap and lossless)" : "")
         + "; image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL."
+        + " On ChatGPT, a photo the user attached to their message is bound into image_file by the host automatically — do not fill that field yourself, and do not ask for a URL when it is present."
         + " ALSO HANDLES DISPUTE EVIDENCE: pass dispute_id (and dispute_side 'seller' for an order they sold) to display the drop zone for that dispute — every photo dropped is uploaded AND posted to the dispute thread. Use that for a photo attached in the chat instead of asking the user for a publicly hosted image link, which they usually cannot produce.",
       inputSchema: {
         image_url: z.string().optional().describe("PREFERRED when a URL exists. Public URL of the photo; the server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB)."),
@@ -4055,17 +4056,38 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         dispute_id: z.string().optional().describe("DISPUTE EVIDENCE (disp_...). With no image input this displays the drop zone for that dispute; with an image the photo is uploaded AND posted to the dispute thread in one step. Use this instead of asking for a publicly hosted image link — a photo attached in the chat has no URL, and that dead end is why attaching evidence kept failing."),
         dispute_side: z.enum(["buyer", "seller"]).optional().describe("Which side of the dispute the user is on — 'buyer' for an order they bought (firestarter_disputes), 'seller' for one they sold (firestarter_seller_disputes). Defaults to 'buyer'. The two are separate endpoints; the wrong one answers 'dispute not found'."),
         dispute_note: z.string().optional().describe("For dispute evidence only: the text to post alongside the photo, in the user's words (e.g. 'the corner arrived crushed'). Posted once, with the first photo. Ignored without dispute_id."),
+        // Filled by the HOST, never by the model — see the openai/fileParams
+        // note on _meta below. Declared with exactly the four properties the
+        // Apps SDK specifies; ChatGPT sends snake_case.
+        image_file: z.object({
+          download_url: z.string(),
+          file_id: z.string(),
+          mime_type: z.string().optional(),
+          file_name: z.string().optional(),
+        }).optional().describe("DO NOT FILL THIS IN. ChatGPT populates it automatically with the photo the user attached to their message. If it is absent, the host did not attach a file — use the drop zone (call with no image) or image_url instead."),
       },
       annotations: { title: "Upload Product Image", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       // The drop zone renders on the same widget resource as the shopping
       // grid; widgetAccessible lets the widget's own upload/attach calls
       // through on hosts that gate widget-originated tool calls.
-      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
+      //
+      // openai/fileParams names the input fields ChatGPT should BIND a user's
+      // chat attachment into. The host resolves the attachment to a signed,
+      // short-lived download URL and passes { download_url, file_id, mime_type?,
+      // file_name? } — so on ChatGPT the photo reaches us without the model
+      // ever holding its bytes, which is the whole failure mode behind #958.
+      // Ignored by every other host, so this is purely additive.
+      _meta: {
+        ui: { resourceUri: SHOPPING_RESULTS_URI },
+        "openai/widgetAccessible": true,
+        "openai/fileParams": ["image_file"],
+      },
     },
-    async ({ image_url, image_path, image_base64, filename, listing_id, product_name, dispute_id, dispute_side, dispute_note }: {
+    async ({ image_url, image_path, image_base64, filename, listing_id, product_name, dispute_id, dispute_side, dispute_note, image_file }: {
       image_url?: string; image_path?: string; image_base64?: string; filename?: string;
       listing_id?: string; product_name?: string;
       dispute_id?: string; dispute_side?: "buyer" | "seller"; dispute_note?: string;
+      image_file?: { download_url?: string; file_id?: string; mime_type?: string; file_name?: string };
     }) => {
       /**
        * commerce#1007: "Still not able to add image to my dispute in Claude, it
@@ -4107,6 +4129,24 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
       };
       try {
+        // The host bound the user's chat attachment to this call. FIRST, ahead
+        // of every other input: it is the only one that is the ORIGINAL file
+        // and cost the model nothing, and if the model also guessed at
+        // image_base64 in the same call that guess must lose.
+        //
+        // Ingested immediately and never stored: the signed URL expires on a
+        // clock we do not control, so what we keep is our own re-hosted copy.
+        if (image_file?.download_url) {
+          const res = await apiRequest("POST", "/v1/sellers/upload-image", {
+            image_url: image_file.download_url,
+            filename: image_file.file_name || filename,
+          }, UPLOAD_IMAGE_TIMEOUT_MS);
+          const url = (res as any)?.url;
+          if (!url) {
+            return { content: [{ type: "text" as const, text: "Error: the attached file could not be stored. It must be a JPEG, PNG, WebP or GIF under 6 MB — ask for a different photo, or call this tool with no image to display the drop zone." }], isError: true };
+          }
+          return await finishUpload(url);
+        }
         // Local build only: read the file ourselves — ~20 tokens through the
         // model for any file size, and the bytes never touch the conversation.
         if (image_path && localFiles) {

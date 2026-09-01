@@ -137,6 +137,46 @@ describe("the URI ChatGPT fetches never moves", () => {
   });
 });
 
+/**
+ * ChatGPT binds a user's chat attachment into a tool call only when the tool
+ * descriptor asks it to, and only in the shape the Apps SDK specifies. Both
+ * halves are silent when wrong: a missing key means the attachment never
+ * arrives, and a field the host cannot recognise means it is dropped — either
+ * way the model is back to inventing base64, which is bug #958.
+ */
+describe("host-bound file attachments", () => {
+  it("asks ChatGPT to bind an attachment into firestarter_upload_image", () => {
+    expect(toolMeta.get("firestarter_upload_image")?.["openai/fileParams"]).toEqual(["image_file"]);
+  });
+
+  it("names only fields the tool actually declares", async () => {
+    // A fileParams entry pointing at a field that is not in the input schema is
+    // the failure that looks like nothing happening at all.
+    const server = new McpServer({ name: "fileparams-probe", version: "0.0.0" });
+    registerTools(server, "fsk_test_fileparams", "http://127.0.0.1:1");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "probe", version: "0.0.0" }, { capabilities: {} });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    const tools = (await client.listTools()).tools;
+    await client.close();
+
+    for (const t of tools) {
+      const declared = (t._meta ?? {})["openai/fileParams"];
+      if (!Array.isArray(declared)) continue;
+      const props = ((t.inputSchema as any)?.properties ?? {}) as Record<string, any>;
+      for (const field of declared) {
+        const schema = props[String(field)];
+        expect(schema, `${t.name}.${field} is named in fileParams but not declared`).toBeDefined();
+        // The host sends { download_url, file_id, mime_type?, file_name? }.
+        // Anything else and it has nowhere to put them.
+        expect(Object.keys(schema.properties ?? {}).sort())
+          .toEqual(["download_url", "file_id", "file_name", "mime_type"]);
+        expect((schema.required ?? []).sort()).toEqual(["download_url", "file_id"]);
+      }
+    }
+  });
+});
+
 describe("resource cache busting", () => {
   it("carries a new URI whenever the widget HTML changes", () => {
     // Claude Desktop caches by URI and never re-reads. This snapshot is the
