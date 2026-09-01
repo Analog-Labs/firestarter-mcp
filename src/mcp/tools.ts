@@ -1313,6 +1313,56 @@ export function formatBuyerDate(value: unknown): string | null {
   return `${date}, ${time} UTC`;
 }
 
+/** Statuses that mean the parcel has arrived. */
+const DELIVERED_STATUSES = new Set(["delivered", "buyer_confirmed", "completed"]);
+/** Statuses that mean nothing will ever arrive, so no date should be promised. */
+const NEVER_ARRIVING_STATUSES = new Set(["cancelled", "canceled", "refunded", "failed", "returned"]);
+
+/**
+ * The ONE delivery line a tracking answer should carry.
+ *
+ * commerce#1025: the tool printed `Estimated delivery: …` unconditionally and
+ * `Status: …` on the next line, so a delivered order read "Delivered ✅ /
+ * Estimated Delivery: Mon, Aug 31" — a future promise under a past fact.
+ * `estimated_delivery` is the carrier ETA captured once at label time and
+ * nothing ever supersedes it.
+ *
+ * The real delivery date is already in the same payload: getExecutionTracking
+ * emits a `delivered` event built from orders.delivered_at, which this tool
+ * already prints ten lines lower under "Recent events". So it stated the
+ * arrival twice and contradicted itself once. This is a question of which line
+ * to print, not of fetching anything more.
+ *
+ * Exported for unit tests.
+ */
+export function deliveryStatusLine(data: any): string | null {
+  const statuses = [data?.status, data?.order_status, data?.display_status]
+    .filter((v) => typeof v === "string")
+    .map((v) => v.toLowerCase());
+  const events: any[] = Array.isArray(data?.events) ? data.events : [];
+
+  const deliveredEvent = [...events].reverse().find(
+    (e) => typeof e?.status === "string" && DELIVERED_STATUSES.has(e.status.toLowerCase()),
+  );
+  if (statuses.some((v) => DELIVERED_STATUSES.has(v)) || deliveredEvent) {
+    // Prefer the moment it actually arrived; a delivered order with no recorded
+    // timestamp still must not fall through to the ETA.
+    const when = formatBuyerDate(data?.delivered_at ?? deliveredEvent?.datetime ?? deliveredEvent?.date);
+    return when ? `Delivered: ${when}` : "Delivered";
+  }
+
+  // A cancelled or refunded order is not "arriving Monday" either. The
+  // pre-shipment branch already says this in words; the post-ship branch used
+  // to keep quoting the ETA it was given.
+  if (statuses.some((v) => NEVER_ARRIVING_STATUSES.has(v))) return null;
+
+  const carrierEta = formatBuyerDate(data?.estimated_delivery);
+  if (carrierEta) return `Estimated delivery: ${carrierEta}`;
+  const promised = formatBuyerDate(data?.promised_delivery_date);
+  if (promised) return `Estimated delivery: ~${promised} (quoted at approval)`;
+  return null;
+}
+
 /**
  * One human line for a shipping_provenance value — makes "is this number a real
  * carrier rate or a placeholder?" explicit to the buyer instead of an internal
@@ -3267,8 +3317,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         else if (data.tracking_url) text += `Track: ${data.tracking_url}\n`;
         // Carrier ETA when the shipment has one; else fall back to the date
         // promised at quote time so "when will it arrive?" always has an answer.
-        if (data.estimated_delivery) text += `Estimated delivery: ${formatBuyerDate(data.estimated_delivery)}\n`;
-        else if (data.promised_delivery_date) text += `Estimated delivery: ~${formatBuyerDate(data.promised_delivery_date)} (quoted at approval)\n`;
+        // One line, and it agrees with the status below it (#1025).
+        const deliveryLine = deliveryStatusLine(data);
+        if (deliveryLine) text += `${deliveryLine}\n`;
         text += `Status: ${data.status || "in_transit"}\n`;
         if (data.fee_breakdown) {
           const f = data.fee_breakdown;
