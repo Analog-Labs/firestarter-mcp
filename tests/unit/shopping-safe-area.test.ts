@@ -15,7 +15,7 @@
  * floor to raise, never the only defence.
  */
 import { describe, it, expect } from "vitest";
-import { sheetBottomInset, reportsOwnSize, SHEET_BOTTOM_FLOOR_PX } from "../../src/mcp/ui/safe-area.js";
+import { sheetBottomInset, reportsOwnSize, inlineInsets, SHEET_BOTTOM_FLOOR_PX, MAX_INLINE_INSET_PX } from "../../src/mcp/ui/safe-area.js";
 
 describe("sheetBottomInset", () => {
   it("clears a composer the host never mentioned", () => {
@@ -69,5 +69,63 @@ describe("reportsOwnSize", () => {
     // go back to being 712px tall in the transcript.
     expect(reportsOwnSize("fullscreen")).toBe(false);
     expect(reportsOwnSize("pip")).toBe(false);
+  });
+});
+
+/**
+ * The INLINE insets, which are a different problem from the fullscreen floor
+ * above and must not borrow its answer.
+ *
+ * Claude states that anything rendered outside the safe area is not
+ * INTERACTABLE on mobile. The photo drop zone is one large tap target plus the
+ * status line that reports the result — under the chat input, that is a control
+ * the seller cannot press, and there is nothing on screen to say why.
+ *
+ * The floor that protects the fullscreen detail view would be actively wrong
+ * here: 160px of reserve inside an inline card is a screen of dead space under
+ * every drop zone. Reporting nothing must therefore change nothing.
+ */
+describe("inlineInsets", () => {
+  it("reserves nothing when the host reports nothing", () => {
+    // Web and desktop: the card keeps exactly the padding it always had.
+    expect(inlineInsets(undefined)).toEqual({ top: 0, right: 0, bottom: 0, left: 0 });
+    expect(inlineInsets({})).toEqual({ top: 0, right: 0, bottom: 0, left: 0 });
+  });
+
+  it("does NOT apply the fullscreen floor", () => {
+    // The bug this guards against is borrowing sheetBottomInset here, which
+    // would put 160px of nothing under an inline drop zone.
+    expect(inlineInsets({}).bottom).toBe(0);
+    expect(inlineInsets({}).bottom).not.toBe(SHEET_BOTTOM_FLOOR_PX);
+  });
+
+  it("takes all four edges from the MCP Apps host context", () => {
+    expect(inlineInsets({ safeAreaInsets: { top: 4, right: 8, bottom: 34, left: 8 } }))
+      .toEqual({ top: 4, right: 8, bottom: 34, left: 8 });
+  });
+
+  it("reads ChatGPT's safeArea shape, flat or nested", () => {
+    expect(inlineInsets({ safeArea: { bottom: 20 } }).bottom).toBe(20);
+    expect(inlineInsets({ safeArea: { insets: { bottom: 24 } } }).bottom).toBe(24);
+  });
+
+  it("distrusts every value a host can get wrong", () => {
+    const bad = inlineInsets({ safeAreaInsets: { right: -5, bottom: NaN, left: Infinity, top: {} } });
+    // A negative would pull content FURTHER under the chrome; NaN and Infinity
+    // produce a calc() the browser drops, taking the padding with it.
+    expect(bad).toEqual({ top: 0, right: 0, bottom: 0, left: 0 });
+  });
+
+  it("coerces a numeric string, as its sibling does", () => {
+    // Not pedantry about types: sheetBottomInset has always taken Number() of
+    // whatever the host said, and two helpers reading the same host field two
+    // different ways is its own bug.
+    expect(inlineInsets({ safeAreaInsets: { bottom: "34" } }).bottom).toBe(34);
+  });
+
+  it("caps a host that claims to cover an absurd amount", () => {
+    // Mirrors SHEET_BOTTOM_MAX_PX's reasoning: an inline card that reserved
+    // 400px would push its own controls off the bottom of itself.
+    expect(inlineInsets({ safeAreaInsets: { bottom: 900 } }).bottom).toBe(MAX_INLINE_INSET_PX);
   });
 });

@@ -15,7 +15,7 @@
  * globals. Everything it decides lives in the pure modules it imports.
  */
 import { App, applyDocumentTheme } from "@modelcontextprotocol/ext-apps";
-import { reportsOwnSize, sheetBottomInset } from "./safe-area.js";
+import { reportsOwnSize, sheetBottomInset, inlineInsets } from "./safe-area.js";
 import { WIDGET_SURFACE_KEY, WIDGET_SURFACE } from "./widget-call.js";
 
 /**
@@ -96,6 +96,13 @@ function adoptTheme(theme: unknown): void {
 function applyHostChrome(context: unknown): void {
   const el = document.documentElement;
   el.style.setProperty("--fs-safe-bottom", `${sheetBottomInset(context)}px`);
+  // Raw insets for INLINE content, which must not inherit the fullscreen
+  // floor. Zero when a host reports nothing, so web and desktop are unchanged.
+  const ins = inlineInsets(context);
+  el.style.setProperty("--fs-inset-top", `${ins.top}px`);
+  el.style.setProperty("--fs-inset-right", `${ins.right}px`);
+  el.style.setProperty("--fs-inset-bottom", `${ins.bottom}px`);
+  el.style.setProperty("--fs-inset-left", `${ins.left}px`);
   const dm = (context as { displayMode?: unknown } | undefined)?.displayMode;
   if (dm === "fullscreen" || dm === "pip" || dm === "inline") el.setAttribute("data-display", String(dm));
 }

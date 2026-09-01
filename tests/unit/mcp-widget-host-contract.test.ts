@@ -137,6 +137,75 @@ describe("the URI ChatGPT fetches never moves", () => {
   });
 });
 
+/**
+ * ChatGPT binds a user's chat attachment into a tool call only when the tool
+ * descriptor asks it to, and only in the shape the Apps SDK specifies. Both
+ * halves are silent when wrong: a missing key means the attachment never
+ * arrives, and a field the host cannot recognise means it is dropped — either
+ * way the model is back to inventing base64, which is bug #958.
+ */
+describe("host-bound file attachments", () => {
+  it("asks ChatGPT to bind an attachment into firestarter_upload_image", () => {
+    expect(toolMeta.get("firestarter_upload_image")?.["openai/fileParams"]).toEqual(["image_file"]);
+  });
+
+  it("names only fields the tool actually declares", async () => {
+    // A fileParams entry pointing at a field that is not in the input schema is
+    // the failure that looks like nothing happening at all.
+    const server = new McpServer({ name: "fileparams-probe", version: "0.0.0" });
+    registerTools(server, "fsk_test_fileparams", "http://127.0.0.1:1");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "probe", version: "0.0.0" }, { capabilities: {} });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    const tools = (await client.listTools()).tools;
+    await client.close();
+
+    for (const t of tools) {
+      const declared = (t._meta ?? {})["openai/fileParams"];
+      if (!Array.isArray(declared)) continue;
+      const props = ((t.inputSchema as any)?.properties ?? {}) as Record<string, any>;
+      for (const field of declared) {
+        const schema = props[String(field)];
+        expect(schema, `${t.name}.${field} is named in fileParams but not declared`).toBeDefined();
+        // The host sends { download_url, file_id, mime_type?, file_name? }.
+        // Anything else and it has nowhere to put them.
+        expect(Object.keys(schema.properties ?? {}).sort())
+          .toEqual(["download_url", "file_id", "file_name", "mime_type"]);
+        expect((schema.required ?? []).sort()).toEqual(["download_url", "file_id"]);
+      }
+    }
+  });
+});
+
+/**
+ * The drop zone has to stay reachable on a phone.
+ *
+ * Claude renders MCP Apps on mobile in a native WebView and states that
+ * anything outside the safe area is not INTERACTABLE. The zone is one large tap
+ * target plus the status line that reports the result — under the chat input it
+ * is a control the seller cannot press, with nothing on screen to say why.
+ *
+ * Asserted against the SERVED html rather than the stylesheet source, because
+ * the bundle is generated: a rule that never made it through the build would
+ * pass a source check and ship a zone nobody can tap.
+ */
+describe("safe areas in the served widget", () => {
+  it("pads the uploader by the host-reported insets", () => {
+    const html = widgetHtml.get(SHOPPING_RESULTS_URI) ?? "";
+    expect(html).toContain("--fs-inset-bottom");
+    // The rule itself, not just the variable existing somewhere.
+    expect(/\.uploader\s*\{[^}]*--fs-inset-bottom/.test(html)).toBe(true);
+  });
+
+  it("keeps the fullscreen floor off the inline card", () => {
+    // sheetBottomInset's 160px floor protects the fullscreen detail view. Inside
+    // an inline drop zone the same reserve is a screen of dead space, so the two
+    // must stay separate variables.
+    const html = widgetHtml.get(SHOPPING_RESULTS_URI) ?? "";
+    expect(/\.uploader\s*\{[^}]*--fs-safe-bottom/.test(html)).toBe(false);
+  });
+});
+
 describe("resource cache busting", () => {
   it("carries a new URI whenever the widget HTML changes", () => {
     // Claude Desktop caches by URI and never re-reads. This snapshot is the

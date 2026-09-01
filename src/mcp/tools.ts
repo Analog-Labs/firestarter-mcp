@@ -873,6 +873,44 @@ function blockedRestockText(listing: unknown): string {
 
 
 /**
+ * commerce#561: submit a possession-verification photo and render the outcome.
+ *
+ * Shared by firestarter_verify (the agent holds a URL) and
+ * firestarter_upload_image's verification drop zone (the seller has the photo
+ * on their phone and nowhere to put it). A second copy of this would drift, and
+ * the three outcomes each mean something different to the seller: verified is
+ * done, flagged can be retried immediately, pending must NEVER read as either.
+ */
+export async function submitVerificationPhoto(
+  apiRequest: (method: string, path: string, body?: unknown, timeoutMs?: number) => Promise<any>,
+  listingId: string,
+  photoUrl: string,
+  timeoutMs: number,
+  /**
+   * How THIS caller's seller resubmits. It differs by entry point — call the
+   * tool again vs drop another photo on the zone already on screen — and
+   * guessing wrong sends them somewhere that opens a second drop zone.
+   */
+  resubmitHint: string,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const r = await apiRequest("POST", `/v1/listings/${listingId}/verification`, { photo_url: photoUrl }, timeoutMs);
+  if (r.verification_status === "verified") {
+    const already = !r.checked;
+    return { content: [{ type: "text" as const, text: already
+      ? `**Listing ${listingId} is already verified.** Activate it with firestarter_update_listing (status "active") once the seller confirms the draft looks right.`
+      : `**Verified.** The photo matches the listing and the handwritten code - no human review needed.\n\nNext: after the seller confirms the draft looks right, activate with firestarter_update_listing (status "active").` }] };
+  }
+  if (r.verification_status === "flagged") {
+    return { content: [{ type: "text" as const, text:
+      `**Not verified - the photo did not clearly match.**\n` +
+      `Item match: ${r.checked?.item_match === true ? "yes" : "no"} | Code match: ${r.checked?.code_match === true ? "yes" : "no"}\n\n` +
+      `It is queued for review, but the seller can resubmit right away: one clear photo with the item AND the handwritten code both visible, ${resubmitHint}` }] };
+  }
+  // pending: vision could not check - held, never auto-approved.
+  return { content: [{ type: "text" as const, text: `**Photo received but not auto-checked.** ${r.message || "It is held for review."} The seller can also resubmit a clearer photo — ${resubmitHint}` }] };
+}
+
+/**
  * commerce#749/#786: attach evidence to a dispute and post the message.
  *
  * Shared by firestarter_disputes (buyer, /buyer/disputes) and
@@ -4049,6 +4087,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64)"
         + (localFiles ? "; image_path when the photo is a file on THIS computer (this local build reads it directly — cheap and lossless)" : "")
         + "; image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL."
+        + " On ChatGPT, a photo the user attached to their message is bound into image_file by the host automatically — do not fill that field yourself, and do not ask for a URL when it is present."
+        + " ALSO HANDLES POSSESSION VERIFICATION: pass verify_listing_id to display the drop zone for a listing that asked for a photo of the item beside its handwritten FS-XXXX code — the dropped photo is submitted for verification, not added to the gallery."
         + " ALSO HANDLES DISPUTE EVIDENCE: pass dispute_id (and dispute_side 'seller' for an order they sold) to display the drop zone for that dispute — every photo dropped is uploaded AND posted to the dispute thread. Use that for a photo attached in the chat instead of asking the user for a publicly hosted image link, which they usually cannot produce.",
       inputSchema: {
         image_url: z.string().optional().describe("PREFERRED when a URL exists. Public URL of the photo; the server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB)."),
@@ -4061,18 +4101,41 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         product_name: z.string().optional().describe("Optional product name to title the drop zone with, so the seller sees which listing the photo is for."),
         dispute_id: z.string().optional().describe("DISPUTE EVIDENCE (disp_...). With no image input this displays the drop zone for that dispute; with an image the photo is uploaded AND posted to the dispute thread in one step. Use this instead of asking for a publicly hosted image link — a photo attached in the chat has no URL, and that dead end is why attaching evidence kept failing."),
         dispute_side: z.enum(["buyer", "seller"]).optional().describe("Which side of the dispute the user is on — 'buyer' for an order they bought (firestarter_disputes), 'seller' for one they sold (firestarter_seller_disputes). Defaults to 'buyer'. The two are separate endpoints; the wrong one answers 'dispute not found'."),
+        verify_listing_id: z.string().optional().describe("POSSESSION VERIFICATION (lst_...). The listing whose activation asked for a photo of the item next to the handwritten FS-XXXX code. With no image input this displays the drop zone for it; the dropped photo is submitted for verification and is NOT added to the listing's gallery. This is the normal path — that photo was taken on a phone seconds ago and has no URL."),
         dispute_note: z.string().optional().describe("For dispute evidence only: the text to post alongside the photo, in the user's words (e.g. 'the corner arrived crushed'). Posted once, with the first photo. Ignored without dispute_id."),
+        // Filled by the HOST, never by the model — see the openai/fileParams
+        // note on _meta below. Declared with exactly the four properties the
+        // Apps SDK specifies; ChatGPT sends snake_case.
+        image_file: z.object({
+          download_url: z.string(),
+          file_id: z.string(),
+          mime_type: z.string().optional(),
+          file_name: z.string().optional(),
+        }).optional().describe("DO NOT FILL THIS IN. ChatGPT populates it automatically with the photo the user attached to their message. If it is absent, the host did not attach a file — use the drop zone (call with no image) or image_url instead."),
       },
       annotations: { title: "Upload Product Image", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       // The drop zone renders on the same widget resource as the shopping
       // grid; widgetAccessible lets the widget's own upload/attach calls
       // through on hosts that gate widget-originated tool calls.
-      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
+      //
+      // openai/fileParams names the input fields ChatGPT should BIND a user's
+      // chat attachment into. The host resolves the attachment to a signed,
+      // short-lived download URL and passes { download_url, file_id, mime_type?,
+      // file_name? } — so on ChatGPT the photo reaches us without the model
+      // ever holding its bytes, which is the whole failure mode behind #958.
+      // Ignored by every other host, so this is purely additive.
+      _meta: {
+        ui: { resourceUri: SHOPPING_RESULTS_URI },
+        "openai/widgetAccessible": true,
+        "openai/fileParams": ["image_file"],
+      },
     },
-    async ({ image_url, image_path, image_base64, filename, listing_id, product_name, dispute_id, dispute_side, dispute_note }: {
+    async ({ image_url, image_path, image_base64, filename, listing_id, product_name, dispute_id, dispute_side, dispute_note, verify_listing_id, image_file }: {
       image_url?: string; image_path?: string; image_base64?: string; filename?: string;
       listing_id?: string; product_name?: string;
       dispute_id?: string; dispute_side?: "buyer" | "seller"; dispute_note?: string;
+      verify_listing_id?: string;
+      image_file?: { download_url?: string; file_id?: string; mime_type?: string; file_name?: string };
     }) => {
       /**
        * commerce#1007: "Still not able to add image to my dispute in Claude, it
@@ -4090,6 +4153,31 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
        * /attachments hop costs nothing.
        */
       const finishUpload = async (url: string, extraNote = "") => {
+        /**
+         * commerce#561: possession evidence. firestarter_verify takes a
+         * photo_url and its description told the agent to pass "the URL of the
+         * photo the seller sent in chat" — a photo sent in chat HAS no URL, and
+         * the error hint said to ask them to re-send it, which produces another
+         * attachment with no URL. A closed loop on a gate that blocks the
+         * listing going live.
+         *
+         * The photo is submitted, never attached: possession evidence is not
+         * part of the product gallery.
+         */
+        if (verify_listing_id) {
+          const id = cleanListingId(verify_listing_id);
+          try {
+            const outcome = await submitVerificationPhoto(apiRequest, id, url, VERIFY_TIMEOUT_MS,
+              "dropped onto the SAME zone already displayed above — do not open a new one.");
+            return { ...outcome, structuredContent: { url } };
+          } catch (err: any) {
+            return {
+              content: [{ type: "text" as const, text: `The photo uploaded (${url}) but submitting it for verification failed: ${toErrorMessage(err)}. Retry with firestarter_verify listing_id "${id}", photo_url "${url}" — do NOT upload the photo again.` }],
+              structuredContent: { url },
+              isError: true,
+            };
+          }
+        }
         if (!dispute_id) return uploadSuccessResult(url, extraNote);
         const did = cleanListingId(dispute_id);
         const basePath = dispute_side === "seller" ? "/v1/sellers/disputes" : "/buyer/disputes";
@@ -4114,6 +4202,24 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }
       };
       try {
+        // The host bound the user's chat attachment to this call. FIRST, ahead
+        // of every other input: it is the only one that is the ORIGINAL file
+        // and cost the model nothing, and if the model also guessed at
+        // image_base64 in the same call that guess must lose.
+        //
+        // Ingested immediately and never stored: the signed URL expires on a
+        // clock we do not control, so what we keep is our own re-hosted copy.
+        if (image_file?.download_url) {
+          const res = await apiRequest("POST", "/v1/sellers/upload-image", {
+            image_url: image_file.download_url,
+            filename: image_file.file_name || filename,
+          }, UPLOAD_IMAGE_TIMEOUT_MS);
+          const url = (res as any)?.url;
+          if (!url) {
+            return { content: [{ type: "text" as const, text: "Error: the attached file could not be stored. It must be a JPEG, PNG, WebP or GIF under 6 MB — ask for a different photo, or call this tool with no image to display the drop zone." }], isError: true };
+          }
+          return await finishUpload(url);
+        }
         // Local build only: read the file ourselves — ~20 tokens through the
         // model for any file size, and the bytes never touch the conversation.
         if (image_path && localFiles) {
@@ -4176,6 +4282,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             }
           }
           if (product_name) uploadRequest.product_name = String(product_name).slice(0, 120);
+          if (verify_listing_id) {
+            const vid = cleanListingId(verify_listing_id);
+            uploadRequest.verify_listing_id = vid;
+            uploadRequest.verify_label = `Verification photo for ${vid}`;
+            markZoneIssued(vid);
+          }
           if (dispute_id) {
             const did = cleanListingId(dispute_id);
             uploadRequest.dispute_id = did;
@@ -4188,7 +4300,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // markZoneIssued ignores whichever is absent.
           markZoneIssued(uploadRequest.listing_id);
           markZoneIssued(uploadRequest.dispute_id);
-          const attachNote = uploadRequest.dispute_id
+          const attachNote = uploadRequest.verify_listing_id
+            ? ` The dropped photo is submitted for possession verification on ${uploadRequest.verify_listing_id} — it does NOT join the listing's photo gallery.`
+            : uploadRequest.dispute_id
             ? ` Every dropped photo is posted to dispute ${uploadRequest.dispute_id} at full quality${dispute_note ? ", the first one carrying the note" : ""}.`
             : uploadRequest.listing_id
               ? ` Every dropped photo attaches to listing ${uploadRequest.listing_id} at full quality${uploadRequest.activate ? " and activation is requested automatically" : ""}.`
@@ -4196,7 +4310,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // Same STOP phrasing as the firestarter_list draft reply — a
           // conditional fallback here would be executed immediately by a model
           // that cannot see whether the widget rendered.
-          const zoneText = uploadRequest.dispute_id
+          const zoneText = uploadRequest.verify_listing_id
+            ? `A drop zone is displayed — tell the seller to drop the verification photo onto it (the item and the handwritten FS-XXXX code both visible in one shot), or click it to pick the file.${attachNote} A \`[photo-upload widget]\` note will report whether it verified — do NOT call firestarter_verify or any other tool now, and END YOUR TURN after telling the seller. Only if they REPLY that no drop zone is visible: take a public photo URL from them and call firestarter_verify with it. Never re-encode a chat-attached photo as base64.`
+            : uploadRequest.dispute_id
             ? `An upload drop zone is displayed — tell them to drop the evidence photo(s) onto it, or click it to pick files (up to 5 per message).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any dispute tool again now, and END YOUR TURN after telling them. Only if they REPLY that no drop zone is visible: take a public photo URL from them and pass it to firestarter_${dispute_side === "seller" ? "seller_" : ""}disputes as image_urls. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`
             : `An upload drop zone is displayed — tell the seller to drop the product photo(s) onto it, or click it to pick files (several at once is fine; the first becomes the cover, and more can be dropped afterwards to grow the gallery).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: send them to the dashboard uploader (https://firestarter.network/seller) or take a public photo URL from them. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`;
           return {
@@ -4486,7 +4602,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         base_price: z.number().optional().describe("REQUIRED per item — an item missing this will fail and be reported in the response's failed list; other items still succeed."),
         category: z.string().optional(),
         inventory_qty: z.number().optional(),
-        image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is primary)."),
+        image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is primary). Bulk listing is URL-driven by design; for a photo the seller ATTACHED IN THE CHAT, list without it and then call firestarter_upload_image with that listing_id to display a drop zone. Never rebuild an attachment as a base64 data-URI."),
         ...listingDetailFields,
       })).min(1).max(100).describe("The products to create, up to 100 per call."),
     },
@@ -4527,7 +4643,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       source_url: z.string().optional().describe("URL of the seller's existing listing (e.g. a Craigslist post). For known bot-blocking platforms (Amazon, eBay, Etsy, Facebook, OfferUp, Mercari, Walmart, Shopee), still include this for provenance, but pair it with raw_text up front."),
       raw_text: z.string().optional().describe("Pasted listing text (title, price, description - at least 10 characters). Send this alongside source_url up front for known bot-blocking platforms (Amazon, eBay, etc.) - a fetch will still be tried but is unlikely to succeed. Required whenever source_url is omitted or a fetch fails; also fills gaps URL extraction missed."),
-      photo_urls: z.array(z.string()).optional().describe("Photo URLs for the listing, e.g. image links the seller pasted in chat. Seller photos lead the images array."),
+      photo_urls: z.array(z.string()).optional().describe("Photo URLs for the listing, e.g. image links the seller PASTED as text. Seller photos lead the images array. A photo ATTACHED to the message is not a URL and cannot go here — import first, then call firestarter_upload_image with the new listing_id to display a drop zone for it."),
     },
     { title: "Import Catalog", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ source_url, raw_text, photo_urls }) => {
@@ -6261,7 +6377,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // vision errors hold as pending (fail-safe, never fail-open).
   server.tool(
     "firestarter_verify",
-    "Submit a possession-verification photo for a listing whose activation asked for one (high-value >= $500, luxury category, or a source-URL conflict). The seller writes the FS-XXXX code by hand, photographs the paper next to the item, and sends the photo in chat - pass that photo's URL here with the listing ID. A match verifies instantly (then activate via firestarter_update_listing); a mismatch is flagged and the seller can resubmit a clearer photo; an unreadable photo is held for review.",
+    "Submit a possession-verification photo for a listing whose activation asked for one (high-value >= $500, luxury category, or a source-URL conflict). The seller writes the FS-XXXX code by hand, photographs the paper next to the item, and sends the photo in chat — which means it has NO URL. For that (the normal case) call `firestarter_upload_image` with verify_listing_id instead: a drop zone appears and the dropped photo is submitted for verification automatically. Use THIS tool only when the photo genuinely already lives at a public https URL. A match verifies instantly (then activate via firestarter_update_listing); a mismatch is flagged and the seller can resubmit a clearer photo; an unreadable photo is held for review.",
     {
       listing_id: z.string().describe("The listing ID (lst_...) that needs possession verification"),
       photo_url: z.string().describe("Public https URL of the seller's photo showing the item next to the handwritten verification code"),
@@ -6269,25 +6385,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     { title: "Verify Listing", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ listing_id, photo_url }) => {
       try {
-        const r = await apiRequest("POST", `/v1/listings/${listing_id}/verification`, { photo_url }, VERIFY_TIMEOUT_MS);
-        if (r.verification_status === "verified") {
-          const already = !r.checked;
-          const text = already
-            ? `**Listing ${listing_id} is already verified.** Activate it with firestarter_update_listing (status "active") once the seller confirms the draft looks right.`
-            : `**Verified.** The photo matches the listing and the handwritten code - no human review needed.\n\nNext: after the seller confirms the draft looks right, activate with firestarter_update_listing (status "active").`;
-          return { content: [{ type: "text" as const, text }] };
-        }
-        if (r.verification_status === "flagged") {
-          const text =
-            `**Not verified - the photo did not clearly match.**\n` +
-            `Item match: ${r.checked?.item_match === true ? "yes" : "no"} | Code match: ${r.checked?.code_match === true ? "yes" : "no"}\n\n` +
-            `It is queued for review, but the seller can resubmit right away: one clear photo with the item AND the handwritten code both visible, then call firestarter_verify again.`;
-          return { content: [{ type: "text" as const, text }] };
-        }
-        // pending: vision could not check - held, never auto-approved
-        return {
-          content: [{ type: "text" as const, text: `**Photo received but not auto-checked.** ${r.message || "It is held for review."} The seller can also resubmit a clearer photo with firestarter_verify later.` }],
-        };
+        return await submitVerificationPhoto(apiRequest, listing_id, photo_url, VERIFY_TIMEOUT_MS,
+          "then call firestarter_verify again with the new photo's URL — or, if it is another chat attachment, firestarter_upload_image with verify_listing_id.");
       } catch (err: any) {
         const ask = verificationAskText(err);
         if (ask) {
@@ -6304,7 +6403,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const msg = toErrorMessage(err);
         let hint = "";
         if (err instanceof ApiError && (err.code === "INVALID_PHOTO_URL" || err.code === "MISSING_PHOTO_URL")) {
-          hint = "\n\nThe photo must be a public https image URL (e.g. the URL of the photo the seller sent in chat). Ask the seller to re-send the photo if needed.";
+          // Two different callers land here and they need different answers.
+          // If the agent really did have a URL, it has to be a public https
+          // image one. If the "URL" was a chat attachment, there is no URL to
+          // fix — and the old hint ("ask the seller to re-send the photo")
+          // sent them round a loop, because re-sending produces another
+          // attachment with no URL either. Say both.
+          hint = "\n\nIt must be a public https image URL. If the photo is one the seller ATTACHED IN THIS CHAT, it has no URL at all and re-sending it will not give it one — call `firestarter_upload_image` with verify_listing_id \"" + listing_id + "\" instead: a drop zone appears and the photo they drop is submitted for verification automatically.";
         } else if (/not found/i.test(msg)) {
           hint = "\n\nCall firestarter_listings to check the listing ID.";
         }
