@@ -24,7 +24,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,6 +40,13 @@ const TINY_JPEG_B64 =
 const TINY_JPEG_DATA_URI = `data:image/jpeg;base64,${TINY_JPEG_B64}`;
 // The same JPEG with its tail cut off — no EOI marker (the #958 shape).
 const TRUNCATED_JPEG_DATA_URI = `data:image/jpeg;base64,${TINY_JPEG_B64.slice(0, TINY_JPEG_B64.length - 8)}`;
+// Minimal MP4 signature (ftyp box at offset 4) — enough for sniffVideoMime.
+const TINY_MP4_BYTES = Buffer.concat([
+  Buffer.from([0x00, 0x00, 0x00, 0x18]),
+  Buffer.from("ftypmp42", "latin1"),
+  Buffer.alloc(24),
+]);
+const TINY_MP4_DATA_URI = `data:video/mp4;base64,${TINY_MP4_BYTES.toString("base64")}`;
 
 // ── Mock commerce API ────────────────────────────────────────────────────────
 const listings = new Map();
@@ -61,6 +68,8 @@ function listingJson(l) {
     base_price: l.base_price,
     status: l.status,
     images: l.images,
+    // API shape: [{url, ...}], never bare strings (listing-create.ts D10).
+    videos: (l.videos ?? []).map((u) => ({ url: u })),
     inventory_qty: l.inventory_qty,
     activation_blocked: l.status === "draft" ? blocks : [],
     activation_warnings: [],
@@ -70,6 +79,10 @@ function listingJson(l) {
 
 function hostedUrl(base, bytes) {
   return `${base}/v1/img/${createHash("sha256").update(bytes).digest("hex").slice(0, 32)}`;
+}
+
+function hostedVideoUrl(base, bytes) {
+  return `${base}/v1/vid/${createHash("sha256").update(bytes).digest("hex").slice(0, 32)}`;
 }
 
 const api = createServer((req, res) => {
@@ -87,6 +100,7 @@ const api = createServer((req, res) => {
         product_name: body.product_name,
         base_price: body.base_price,
         images: (body.images ?? []).map((u) => (u.startsWith(`${base}/v1/img/`) ? u : hostedUrl(base, u))),
+        videos: (body.video_urls ?? []).map((u) => (u.startsWith(`${base}/v1/vid/`) ? u : hostedVideoUrl(base, u))).slice(0, 3),
         inventory_qty: body.inventory_qty,
         allow_imageless: body.allow_imageless === true,
         requires_verification: body.base_price >= 500,
@@ -111,6 +125,8 @@ const api = createServer((req, res) => {
         }
         if (body.product_name !== undefined) l.product_name = body.product_name;
         if (body.images !== undefined) l.images = body.images.map((u) => (u.startsWith(`${base}/v1/img/`) ? u : hostedUrl(base, u)));
+        // Same wholesale-replace + 3-cap semantics as the real normalizer.
+        if (body.video_urls !== undefined) l.videos = body.video_urls.map((u) => (u.startsWith(`${base}/v1/vid/`) ? u : hostedVideoUrl(base, u))).slice(0, 3);
         if (body.inventory_qty !== undefined) l.inventory_qty = body.inventory_qty;
         if (body.allow_imageless !== undefined) l.allow_imageless = body.allow_imageless;
         if (body.status !== undefined) l.status = body.status;
@@ -130,6 +146,17 @@ const api = createServer((req, res) => {
       }
       if (!isJpeg && !isPng) return send(400, { error: "Not a supported image", code: "INVALID_IMAGE" });
       return send(200, { url: hostedUrl(base, bytes) });
+    }
+    if (req.method === "POST" && req.url === "/v1/sellers/upload-video") {
+      if (body.video_url) return send(200, { url: hostedVideoUrl(base, body.video_url) });
+      if (!body.video_base64) return send(400, { error: "video_base64 or video_url is required", code: "NO_VIDEO" });
+      const b64 = String(body.video_base64).includes(",") ? String(body.video_base64).split(",", 2)[1] : String(body.video_base64);
+      const bytes = Buffer.from(b64, "base64");
+      // sniffVideoMime: MP4's ftyp box at offset 4, WebM's EBML header.
+      const isMp4 = bytes.length >= 12 && bytes.toString("latin1", 4, 8) === "ftyp";
+      const isWebm = bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3;
+      if (!isMp4 && !isWebm) return send(400, { error: "That file is not an MP4 or WebM video.", code: "INVALID_VIDEO" });
+      return send(200, { url: hostedVideoUrl(base, bytes) });
     }
     send(404, { error: `mock: unhandled ${req.method} ${req.url}`, code: "NOT_FOUND" });
   });
@@ -182,13 +209,19 @@ child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initia
 {
   const tools = (await rpc("tools/list")).result.tools;
   const upload = tools.find((t) => t.name === "firestarter_upload_image");
+  const uploadVid = tools.find((t) => t.name === "firestarter_upload_video");
   const list = tools.find((t) => t.name === "firestarter_list");
   const update = tools.find((t) => t.name === "firestarter_update_listing");
   ok(!!upload?.inputSchema?.properties?.image_path, "A1 local build advertises image_path");
-  ok(upload?._meta?.["openai/widgetAccessible"] === true && update?._meta?.["openai/widgetAccessible"] === true,
-    "A2 upload_image + update_listing are widget-accessible");
-  for (const [label, t] of [["upload_image", upload], ["list", list], ["update_listing", update]]) {
-    ok(String(t?._meta?.ui?.resourceUri).endsWith("/v9"), `A3 ${label} points at the v9 widget`);
+  ok(!!uploadVid?.inputSchema?.properties?.video_path, "A1b local build advertises video_path");
+  ok(upload?._meta?.["openai/widgetAccessible"] === true && uploadVid?._meta?.["openai/widgetAccessible"] === true && update?._meta?.["openai/widgetAccessible"] === true,
+    "A2 upload_image + upload_video + update_listing are widget-accessible");
+  // Imported from the build, never hardcoded — a version bump in
+  // shopping-app.ts must not fail this sweep (that is the snapshot test's
+  // job); what matters here is that all four tools agree on ONE current URI.
+  const { SHOPPING_RESULTS_URI } = await import(pathToFileURL(join(root, "dist", "mcp", "shopping-app.js")).href);
+  for (const [label, t] of [["upload_image", upload], ["upload_video", uploadVid], ["list", list], ["update_listing", update]]) {
+    ok(t?._meta?.ui?.resourceUri === SHOPPING_RESULTS_URI, `A3 ${label} points at the current widget URI`);
   }
   ok(/EXCEPTION.*ALREADY displays/s.test(upload?.description ?? ""), "A4 upload_image description warns against the duplicate zone");
 }
@@ -336,6 +369,68 @@ let lampId;
   const r = await call("firestarter_upload_image", { image_base64: TINY_JPEG_DATA_URI });
   ok(!r.isError && /re-compressed/.test(r.text) && /NO image/.test(r.text),
     "N1 tiny base64 upload carries the quality warning and points at the drop zone");
+}
+
+// V. Videos on the same drop box
+{
+  // V1: the widget's video rail — upload, attach (existing clips kept), and
+  // the photo gate still decides activation.
+  const draft = await call("firestarter_list", { product_name: "E2E Video Lamp", base_price: 42 });
+  const vidListing = draft.structuredContent.listing.id;
+  ok(Array.isArray(draft.structuredContent.upload_request?.existing_video_urls),
+    "V1 the drop-zone request declares the video gallery");
+
+  const upVid = await call("firestarter_upload_video", { video_base64: TINY_MP4_DATA_URI, filename: "demo.mp4" });
+  const vidUrl = upVid.structuredContent?.url;
+  ok(!upVid.isError && /\/v1\/vid\//.test(vidUrl ?? ""), "V2 widget video upload returns the hosted URL");
+
+  const attachVid = await call("firestarter_update_listing", { listing_id: vidListing, video_urls: [vidUrl] });
+  ok(!attachVid.isError && listings.get(vidListing)?.videos.length === 1 && listings.get(vidListing)?.status === "draft",
+    "V3 a video attaches without touching the photo gate (still a draft)");
+  ok(attachVid.structuredContent?.upload_request === undefined || /ALREADY displayed above/.test(attachVid.text),
+    "V4 the video attach does not spawn a duplicate drop zone");
+
+  const zone = await call("firestarter_upload_image", { listing_id: vidListing });
+  ok(zone.structuredContent?.upload_request?.existing_video_urls?.length === 1,
+    "V5 a later drop zone is primed with the existing clip (video_urls replaces wholesale)");
+
+  const upImg = await call("firestarter_upload_image", { image_base64: TINY_JPEG_DATA_URI });
+  await call("firestarter_update_listing", { listing_id: vidListing, image_urls: [upImg.structuredContent.url] });
+  const act = await call("firestarter_update_listing", { listing_id: vidListing, status: "active" });
+  ok(!act.isError && listings.get(vidListing)?.videos.length === 1,
+    "V6 activation after the photo lands keeps the clip");
+
+  // V7: local video file path (Claude Desktop build).
+  const dir = mkdtempSync(join(tmpdir(), "e2e-vid-"));
+  try {
+    const mp4 = join(dir, "clip.mp4");
+    writeFileSync(mp4, TINY_MP4_BYTES);
+    const byPath = await call("firestarter_upload_video", { video_path: mp4 });
+    ok(!byPath.isError && /\/v1\/vid\//.test(byPath.structuredContent?.url ?? ""),
+      "V7 video_path reads the clip from disk and returns the hosted URL");
+
+    const junk = join(dir, "junk.mp4");
+    writeFileSync(junk, Buffer.from("not a video at all, whatever the name says"));
+    const bad = await call("firestarter_upload_video", { video_path: junk });
+    ok(bad.isError && /not a supported video/i.test(bad.text), "V8 non-video bytes → clean error, label ignored");
+
+    const big = join(dir, "big.mp4");
+    writeFileSync(big, Buffer.concat([TINY_MP4_BYTES, Buffer.alloc(26 * 1024 * 1024)]));
+    const tooBig = await call("firestarter_upload_video", { video_path: big });
+    ok(tooBig.isError && /25 MB/.test(tooBig.text), "V9 oversized clip → clean error naming the limit");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+
+  // V10: the model calling with nothing gets pointed at the drop zone, not
+  // invited to emit base64.
+  const before = apiCalls.length;
+  const empty = await call("firestarter_upload_video", {});
+  ok(empty.isError && /drop zone/i.test(empty.text) && apiCalls.length === before,
+    "V10 bare upload_video call redirects to the drop zone without an API hit");
+
+  // V11: the URL spine.
+  const byUrl = await call("firestarter_upload_video", { video_url: "https://cdn.example/clip.mp4" });
+  ok(!byUrl.isError && /\/v1\/vid\//.test(byUrl.structuredContent?.url ?? ""),
+    "V11 video_url re-hosts and returns the URL");
 }
 
 child.kill();

@@ -39,6 +39,10 @@ export interface UploadRequest {
    *  because no tool exposed the avatar endpoint. One picture, not a gallery. */
   market_program_id?: string;
   market_name?: string;
+  /** Same wholesale-replacement rule as images (video_urls replaces the whole
+   *  set), so the widget must know what the listing already carries or a
+   *  dropped clip would delete the rest. */
+  existing_video_urls?: string[];
   /** commerce#1007: DISPUTE EVIDENCE. "Still not able to add image to my
    *  dispute in Claude, it wants publicly hosted image link" — the buyer had a
    *  photo attached in the chat, and the only inputs on offer were a public URL
@@ -76,24 +80,31 @@ export interface ListingSummary {
   blocked?: string[];
 }
 
-/** Hard per-file cap, mirroring the API's MAX_IMAGE_BYTES. */
+/** Hard per-file cap for photos, mirroring the API's MAX_IMAGE_BYTES. */
 const MAX_FILE_BYTES = 6 * 1024 * 1024;
+/** Hard per-file cap for clips, mirroring the API's MAX_VIDEO_BYTES. */
+const MAX_VIDEO_FILE_BYTES = 25 * 1024 * 1024;
+/** A listing carries at most this many videos (API rule) — refusing the 4th
+ *  here beats uploading 25MB that the attach then throws away. */
+const MAX_LISTING_VIDEOS = 3;
 /** Per-drop cap: keeps one batch's bridge traffic and progress line sane. */
 const MAX_FILES_PER_BATCH = 8;
 /** Mirrors MAX_DISPUTE_ATTACHMENTS in the API (services/disputes.ts). Accepting
  *  a sixth here would upload it and then have the thread refuse it. */
 const MAX_DISPUTE_FILES = 5;
 const IMAGE_TYPE_RE = /^image\/(png|jpe?g|webp|gif)$/i;
+const VIDEO_TYPE_RE = /^video\/(mp4|webm)$/i;
 /** Some drag sources hand over files with an empty MIME type; the extension is
  *  the only signal left. The server sniffs real bytes either way. */
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif)$/i;
+const VIDEO_EXT_RE = /\.(mp4|webm)$/i;
 
 const DASHBOARD_URL = "https://firestarter.network/seller";
 
 function hostedUrlOf(full: { text: string; structured: Record<string, unknown> | null } | null): string | null {
   const structured = full?.structured?.url;
   if (typeof structured === "string" && /^https:\/\//.test(structured)) return structured;
-  return /https:\/\/\S+\/v1\/img\/\S+/.exec(full?.text ?? "")?.[0] ?? null;
+  return /https:\/\/\S+\/v1\/(?:img|vid)\/\S+/.exec(full?.text ?? "")?.[0] ?? null;
 }
 
 function money(n: unknown): string {
@@ -165,19 +176,29 @@ export function renderUploader(
    *  plus everything uploaded here. image_urls replaces wholesale. */
   const gallery: string[] = (Array.isArray(req.existing_image_urls) ? req.existing_image_urls : [])
     .filter((u): u is string => typeof u === "string" && /^https?:\/\//.test(u));
+  /** Same wholesale rule for video_urls — see existing_video_urls. */
+  const videoGallery: string[] = (Array.isArray(req.existing_video_urls) ? req.existing_video_urls : [])
+    .filter((u): u is string => typeof u === "string" && /^https?:\/\//.test(u));
   let activated = false;
   let busy = false;
 
+  // Only the LISTING zone takes clips: an avatar is an image full stop, a
+  // verification shot must be a photo of the item, and dispute evidence rides
+  // an image-only endpoint.
+  const imageOnly = !!(marketId || verifyId || disputeId);
+  const acceptAttr = imageOnly
+    ? "image/png,image/jpeg,image/webp,image/gif"
+    : "image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm";
   root.innerHTML = `
     <div class="uploader">
       ${title ? `<div class="dz-head">${esc(title)}</div>` : ""}
-      <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="${verifyId ? "Upload the possession verification photo: drop a file here or press Enter to browse" : marketId ? "Upload a community market avatar: drop a file here or press Enter to browse" : disputeId ? "Upload dispute evidence photos: drop files here or press Enter to browse" : "Upload product photos: drop files here or press Enter to browse"}">
-        <div class="dz-big">${verifyId ? "Drop the verification photo here" : marketId ? "Drop the community avatar here" : disputeId ? "Drop evidence photos here" : `Drop product photo${listingId ? "s" : "(s)"} here`}</div>
-        <small>${verifyId ? "the item and the handwritten code both visible — " : ""}or click to browse — JPEG, PNG, WebP or GIF, up to 6&nbsp;MB${marketId || verifyId ? "" : " each"}${disputeId ? ` — up to ${MAX_DISPUTE_FILES}` : ""}</small>
+      <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="${verifyId ? "Upload the possession verification photo: drop a file here or press Enter to browse" : marketId ? "Upload a community market avatar: drop a file here or press Enter to browse" : disputeId ? "Upload dispute evidence photos: drop files here or press Enter to browse" : "Upload product photos or videos: drop files here or press Enter to browse"}">
+        <div class="dz-big">${verifyId ? "Drop the verification photo here" : marketId ? "Drop the community avatar here" : disputeId ? "Drop evidence photos here" : `Drop product photo${listingId ? "s" : "(s)"} or video${listingId ? "s" : "(s)"} here`}</div>
+        <small>${verifyId ? "the item and the handwritten code both visible — " : ""}or click to browse — ${imageOnly ? `JPEG, PNG, WebP or GIF, up to 6&nbsp;MB${marketId || verifyId ? "" : " each"}` : "photos up to 6&nbsp;MB · MP4/WebM clips up to 25&nbsp;MB"}${disputeId ? ` — up to ${MAX_DISPUTE_FILES}` : ""}</small>
       </div>
       <div class="dz-thumbs" id="dzt" hidden></div>
       <div class="dz-status" id="dzs" role="status" aria-live="polite"></div>
-      <input id="dzf" type="file"${marketId || verifyId ? "" : " multiple"} accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" />
+      <input id="dzf" type="file"${marketId || verifyId ? "" : " multiple"} accept="${acceptAttr}" style="display:none" />
     </div>`;
 
   const zone = root.querySelector<HTMLElement>("#dz")!;
@@ -194,10 +215,16 @@ export function renderUploader(
     void getHost()?.tellModel(`[photo-upload widget] ${msg}`);
   };
 
-  const addThumb = (file: File) => {
+  const addThumb = (file: File, kind: "image" | "video") => {
     try {
-      const url = URL.createObjectURL(file);
       thumbs.hidden = false;
+      if (kind === "video") {
+        // No <video> element: decoding a 25MB clip for a 56px tile costs more
+        // than the tile says. A labeled chip carries the same information.
+        thumbs.insertAdjacentHTML("beforeend", `<span class="dz-thumb vid" title="${esc(file.name)}">▶</span>`);
+        return;
+      }
+      const url = URL.createObjectURL(file);
       thumbs.insertAdjacentHTML("beforeend", `<span class="dz-thumb"><img src="${esc(url)}" alt="" /></span>`);
     } catch { /* a missing preview is cosmetic */ }
   };
@@ -231,14 +258,27 @@ export function renderUploader(
           ? `${all.length - cap} file(s) over the ${cap}-photo limit on a dispute message — drop them next`
           : `${all.length - cap} file(s) over the ${cap}-at-once limit — drop them next`]
       : [];
-    const accepted: File[] = [];
+    // Each accepted file knows which rail it rides: photos through
+    // firestarter_upload_image, clips through firestarter_upload_video. The
+    // market zone stays image-only — an avatar is a picture.
+    const accepted: { file: File; kind: "image" | "video" }[] = [];
+    let plannedVideos = videoGallery.length;
     for (const f of batch) {
-      if (!(IMAGE_TYPE_RE.test(f.type) || (!f.type && IMAGE_EXT_RE.test(f.name)))) {
-        skipped.push(`${f.name} — not a supported image`);
-      } else if (f.size > MAX_FILE_BYTES) {
-        skipped.push(`${f.name} — ${(f.size / 1024 / 1024).toFixed(1)} MB (limit 6 MB)`);
+      const isImage = IMAGE_TYPE_RE.test(f.type) || (!f.type && IMAGE_EXT_RE.test(f.name));
+      const isVideo = !imageOnly && (VIDEO_TYPE_RE.test(f.type) || (!f.type && VIDEO_EXT_RE.test(f.name)));
+      if (!isImage && !isVideo) {
+        skipped.push(`${f.name} — not a supported ${imageOnly ? "image" : "image or video"}`);
+      } else if (isImage && f.size > MAX_FILE_BYTES) {
+        skipped.push(`${f.name} — ${(f.size / 1024 / 1024).toFixed(1)} MB (photo limit 6 MB)`);
+      } else if (isVideo && f.size > MAX_VIDEO_FILE_BYTES) {
+        skipped.push(`${f.name} — ${(f.size / 1024 / 1024).toFixed(1)} MB (video limit 25 MB)`);
+      } else if (isVideo && plannedVideos >= MAX_LISTING_VIDEOS) {
+        // Refuse the 4th clip BEFORE its 25MB upload: the attach would throw
+        // it away anyway (a listing carries at most 3 videos).
+        skipped.push(`${f.name} — a listing carries at most ${MAX_LISTING_VIDEOS} videos`);
       } else {
-        accepted.push(f);
+        if (isVideo) plannedVideos++;
+        accepted.push({ file: f, kind: isVideo ? "video" : "image" });
       }
     }
     if (accepted.length === 0) {
@@ -248,7 +288,8 @@ export function renderUploader(
 
     busy = true;
     zone.classList.add("busy");
-    const uploaded: string[] = [];
+    const uploadedImages: string[] = [];
+    const uploadedVideos: string[] = [];
     const failed: string[] = [];
     /** The last successful upload call's reply. In verification mode this is
      *  the verdict (verified / flagged / held), which is the whole point of
@@ -256,7 +297,7 @@ export function renderUploader(
     let lastReply = "";
     try {
       for (let i = 0; i < accepted.length; i++) {
-        const file = accepted[i];
+        const { file, kind } = accepted[i];
         status.textContent = accepted.length > 1
           ? `Uploading ${i + 1} of ${accepted.length} — ${file.name}…`
           : "Uploading…";
@@ -272,21 +313,25 @@ export function renderUploader(
         // deliberately not reachable from a widget-originated call, so the
         // attach happens server-side inside firestarter_upload_image instead.
         // The note rides the first file only — the person's words belong in the
-        // thread once, not once per photo.
-        const res = await host.callToolFull("firestarter_upload_image", {
-          image_base64: dataUrl,
-          filename: file.name,
-          ...(verifyId ? { verify_listing_id: verifyId } : {}),
-          ...(disputeId
-            ? {
-              dispute_id: disputeId,
-              dispute_side: disputeSide,
-              ...(uploaded.length === 0 && typeof req.dispute_note === "string" && req.dispute_note
-                ? { dispute_note: req.dispute_note }
-                : {}),
-            }
-            : {}),
-        });
+        // thread once, not once per photo. Clips ride their own rail; the
+        // dispute/verify extras never apply to them (those modes are
+        // image-only, so kind is always "image" there).
+        const res = kind === "video"
+          ? await host.callToolFull("firestarter_upload_video", { video_base64: dataUrl, filename: file.name })
+          : await host.callToolFull("firestarter_upload_image", {
+            image_base64: dataUrl,
+            filename: file.name,
+            ...(verifyId ? { verify_listing_id: verifyId } : {}),
+            ...(disputeId
+              ? {
+                dispute_id: disputeId,
+                dispute_side: disputeSide,
+                ...(uploadedImages.length === 0 && typeof req.dispute_note === "string" && req.dispute_note
+                  ? { dispute_note: req.dispute_note }
+                  : {}),
+              }
+              : {}),
+          });
         if (res === null) {
           // The bridge itself refused — no point pushing the rest of the batch
           // through the same wall.
@@ -298,12 +343,13 @@ export function renderUploader(
           failed.push(`${file.name} — ${res.text.slice(0, 160) || "no URL returned"}`);
           continue;
         }
-        uploaded.push(url);
-        gallery.push(url);
+        if (kind === "video") { uploadedVideos.push(url); videoGallery.push(url); }
+        else { uploadedImages.push(url); gallery.push(url); }
         lastReply = res.text ?? "";
-        addThumb(file);
+        addThumb(file, kind);
       }
 
+      const uploaded = [...uploadedImages, ...uploadedVideos];
       const problems = [...skipped, ...failed];
       if (uploaded.length === 0) {
         showError(`Upload failed: ${problems.join("; ").slice(0, 300)}`);
@@ -311,8 +357,12 @@ export function renderUploader(
         return;
       }
 
-      let summary = `${uploaded.length} photo${uploaded.length === 1 ? "" : "s"} uploaded: ${uploaded.join(" ")}`;
-      let headline = `✓ ${uploaded.length} photo${uploaded.length === 1 ? "" : "s"} uploaded.`;
+      const countPhrase = [
+        uploadedImages.length ? `${uploadedImages.length} photo${uploadedImages.length === 1 ? "" : "s"}` : "",
+        uploadedVideos.length ? `${uploadedVideos.length} video${uploadedVideos.length === 1 ? "" : "s"}` : "",
+      ].filter(Boolean).join(" and ");
+      let summary = `${countPhrase} uploaded: ${uploaded.join(" ")}`;
+      let headline = `✓ ${countPhrase} uploaded.`;
 
       if (verifyId) {
         // The upload already submitted itself; the tool's reply IS the verdict,
@@ -366,20 +416,26 @@ export function renderUploader(
       }
 
       if (listingId) {
-        // Attach first — this must survive an activation refusal.
+        // Attach first — this must survive an activation refusal. One PATCH
+        // for both rails; each *_urls key is sent only when this batch touched
+        // it, because each replaces its whole set (absent = untouched).
         status.textContent = "Attaching to the listing…";
-        const attach = await host.callToolFull("firestarter_update_listing", {
-          listing_id: listingId,
-          image_urls: [...gallery],
-        });
+        const attachArgs: Record<string, unknown> = { listing_id: listingId };
+        if (uploadedImages.length) attachArgs.image_urls = [...gallery];
+        if (uploadedVideos.length) attachArgs.video_urls = [...videoGallery];
+        const attach = await host.callToolFull("firestarter_update_listing", attachArgs);
         if (!attach?.ok) {
           const why = (attach?.text ?? "the host blocked the widget's update call").slice(0, 200);
           summary += ` — but attaching to ${listingId} failed: ${why}. Attach them with firestarter_update_listing.`;
           headline = `✓ Uploaded, but attaching to the listing failed.`;
         } else {
-          summary += ` — attached to ${listingId} (${gallery.length} photo${gallery.length === 1 ? "" : "s"}, cover: ${gallery[0]}).`;
-          headline = `✓ ${gallery.length} photo${gallery.length === 1 ? "" : "s"} on the listing.`;
-          if (req.activate && !activated) {
+          summary += ` — attached to ${listingId} (${gallery.length} photo${gallery.length === 1 ? "" : "s"}${videoGallery.length ? `, ${videoGallery.length} video${videoGallery.length === 1 ? "" : "s"}` : ""}${gallery.length ? `, cover: ${gallery[0]}` : ""}).`;
+          headline = `✓ ${countPhrase} on the listing.`;
+          // Activation is gated on a PHOTO, so only attempt it once the
+          // gallery actually holds one — a video-only drop on a photoless
+          // draft attaches fine but cannot go live yet, and saying so beats a
+          // guaranteed refusal.
+          if (req.activate && !activated && gallery.length > 0) {
             status.textContent = "Activating the listing…";
             const act = await host.callToolFull("firestarter_update_listing", {
               listing_id: listingId,
@@ -388,12 +444,15 @@ export function renderUploader(
             if (act?.ok) {
               activated = true;
               summary += " Listing activated — it is live.";
-              headline = `✓ Photo${gallery.length === 1 ? "" : "s"} attached — the listing is live.`;
+              headline = `✓ ${countPhrase} attached — the listing is live.`;
             } else {
               const why = (act?.text ?? "activation call failed").slice(0, 200);
-              summary += ` Photos attached, but activation was refused: ${why}`;
-              headline = `✓ Photos attached — activation still blocked (see below).`;
+              summary += ` Attached, but activation was refused: ${why}`;
+              headline = `✓ Attached — activation still blocked (see below).`;
             }
+          } else if (req.activate && !activated && gallery.length === 0) {
+            summary += " The listing still needs a PHOTO before it can go live — the video alone doesn't satisfy the photo requirement.";
+            headline = `✓ ${countPhrase} attached — still needs a photo to go live.`;
           }
         }
       }
