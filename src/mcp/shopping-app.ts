@@ -34,7 +34,11 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // v12: and a POSSESSION VERIFICATION mode (upload_request.verify_listing_id) —
 // one photo, SUBMITTED for the vision check rather than attached to anything,
 // because that shot is evidence, not a product image (commerce#561).
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v12";
+// v13: the uploader honours host-reported safe-area insets. Claude renders MCP
+// Apps on mobile in a native WebView and treats anything outside the safe area
+// as NOT INTERACTABLE — a drop zone under the chat input is a control the
+// seller cannot press, not a cosmetic nit.
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v13";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //

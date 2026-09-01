@@ -376,7 +376,14 @@ a.card:hover, .card.link:hover { border-color: var(--accent); transform: transla
    Rendered for firestarter_list / firestarter_update_listing /
    firestarter_upload_image results (uploader.client.ts). Same tokens as the
    buyer views, so both themes come for free. */
-.uploader { max-width: 460px; margin: 0 auto; padding: 4px; }
+/* The drop zone is one big tap target plus a status line, and Claude states
+   that anything outside the safe area is not INTERACTABLE on mobile — a zone
+   under the chat input is a control the seller cannot press, not a cosmetic
+   nit. The insets are 0 unless a host reports them, so web and desktop keep
+   the 4px they had. */
+.uploader { max-width: 460px; margin: 0 auto;
+  padding: calc(4px + var(--fs-inset-top, 0px)) calc(4px + var(--fs-inset-right, 0px))
+           calc(4px + var(--fs-inset-bottom, 0px)) calc(4px + var(--fs-inset-left, 0px)); }
 .dz-head { font-weight: 600; font-size: 15px; line-height: 1.3; margin-bottom: 2px;
   overflow-wrap: anywhere; }
 .dropzone { margin-top: 8px; border: 2px dashed var(--line-strong); border-radius: 14px;

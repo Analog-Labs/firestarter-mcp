@@ -177,6 +177,35 @@ describe("host-bound file attachments", () => {
   });
 });
 
+/**
+ * The drop zone has to stay reachable on a phone.
+ *
+ * Claude renders MCP Apps on mobile in a native WebView and states that
+ * anything outside the safe area is not INTERACTABLE. The zone is one large tap
+ * target plus the status line that reports the result — under the chat input it
+ * is a control the seller cannot press, with nothing on screen to say why.
+ *
+ * Asserted against the SERVED html rather than the stylesheet source, because
+ * the bundle is generated: a rule that never made it through the build would
+ * pass a source check and ship a zone nobody can tap.
+ */
+describe("safe areas in the served widget", () => {
+  it("pads the uploader by the host-reported insets", () => {
+    const html = widgetHtml.get(SHOPPING_RESULTS_URI) ?? "";
+    expect(html).toContain("--fs-inset-bottom");
+    // The rule itself, not just the variable existing somewhere.
+    expect(/\.uploader\s*\{[^}]*--fs-inset-bottom/.test(html)).toBe(true);
+  });
+
+  it("keeps the fullscreen floor off the inline card", () => {
+    // sheetBottomInset's 160px floor protects the fullscreen detail view. Inside
+    // an inline drop zone the same reserve is a screen of dead space, so the two
+    // must stay separate variables.
+    const html = widgetHtml.get(SHOPPING_RESULTS_URI) ?? "";
+    expect(/\.uploader\s*\{[^}]*--fs-safe-bottom/.test(html)).toBe(false);
+  });
+});
+
 describe("resource cache busting", () => {
   it("carries a new URI whenever the widget HTML changes", () => {
     // Claude Desktop caches by URI and never re-reads. This snapshot is the

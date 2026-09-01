@@ -61,3 +61,47 @@ export function sheetBottomInset(hostContext: unknown): number {
 export function reportsOwnSize(displayMode: string | undefined): boolean {
   return displayMode !== "fullscreen" && displayMode !== "pip";
 }
+
+/**
+ * The insets an INLINE view should keep its controls clear of.
+ *
+ * Deliberately NOT sheetBottomInset. That one defends a fullscreen panel from a
+ * composer no host admitted to, so it has a 160px floor — reserving that inside
+ * an inline card would put a screen-and-a-half of dead space under a drop zone.
+ * Here the opposite is right: report nothing and we change nothing, which is
+ * exactly what web and desktop want.
+ *
+ * It matters on mobile because Claude states that anything rendered outside the
+ * safe area is not INTERACTABLE — a drop zone under the chat input is not a
+ * cosmetic problem, it is a control the seller cannot tap. The docs note the
+ * composer can overlay the bottom of an inline app on web and desktop too, so
+ * this is not mobile-only.
+ *
+ * Every value is distrusted the same way sheetBottomInset distrusts its own: a
+ * string, a negative, a NaN or an Infinity all become 0 rather than collapsing
+ * the layout or pushing the content off-screen.
+ */
+export const MAX_INLINE_INSET_PX = 64;
+
+export interface Insets { top: number; right: number; bottom: number; left: number }
+
+function inset(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, MAX_INLINE_INSET_PX);
+}
+
+export function inlineInsets(hostContext: unknown): Insets {
+  const ctx = (hostContext ?? {}) as {
+    safeAreaInsets?: Record<string, unknown>;
+    safeArea?: Record<string, unknown> & { insets?: Record<string, unknown> };
+  };
+  // MCP Apps reports safeAreaInsets; ChatGPT reports safeArea (flat or nested).
+  const src = ctx.safeAreaInsets ?? ctx.safeArea?.insets ?? ctx.safeArea ?? {};
+  return {
+    top: inset(src.top),
+    right: inset(src.right),
+    bottom: inset(src.bottom),
+    left: inset(src.left),
+  };
+}
