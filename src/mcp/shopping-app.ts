@@ -23,7 +23,11 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // v9: seller views — the photo drop zone (upload_request), the listing card
 // (listing), and the single-upload confirmation (url). Bytes travel widget →
 // host bridge → firestarter_upload_image, never through the model.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v9";
+// v10: the drop zone gained a COMMUNITY MARKET mode (upload_request.
+// market_program_id) — one file, and the hosted URL is handed to
+// firestarter_set_market_avatar instead of attached to a listing
+// (commerce#1024).
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v10";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //

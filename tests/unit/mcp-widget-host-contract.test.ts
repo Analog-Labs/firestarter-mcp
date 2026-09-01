@@ -88,9 +88,14 @@ describe("widget-initiated tool calls", () => {
     // is the photo drop zone's upload/attach/activate path — both write
     // listing data under the caller's own API key, and neither can touch a
     // card, an order, or a payout.
+    //
+    // set_market_avatar joins them on the same terms (commerce#1024): the drop
+    // zone's market mode calls it with a URL the server itself just minted, it
+    // writes one image field on a market the caller already owns, and it has no
+    // reach into money either.
     for (const [name, meta] of toolMeta) {
       if (meta["openai/widgetAccessible"] !== true) continue;
-      expect(name).toMatch(/^firestarter_(product|preview|catalog_search|upload_image|update_listing)$/);
+      expect(name).toMatch(/^firestarter_(product|preview|catalog_search|upload_image|update_listing|set_market_avatar)$/);
     }
   });
 });

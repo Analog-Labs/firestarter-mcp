@@ -33,6 +33,12 @@ export interface UploadRequest {
   /** Server judged a missing photo to be the only thing keeping the listing a
    *  draft — the widget requests activation after attaching. */
   activate?: boolean;
+  /** commerce#1024: the same side channel, for a COMMUNITY MARKET avatar. A
+   *  market owner setting an avatar from chat has exactly the listing case's
+   *  problem — the photo is an attachment with no URL — and had no path at all,
+   *  because no tool exposed the avatar endpoint. One picture, not a gallery. */
+  market_program_id?: string;
+  market_name?: string;
 }
 
 export interface ListingSummary {
@@ -109,9 +115,14 @@ export function renderUploader(
   getHost: () => Host | null,
 ): void {
   const listingId = typeof req.listing_id === "string" && req.listing_id ? req.listing_id : null;
-  const title = typeof req.product_name === "string" && req.product_name
-    ? req.product_name
-    : typeof listing?.title === "string" ? listing.title : null;
+  // An avatar is ONE picture that replaces what is there, not a gallery that
+  // grows — so this mode takes a single file and says so.
+  const marketId = typeof req.market_program_id === "string" && req.market_program_id ? req.market_program_id : null;
+  const title = marketId
+    ? (typeof req.market_name === "string" && req.market_name ? req.market_name : null)
+    : typeof req.product_name === "string" && req.product_name
+      ? req.product_name
+      : typeof listing?.title === "string" ? listing.title : null;
 
   /** The full gallery this widget knows about: what the listing already had,
    *  plus everything uploaded here. image_urls replaces wholesale. */
@@ -123,13 +134,13 @@ export function renderUploader(
   root.innerHTML = `
     <div class="uploader">
       ${title ? `<div class="dz-head">${esc(title)}</div>` : ""}
-      <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="Upload product photos: drop files here or press Enter to browse">
-        <div class="dz-big">Drop product photo${listingId ? "s" : "(s)"} here</div>
-        <small>or click to browse — JPEG, PNG, WebP or GIF, up to 6&nbsp;MB each</small>
+      <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="${marketId ? "Upload a community market avatar: drop a file here or press Enter to browse" : "Upload product photos: drop files here or press Enter to browse"}">
+        <div class="dz-big">${marketId ? "Drop the community avatar here" : `Drop product photo${listingId ? "s" : "(s)"} here`}</div>
+        <small>or click to browse — JPEG, PNG, WebP or GIF, up to 6&nbsp;MB${marketId ? "" : " each"}</small>
       </div>
       <div class="dz-thumbs" id="dzt" hidden></div>
       <div class="dz-status" id="dzs" role="status" aria-live="polite"></div>
-      <input id="dzf" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" />
+      <input id="dzf" type="file"${marketId ? "" : " multiple"} accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" />
     </div>`;
 
   const zone = root.querySelector<HTMLElement>("#dz")!;
@@ -172,9 +183,12 @@ export function renderUploader(
     // Partition up-front so the seller hears about every skipped file once,
     // instead of discovering them one failed upload at a time.
     const all = Array.from(list);
-    const batch = all.slice(0, MAX_FILES_PER_BATCH);
-    const skipped: string[] = all.length > MAX_FILES_PER_BATCH
-      ? [`${all.length - MAX_FILES_PER_BATCH} file(s) over the ${MAX_FILES_PER_BATCH}-at-once limit — drop them next`]
+    const cap = marketId ? 1 : MAX_FILES_PER_BATCH;
+    const batch = all.slice(0, cap);
+    const skipped: string[] = all.length > cap
+      ? [marketId
+        ? `${all.length - 1} extra file(s) ignored — a market has one avatar`
+        : `${all.length - cap} file(s) over the ${cap}-at-once limit — drop them next`]
       : [];
     const accepted: File[] = [];
     for (const f of batch) {
@@ -237,6 +251,29 @@ export function renderUploader(
 
       let summary = `${uploaded.length} photo${uploaded.length === 1 ? "" : "s"} uploaded: ${uploaded.join(" ")}`;
       let headline = `✓ ${uploaded.length} photo${uploaded.length === 1 ? "" : "s"} uploaded.`;
+
+      if (marketId) {
+        status.textContent = "Setting the market avatar…";
+        // The hosted URL, not the bytes: the picture is already stored, and the
+        // avatar endpoint only accepts a URL this server minted.
+        const set = await host.callToolFull("firestarter_set_market_avatar", {
+          program_id: marketId,
+          image_url: uploaded[uploaded.length - 1],
+        });
+        if (!set?.ok) {
+          const why = (set?.text ?? "the host blocked the widget's update call").slice(0, 200);
+          summary += ` — but setting the avatar failed: ${why}`;
+          headline = "✓ Uploaded, but setting the avatar failed.";
+        } else {
+          summary += ` — set as the avatar for market ${marketId}.`;
+          headline = "✓ Community avatar set.";
+        }
+        if (problems.length) summary += ` Skipped: ${problems.join("; ").slice(0, 200)}`;
+        status.innerHTML = `<span class="dz-ok">${esc(headline)}</span>` +
+          (problems.length ? `<br><span class="dz-err">Skipped: ${esc(problems.join("; ").slice(0, 200))}</span>` : "");
+        tell(summary);
+        return;
+      }
 
       if (listingId) {
         // Attach first — this must survive an activation refusal.

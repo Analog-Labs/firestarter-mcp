@@ -6811,6 +6811,68 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     );
 
+    /**
+     * commerce#1024: "Not able to upload Avatar in my community market profile
+     * from Claude." The endpoint existed and was on the API-key surface the
+     * whole time (POST /v1/attribution/programs/:id/avatar) — no tool exposed
+     * it, so the assistant correctly reported that it could not, and sent the
+     * owner to the website.
+     *
+     * The input ladder is firestarter_upload_image's, for the same reason: a
+     * model-emitted base64 of a chat attachment is fabricated or truncated
+     * (#958's 534-byte "JPEG"). URL first, drop zone for an attachment, raw
+     * base64 only for bytes that exist nowhere else.
+     */
+    registerToolCompat(
+      server,
+      "firestarter_set_market_avatar",
+      {
+        description:
+          "Set the avatar image on a community market you own. FOR A PICTURE ATTACHED IN THE CHAT, call this with program_id and NO image input: an interactive DROP ZONE is displayed, the owner drops the file onto it, and the ORIGINAL uploads at full quality and is set as the avatar automatically. Never re-encode a chat attachment as base64 yourself — model-emitted base64 is fabricated or truncated. Use image_url when the picture already exists at a public URL (the server fetches and re-hosts it — always prefer this). image_base64 is a last resort for bytes that exist at no URL. To change the market's name, tagline or discoverability use firestarter_update_market.",
+        inputSchema: {
+          program_id: z.string().describe("The market/program id (from firestarter_create_market or firestarter_my_markets)."),
+          image_url: z.string().optional().describe("PREFERRED when a URL exists. Public URL of the image; the server fetches and re-hosts it (JPEG, PNG, WebP or GIF under 6 MB)."),
+          image_base64: z.string().optional().describe("LAST RESORT — only for bytes that exist at no URL. NEVER for a chat-attached picture: call with no image instead to display the lossless drop zone. Data-URI format, max 6 MB."),
+          market_name: z.string().optional().describe("Optional market name, used only to title the drop zone so the owner sees which market the avatar is for."),
+        },
+        annotations: { title: "Set Market Avatar", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+        // Same widget resource as the seller photo drop zone; widgetAccessible
+        // lets the widget's own set-avatar call back through on hosts that gate
+        // widget-originated tool calls.
+        _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
+      },
+      async ({ program_id, image_url, image_base64, market_name }: {
+        program_id: string; image_url?: string; image_base64?: string; market_name?: string;
+      }) => {
+        if (!image_url && !image_base64) {
+          const uploadRequest: Record<string, unknown> = { market_program_id: program_id };
+          if (market_name) uploadRequest.market_name = String(market_name).slice(0, 120);
+          return {
+            content: [{ type: "text" as const, text: `An upload drop zone is displayed — tell the community owner to drop the avatar image onto it, or click it to pick a file. The original uploads at full quality and is set as market ${program_id}'s avatar automatically. A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling them. Only if they REPLY that no drop zone is visible: take a public image URL from them and call this tool again with image_url. Never re-encode a chat-attached picture as base64 — that path truncates the image.` }],
+            structuredContent: { upload_request: uploadRequest },
+          };
+        }
+        try {
+          const body = image_url ? { image_url } : { image_base64 };
+          const res = await apiRequest(
+            "POST",
+            `/v1/attribution/programs/${encodeURIComponent(program_id)}/avatar`,
+            body,
+            // The server FETCHES a remote image on this path — same work as the
+            // product-image route, which already carries this budget (#849).
+            UPLOAD_IMAGE_TIMEOUT_MS,
+          );
+          const url = res?.avatar_url ?? res?.program?.avatar_url;
+          return { content: [{ type: "text" as const, text: `**Avatar set** for market ${program_id}.${url ? `\n${url}` : ""}` }] };
+        } catch (err: any) {
+          if (err instanceof ApiError && err.code === "PROGRAM_NOT_FOUND") {
+            return { content: [{ type: "text" as const, text: "No market on your account has that program id. List yours with firestarter_my_markets." }], isError: true };
+          }
+          return { content: [{ type: "text" as const, text: `Couldn't set the avatar: ${toErrorMessage(err)}` }], isError: true };
+        }
+      }
+    );
+
     server.tool(
       "firestarter_market_link",
       "Mint a shareable join code for a market you own (from firestarter_create_market). Give the code to your community — when a member redeems it (firestarter_join_market) they are attributed to your program so you earn on their activity. Optionally tag a channel/campaign for tracking.",
