@@ -1239,7 +1239,7 @@
           },
           "photo_urls": {
             "type": "array",
-            "description": "Photo URLs for the listing, e.g. image links the seller pasted in chat. Seller photos lead the images array."
+            "description": "Photo URLs for the listing, e.g. image links the seller PASTED as text. Seller photos lead the images array. A photo ATTACHED to the message is not a URL and cannot go here — import first, then call firestarter_upload_image with the new listing_id to display a drop zone for it."
           }
         },
         "required": []

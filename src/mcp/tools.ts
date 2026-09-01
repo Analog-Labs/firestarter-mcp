@@ -4595,7 +4595,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         base_price: z.number().optional().describe("REQUIRED per item — an item missing this will fail and be reported in the response's failed list; other items still succeed."),
         category: z.string().optional(),
         inventory_qty: z.number().optional(),
-        image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is primary)."),
+        image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is primary). Bulk listing is URL-driven by design; for a photo the seller ATTACHED IN THE CHAT, list without it and then call firestarter_upload_image with that listing_id to display a drop zone. Never rebuild an attachment as a base64 data-URI."),
         ...listingDetailFields,
       })).min(1).max(100).describe("The products to create, up to 100 per call."),
     },
@@ -4636,7 +4636,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       source_url: z.string().optional().describe("URL of the seller's existing listing (e.g. a Craigslist post). For known bot-blocking platforms (Amazon, eBay, Etsy, Facebook, OfferUp, Mercari, Walmart, Shopee), still include this for provenance, but pair it with raw_text up front."),
       raw_text: z.string().optional().describe("Pasted listing text (title, price, description - at least 10 characters). Send this alongside source_url up front for known bot-blocking platforms (Amazon, eBay, etc.) - a fetch will still be tried but is unlikely to succeed. Required whenever source_url is omitted or a fetch fails; also fills gaps URL extraction missed."),
-      photo_urls: z.array(z.string()).optional().describe("Photo URLs for the listing, e.g. image links the seller pasted in chat. Seller photos lead the images array."),
+      photo_urls: z.array(z.string()).optional().describe("Photo URLs for the listing, e.g. image links the seller PASTED as text. Seller photos lead the images array. A photo ATTACHED to the message is not a URL and cannot go here — import first, then call firestarter_upload_image with the new listing_id to display a drop zone for it."),
     },
     { title: "Import Catalog", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async ({ source_url, raw_text, photo_urls }) => {
