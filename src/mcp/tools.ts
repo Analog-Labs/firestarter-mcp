@@ -4048,7 +4048,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       description:
         "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64)"
         + (localFiles ? "; image_path when the photo is a file on THIS computer (this local build reads it directly — cheap and lossless)" : "")
-        + "; image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL.",
+        + "; image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL."
+        + " ALSO HANDLES DISPUTE EVIDENCE: pass dispute_id (and dispute_side 'seller' for an order they sold) to display the drop zone for that dispute — every photo dropped is uploaded AND posted to the dispute thread. Use that for a photo attached in the chat instead of asking the user for a publicly hosted image link, which they usually cannot produce.",
       inputSchema: {
         image_url: z.string().optional().describe("PREFERRED when a URL exists. Public URL of the photo; the server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB)."),
         ...(localFiles ? {
@@ -4058,6 +4059,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         filename: z.string().optional().describe("Optional original filename, kept only as a label. It does NOT decide the image format — the server reads that from the bytes — so a .jpg name on PNG data is harmless and a wrong extension can no longer mislabel the stored photo."),
         listing_id: z.string().optional().describe("When displaying the drop zone for a listing that needs its photo: the listing (lst_...) to attach uploads to. The widget attaches every dropped photo to it and requests activation automatically."),
         product_name: z.string().optional().describe("Optional product name to title the drop zone with, so the seller sees which listing the photo is for."),
+        dispute_id: z.string().optional().describe("DISPUTE EVIDENCE (disp_...). With no image input this displays the drop zone for that dispute; with an image the photo is uploaded AND posted to the dispute thread in one step. Use this instead of asking for a publicly hosted image link — a photo attached in the chat has no URL, and that dead end is why attaching evidence kept failing."),
+        dispute_side: z.enum(["buyer", "seller"]).optional().describe("Which side of the dispute the user is on — 'buyer' for an order they bought (firestarter_disputes), 'seller' for one they sold (firestarter_seller_disputes). Defaults to 'buyer'. The two are separate endpoints; the wrong one answers 'dispute not found'."),
+        dispute_note: z.string().optional().describe("For dispute evidence only: the text to post alongside the photo, in the user's words (e.g. 'the corner arrived crushed'). Posted once, with the first photo. Ignored without dispute_id."),
       },
       annotations: { title: "Upload Product Image", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
       // The drop zone renders on the same widget resource as the shopping
@@ -4065,10 +4069,50 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       // through on hosts that gate widget-originated tool calls.
       _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
     },
-    async ({ image_url, image_path, image_base64, filename, listing_id, product_name }: {
+    async ({ image_url, image_path, image_base64, filename, listing_id, product_name, dispute_id, dispute_side, dispute_note }: {
       image_url?: string; image_path?: string; image_base64?: string; filename?: string;
       listing_id?: string; product_name?: string;
+      dispute_id?: string; dispute_side?: "buyer" | "seller"; dispute_note?: string;
     }) => {
+      /**
+       * commerce#1007: "Still not able to add image to my dispute in Claude, it
+       * wants publicly hosted image link." A chat attachment has no URL, so the
+       * only inputs on offer were one the buyer could not produce and
+       * model-emitted base64, which arrives truncated (#994).
+       *
+       * The attach lands HERE rather than in the dispute tools because the drop
+       * zone has to call something, and firestarter_disputes /
+       * firestarter_seller_disputes move money (refund, accept, withdraw). This
+       * tool cannot, so it is the one that is safe to make widgetAccessible.
+       *
+       * The hosted URL is posted rather than the bytes: it is already stored,
+       * and the API short-circuits an ingest of its own blob (#992), so the
+       * /attachments hop costs nothing.
+       */
+      const finishUpload = async (url: string, extraNote = "") => {
+        if (!dispute_id) return uploadSuccessResult(url, extraNote);
+        const did = cleanListingId(dispute_id);
+        const basePath = dispute_side === "seller" ? "/v1/sellers/disputes" : "/buyer/disputes";
+        try {
+          const posted = await postDisputeMessage(
+            apiRequest, basePath, did, { message: dispute_note, image_urls: [url] },
+            dispute_side === "seller" ? "The buyer will see it." : "The seller will see it.",
+          );
+          // structuredContent carries the URL for the widget, which reads it
+          // from there rather than regexing it back out of prose.
+          return { ...posted, structuredContent: { url } };
+        } catch (err: any) {
+          // The photo IS stored — only the post to the thread failed. The outer
+          // catch would report this as "Error uploading image", sending the
+          // agent to re-upload bytes that are already hosted, and the URL would
+          // be lost with it. Hand it back so the next attempt is one call.
+          return {
+            content: [{ type: "text" as const, text: `The photo uploaded (${url}) but posting it to dispute ${did} failed: ${toErrorMessage(err)}. Retry with firestarter_${dispute_side === "seller" ? "seller_" : ""}disputes action "message", image_urls ["${url}"] — do NOT upload the photo again.` }],
+            structuredContent: { url },
+            isError: true,
+          };
+        }
+      };
       try {
         // Local build only: read the file ourselves — ~20 tokens through the
         // model for any file size, and the bytes never touch the conversation.
@@ -4096,7 +4140,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (!url) {
             return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The file may not be a valid image." }], isError: true };
           }
-          return uploadSuccessResult(url);
+          return await finishUpload(url);
         }
         if (image_url) {
           const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_url, filename }, UPLOAD_IMAGE_TIMEOUT_MS);
@@ -4104,7 +4148,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (!url) {
             return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The URL must point to a public JPEG, PNG, WebP, or GIF under 6 MB." }], isError: true };
           }
-          return uploadSuccessResult(url);
+          return await finishUpload(url);
         }
         if (!image_base64) {
           // No image input at all: this is the DROP ZONE request. Look the
@@ -4132,17 +4176,31 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             }
           }
           if (product_name) uploadRequest.product_name = String(product_name).slice(0, 120);
+          if (dispute_id) {
+            const did = cleanListingId(dispute_id);
+            uploadRequest.dispute_id = did;
+            uploadRequest.dispute_side = dispute_side === "seller" ? "seller" : "buyer";
+            uploadRequest.dispute_label = `Dispute ${did}`;
+            if (dispute_note) uploadRequest.dispute_note = String(dispute_note).slice(0, 2000);
+          }
           // Explicit request → always issue, but record it so a chained
-          // list/update reply doesn't add a second zone on top.
+          // list/update reply doesn't add a second zone on top. Both ids go in;
+          // markZoneIssued ignores whichever is absent.
           markZoneIssued(uploadRequest.listing_id);
-          const attachNote = uploadRequest.listing_id
-            ? ` Every dropped photo attaches to listing ${uploadRequest.listing_id} at full quality${uploadRequest.activate ? " and activation is requested automatically" : ""}.`
-            : " The hosted URLs will be reported back in the conversation.";
+          markZoneIssued(uploadRequest.dispute_id);
+          const attachNote = uploadRequest.dispute_id
+            ? ` Every dropped photo is posted to dispute ${uploadRequest.dispute_id} at full quality${dispute_note ? ", the first one carrying the note" : ""}.`
+            : uploadRequest.listing_id
+              ? ` Every dropped photo attaches to listing ${uploadRequest.listing_id} at full quality${uploadRequest.activate ? " and activation is requested automatically" : ""}.`
+              : " The hosted URLs will be reported back in the conversation.";
           // Same STOP phrasing as the firestarter_list draft reply — a
           // conditional fallback here would be executed immediately by a model
           // that cannot see whether the widget rendered.
+          const zoneText = uploadRequest.dispute_id
+            ? `An upload drop zone is displayed — tell them to drop the evidence photo(s) onto it, or click it to pick files (up to 5 per message).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any dispute tool again now, and END YOUR TURN after telling them. Only if they REPLY that no drop zone is visible: take a public photo URL from them and pass it to firestarter_${dispute_side === "seller" ? "seller_" : ""}disputes as image_urls. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`
+            : `An upload drop zone is displayed — tell the seller to drop the product photo(s) onto it, or click it to pick files (several at once is fine; the first becomes the cover, and more can be dropped afterwards to grow the gallery).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: send them to the dashboard uploader (https://firestarter.network/seller) or take a public photo URL from them. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`;
           return {
-            content: [{ type: "text" as const, text: `An upload drop zone is displayed — tell the seller to drop the product photo(s) onto it, or click it to pick files (several at once is fine; the first becomes the cover, and more can be dropped afterwards to grow the gallery).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: send them to the dashboard uploader (https://firestarter.network/seller) or take a public photo URL from them. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.` }],
+            content: [{ type: "text" as const, text: zoneText }],
             structuredContent: summary ? { upload_request: uploadRequest, listing: summary } : { upload_request: uploadRequest },
           };
         }
@@ -4166,7 +4224,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (!url) {
           return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The image may be invalid or too large (max 6 MB)." }], isError: true };
         }
-        return uploadSuccessResult(url, compressedUploadNote(approxBytes));
+        return await finishUpload(url, compressedUploadNote(approxBytes));
       } catch (err: any) {
         const msg = toErrorMessage(err);
         // commerce#849: toErrorMessage answers every timeout with "retry in a
@@ -6421,13 +6479,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // an explicit action), so the tool must translate the seller's intent here.
   server.tool(
     "firestarter_seller_disputes",
-    "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). Pass dispute_id ALONE to read the full thread - what the buyer actually claimed, and any photos they attached. To act, add an action: 'message' (reply with a note and/or evidence photos, e.g. the packing shot taken before dispatch - use image_urls), 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
+    "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). Pass dispute_id ALONE to read the full thread - what the buyer actually claimed, and any photos they attached. To act, add an action: 'message' (reply with a note and/or evidence photos, e.g. the packing shot taken before dispatch — for a photo ATTACHED IN THE CHAT call firestarter_upload_image with dispute_id and dispute_side 'seller' instead, which displays a drop zone and posts it to this thread), 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
     {
       dispute_id: z.string().optional().describe("Dispute ID to act on (disp_...). Omit to list all disputes. Pass it with NO action to read the full thread first."),
       action: z.enum(["message", "refund", "contest", "split"]).optional().describe("What to do with the dispute: 'message' = reply to the buyer with a note and/or evidence photos (no money moves); 'refund' = full refund to the buyer; 'contest' = reject the claim; 'split' = propose a partial refund (also set buyer_pct + seller_pct)."),
       message: z.string().optional().describe("For 'message': the text to post to the dispute thread, in the seller's words."),
-      image_urls: z.array(z.string()).optional().describe("For 'message': evidence photos as public https URLs — a packing shot, the item before dispatch, proof of postage. THIS IS THE ONE TO USE when a photo is attached in the conversation: pass its URL straight through. Never fetch an image and rebuild it as a base64 data-URI, which is far too large to survive being printed into a tool call. Up to 5."),
-      image_base64: z.string().optional().describe("For 'message': an evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). Only for an image you genuinely hold as raw bytes — if you have a URL for it, use image_urls instead."),
+      image_urls: z.array(z.string()).optional().describe("For 'message': evidence photos that ALREADY EXIST at a public https URL — a packing shot on a CDN, proof of postage. Pass those straight through, up to 5. A photo ATTACHED IN THE CHAT has no such URL: do not ask the seller for one, call firestarter_upload_image with dispute_id and dispute_side 'seller' (it displays a drop zone and posts the photo to this thread). Never rebuild an image as a base64 data-URI — it is far too large to survive being printed into a tool call."),
+      image_base64: z.string().optional().describe("For 'message': LAST RESORT — an evidence photo as a base64 data-URI, only for bytes that exist at no URL and in no file. NEVER for a chat attachment: use firestarter_upload_image with dispute_id, which is lossless and takes seconds."),
       buyer_pct: z.number().min(0).max(100).optional().describe("For action 'split': percent refunded to the buyer. buyer_pct + seller_pct must equal 100."),
       seller_pct: z.number().min(0).max(100).optional().describe("For action 'split': percent the seller keeps. buyer_pct + seller_pct must equal 100."),
       reasoning: z.string().optional().describe("Optional note explaining the decision, recorded on the dispute and shown to the buyer."),
@@ -6560,14 +6618,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       "firestarter_disputes",
       "For BUYERS: open, check, and resolve disputes on orders the user BOUGHT. Use this whenever a buyer asks 'is there a dispute on my order?', wants to open a dispute (item never arrived, arrived damaged / wrong / not as described), or needs to respond to one — post a note or photo, accept / reject / counter the seller's partial-refund offer, withdraw, or escalate to Firestarter. Call with NO arguments to list the buyer's disputes; pass an order's execution_id (exec_…) to check whether THAT order has a dispute; pass a dispute_id (disp_…) to see the full thread. This is the BUYER side — for disputes on orders the user is SELLING, use firestarter_seller_disputes instead.",
       {
-        action: z.enum(["open", "message", "accept", "reject", "counter", "withdraw", "escalate"]).optional().describe("What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_urls — pass a photo's URL, never rebuild it as base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."),
+        action: z.enum(["open", "message", "accept", "reject", "counter", "withdraw", "escalate"]).optional().describe("What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_urls; for a photo attached in the chat use firestarter_upload_image with dispute_id instead — never rebuild it as base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."),
         execution_id: z.string().optional().describe("Order / execution id (exec_…). Required for 'open'. With no action, pass this to check whether a specific order has a dispute. May also stand in for dispute_id on actions — the dispute on that order is looked up."),
         dispute_id: z.string().optional().describe("Dispute id (disp_…). Identifies which dispute to view or act on for message / accept / reject / counter / withdraw / escalate."),
         reason: z.string().optional().describe("For 'open': what went wrong, in the buyer's words (e.g. 'Package never arrived, tracking stuck for two weeks'). Also used as the optional note on a 'counter' or 'escalate'."),
         type: z.enum(["not_received", "not_as_described", "damaged", "missing_item", "wrong_item", "other"]).optional().describe("For 'open': the category of problem. Use 'not_received' when the order never arrived. Defaults to 'not_as_described'."),
         message: z.string().optional().describe("For 'message': the text to post to the dispute thread."),
-        image_urls: z.array(z.string()).optional().describe("For 'message': evidence photos the buyer already has, as public https URLs. THIS IS THE ONE TO USE when a photo is attached in the conversation — pass its URL straight through. Never fetch an image and rebuild it as a base64 data-URI to fill image_base64: a photo is far too large to survive being printed into a tool call, which is why attaching used to fail. Up to 5."),
-        image_base64: z.string().optional().describe("For 'message': an evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). Only for an image you genuinely hold as raw bytes and small enough to inline — if you have a URL for it, use image_urls instead."),
+        image_urls: z.array(z.string()).optional().describe("For 'message': evidence photos that ALREADY EXIST at a public https URL — pass those straight through, up to 5. For a photo ATTACHED IN THE CHAT there is no such URL: do not ask the buyer for one, call firestarter_upload_image with dispute_id instead (it displays a drop zone and posts the photo to this thread). Never rebuild an image as a base64 data-URI — a photo is far too large to survive being printed into a tool call, which is why attaching used to fail."),
+        image_base64: z.string().optional().describe("For 'message': LAST RESORT — an evidence photo as a base64 data-URI, only for bytes that exist at no URL and in no file. NEVER for a chat attachment: use firestarter_upload_image with dispute_id, which is lossless and takes seconds."),
         offer_id: z.string().optional().describe("For 'accept' / 'reject': the specific offer id to respond to. Omit to act on the latest pending seller offer."),
         buyer_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent YOU (the buyer) would be refunded. buyer_pct + seller_pct must equal 100."),
         seller_pct: z.number().min(0).max(100).optional().describe("For 'counter': the percent the seller keeps. buyer_pct + seller_pct must equal 100."),
@@ -6598,7 +6656,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               // so honestly rather than implying a live, timed dispute exists.
               return textBlock(`The escrow hold on order ${execution_id} was frozen, but the dispute record couldn't be created. ${res.message || ""} Please retry, or contact support so this doesn't sit frozen.`.trim());
             }
-            return textBlock(`**Dispute opened** (${res.dispute_id}) on order ${execution_id}. ${res.message || "Funds are frozen in escrow pending review; the seller has 48 hours to respond."}\n\nAdd a photo or note anytime with action "message". I'll surface the seller's response when it comes.`);
+            // commerce#1007: the reporter opened a dispute here and then could
+            // not attach the photo — the tool asked for a "publicly hosted
+            // direct image link", which a chat attachment does not have. Name
+            // the working path at the moment evidence is actually wanted.
+            return textBlock(`**Dispute opened** (${res.dispute_id}) on order ${execution_id}. ${res.message || "Funds are frozen in escrow pending review; the seller has 48 hours to respond."}\n\nTo add a PHOTO: call \`firestarter_upload_image\` with dispute_id "${res.dispute_id}" — it displays a drop zone and posts the photo straight to this dispute. Never ask the buyer for a publicly hosted image link, and never rebuild an attachment as base64. For a note alone, use action "message". I'll surface the seller's response when it comes.`);
           }
 
           // ── MESSAGE (optionally with a photo) ──────────────────────────────

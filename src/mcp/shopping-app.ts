@@ -27,7 +27,11 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // market_program_id) — one file, and the hosted URL is handed to
 // firestarter_set_market_avatar instead of attached to a listing
 // (commerce#1024).
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v10";
+// v11: and a DISPUTE EVIDENCE mode (upload_request.dispute_id) — up to five
+// files, each posted to the thread by firestarter_upload_image itself. It does
+// not call a dispute tool: those move money, so they are not widgetAccessible
+// (commerce#1007).
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v11";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //

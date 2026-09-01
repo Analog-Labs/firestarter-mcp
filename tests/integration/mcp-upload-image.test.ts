@@ -172,3 +172,140 @@ describe("firestarter_upload_image", () => {
     expect(res.structuredContent?.upload_request).toBeTruthy();
   });
 });
+
+/**
+ * commerce#1007 — "Still not able to add image to my dispute in Claude, it
+ * wants publicly hosted image link."
+ *
+ * The buyer had a photo attached in the chat. A chat attachment has no URL, so
+ * the only two inputs the dispute tools offered were one they could not produce
+ * and model-emitted base64, which arrives truncated (#994). The drop zone is
+ * the side channel that already solved this for listings; these tests pin it
+ * onto the dispute path.
+ *
+ * The attach lives in firestarter_upload_image rather than in the dispute tools
+ * because the drop zone has to call SOMETHING, and firestarter_disputes /
+ * firestarter_seller_disputes move money (refund, accept, withdraw) — they must
+ * not be reachable from a widget-originated call. This tool cannot move money,
+ * so it is the one that is safe to expose.
+ */
+describe("firestarter_upload_image — dispute evidence (#1007)", () => {
+  const PHOTO = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBD";
+  const HOSTED = "https://cdn.test/blob/evidence.jpg";
+
+  it("displays a drop zone for the dispute when called with no image", async () => {
+    const tools = captureTools();
+    const calls = installFetch(() => ({ status: 200, json: {} }));
+
+    const res = await tools.firestarter_upload_image({ dispute_id: "disp_abc", dispute_note: "the corner is crushed" });
+
+    // Nothing is uploaded yet — this reply IS the zone.
+    expect(calls).toHaveLength(0);
+    expect(res.structuredContent.upload_request).toMatchObject({
+      dispute_id: "disp_abc",
+      dispute_side: "buyer",
+      dispute_note: "the corner is crushed",
+    });
+    // The model must not then go asking for a hosted link, which is the exact
+    // dead end reported.
+    expect(res.content[0].text).toContain("drop zone");
+    expect(res.content[0].text).toContain("END YOUR TURN");
+  });
+
+  it("routes the zone to the seller's own dispute surface when asked", async () => {
+    const tools = captureTools();
+    installFetch(() => ({ status: 200, json: {} }));
+    const res = await tools.firestarter_upload_image({ dispute_id: "disp_abc", dispute_side: "seller" });
+    expect(res.structuredContent.upload_request.dispute_side).toBe("seller");
+  });
+
+  it("uploads the photo AND posts it to the buyer's dispute thread in one call", async () => {
+    const tools = captureTools();
+    const calls = installFetch((_m, url) => {
+      if (url.endsWith("/v1/sellers/upload-image")) return { status: 200, json: { url: HOSTED } };
+      if (url.endsWith("/attachments")) return { status: 200, json: { url: HOSTED } };
+      return { status: 200, json: { ok: true } };
+    });
+
+    const res = await tools.firestarter_upload_image({
+      image_base64: PHOTO, filename: "damage.jpg",
+      dispute_id: "disp_abc", dispute_note: "the corner is crushed",
+    });
+
+    expect(res.isError).toBeFalsy();
+    const urls = calls.map((c) => c.url);
+    expect(urls).toEqual([
+      "http://api.test/v1/sellers/upload-image",
+      "http://api.test/buyer/disputes/disp_abc/attachments",
+      "http://api.test/buyer/disputes/disp_abc/messages",
+    ]);
+    // The hosted URL is what travels on, never the bytes a second time.
+    expect(calls[1].body).toEqual({ image_url: HOSTED });
+    expect(calls[2].body).toEqual({ message: "the corner is crushed", attachment_urls: [HOSTED] });
+    // The widget reads the URL from structuredContent rather than the prose.
+    expect(res.structuredContent).toEqual({ url: HOSTED });
+  });
+
+  it("posts a seller's evidence to the seller surface, not the buyer's", async () => {
+    const tools = captureTools();
+    const calls = installFetch((_m, url) => {
+      if (url.endsWith("/v1/sellers/upload-image")) return { status: 200, json: { url: HOSTED } };
+      if (url.endsWith("/attachments")) return { status: 200, json: { url: HOSTED } };
+      return { status: 200, json: { ok: true } };
+    });
+
+    await tools.firestarter_upload_image({
+      image_base64: PHOTO, dispute_id: "disp_abc", dispute_side: "seller",
+    });
+
+    expect(calls.map((c) => c.url)).toEqual([
+      "http://api.test/v1/sellers/upload-image",
+      "http://api.test/v1/sellers/disputes/disp_abc/attachments",
+      "http://api.test/v1/sellers/disputes/disp_abc/messages",
+    ]);
+  });
+
+  it("takes a public URL for the evidence too, without a second upload hop", async () => {
+    const tools = captureTools();
+    const calls = installFetch((_m, url) => {
+      if (url.endsWith("/v1/sellers/upload-image")) return { status: 200, json: { url: HOSTED } };
+      if (url.endsWith("/attachments")) return { status: 200, json: { url: HOSTED } };
+      return { status: 200, json: { ok: true } };
+    });
+
+    await tools.firestarter_upload_image({
+      image_url: "https://files.example/damage.jpg", dispute_id: "disp_abc",
+    });
+
+    expect(calls[0].body).toEqual({ image_url: "https://files.example/damage.jpg", filename: undefined });
+    expect(calls.map((c) => c.url)).toContain("http://api.test/buyer/disputes/disp_abc/messages");
+  });
+
+  it("hands the hosted URL back when the photo stored but the post failed", async () => {
+    const tools = captureTools();
+    installFetch((_m, url) => {
+      if (url.endsWith("/v1/sellers/upload-image")) return { status: 200, json: { url: HOSTED } };
+      if (url.endsWith("/attachments")) return { status: 200, json: { url: HOSTED } };
+      return { status: 500, json: { error: "dispute engine unavailable" } };
+    });
+
+    const res = await tools.firestarter_upload_image({ image_base64: PHOTO, dispute_id: "disp_abc" });
+
+    // The bytes ARE stored. Reporting this as an upload error would send the
+    // agent to re-upload them, and the URL would be lost with the message.
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain(HOSTED);
+    expect(res.content[0].text).toContain("do NOT upload the photo again");
+    expect(res.structuredContent).toEqual({ url: HOSTED });
+  });
+
+  it("leaves the plain listing upload untouched — no dispute hops", async () => {
+    const tools = captureTools();
+    const calls = installFetch(() => ({ status: 200, json: { url: HOSTED } }));
+
+    const res = await tools.firestarter_upload_image({ image_base64: PHOTO });
+
+    expect(calls).toHaveLength(1);
+    expect(res.content[0].text).toContain("Hosted URL");
+  });
+});
