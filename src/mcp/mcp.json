@@ -746,7 +746,7 @@
     },
     {
       "name": "firestarter_upload_image",
-      "description": "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64); image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL.",
+      "description": "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64); image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL. ALSO HANDLES DISPUTE EVIDENCE: pass dispute_id (and dispute_side 'seller' for an order they sold) to display the drop zone for that dispute — every photo dropped is uploaded AND posted to the dispute thread. Use that for a photo attached in the chat instead of asking the user for a publicly hosted image link, which they usually cannot produce.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -768,6 +768,22 @@
           },
           "product_name": {
             "description": "Optional product name to title the drop zone with, so the seller sees which listing the photo is for.",
+            "type": "string"
+          },
+          "dispute_id": {
+            "description": "DISPUTE EVIDENCE (disp_...). With no image input this displays the drop zone for that dispute; with an image the photo is uploaded AND posted to the dispute thread in one step. Use this instead of asking for a publicly hosted image link — a photo attached in the chat has no URL, and that dead end is why attaching evidence kept failing.",
+            "type": "string"
+          },
+          "dispute_side": {
+            "description": "Which side of the dispute the user is on — 'buyer' for an order they bought (firestarter_disputes), 'seller' for one they sold (firestarter_seller_disputes). Defaults to 'buyer'. The two are separate endpoints; the wrong one answers 'dispute not found'.",
+            "type": "string",
+            "enum": [
+              "buyer",
+              "seller"
+            ]
+          },
+          "dispute_note": {
+            "description": "For dispute evidence only: the text to post alongside the photo, in the user's words (e.g. 'the corner arrived crushed'). Posted once, with the first photo. Ignored without dispute_id.",
             "type": "string"
           }
         }
@@ -2125,7 +2141,7 @@
     },
     {
       "name": "firestarter_seller_disputes",
-      "description": "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). Pass dispute_id ALONE to read the full thread - what the buyer actually claimed, and any photos they attached. To act, add an action: 'message' (reply with a note and/or evidence photos, e.g. the packing shot taken before dispatch - use image_urls), 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
+      "description": "View and resolve disputes on orders the user is SELLING (their own catalog/store). This is the SELLER side only. If the user is asking about something they BOUGHT — 'is there a dispute on my order?', a purchase that didn't arrive or arrived wrong — use firestarter_disputes instead. Call with NO arguments to list open disputes on the seller's sales (each shows its dispute_id). Pass dispute_id ALONE to read the full thread - what the buyer actually claimed, and any photos they attached. To act, add an action: 'message' (reply with a note and/or evidence photos, e.g. the packing shot taken before dispatch — for a photo ATTACHED IN THE CHAT call firestarter_upload_image with dispute_id and dispute_side 'seller' instead, which displays a drop zone and posts it to this thread), 'refund' (refund the buyer in full and lift the escrow freeze), 'contest' (reject the claim and state your case), or 'split' (propose a partial refund - include buyer_pct and seller_pct that sum to 100). Use when a seller mentions a dispute, complaint, refund, chargeback, or return on something they sell.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2152,11 +2168,11 @@
             "items": {
               "type": "string"
             },
-            "description": "For 'message': evidence photos as public https URLs — a packing shot, the item before dispatch, proof of postage. THIS IS THE ONE TO USE when a photo is attached in the conversation: pass its URL straight through. Never fetch an image and rebuild it as a base64 data-URI, which is far too large to survive being printed into a tool call. Up to 5."
+            "description": "For 'message': evidence photos that ALREADY EXIST at a public https URL — a packing shot on a CDN, proof of postage. Pass those straight through, up to 5. A photo ATTACHED IN THE CHAT has no such URL: do not ask the seller for one, call firestarter_upload_image with dispute_id and dispute_side 'seller' (it displays a drop zone and posts the photo to this thread). Never rebuild an image as a base64 data-URI — it is far too large to survive being printed into a tool call."
           },
           "image_base64": {
             "type": "string",
-            "description": "For 'message': an evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). Only for an image you genuinely hold as raw bytes — if you have a URL for it, use image_urls instead."
+            "description": "For 'message': LAST RESORT — an evidence photo as a base64 data-URI, only for bytes that exist at no URL and in no file. NEVER for a chat attachment: use firestarter_upload_image with dispute_id, which is lossless and takes seconds."
           },
           "buyer_pct": {
             "type": "number",
@@ -2191,7 +2207,7 @@
               "withdraw",
               "escalate"
             ],
-            "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_urls — pass a photo's URL, never rebuild it as base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
+            "description": "What to do. OMIT to list the buyer's disputes, or to view one (pass dispute_id, or execution_id to look up the dispute on that order). 'open' = file a new dispute (needs execution_id + reason). 'message' = post a note and/or photo to the thread (needs dispute_id or execution_id, plus message and/or image_urls; for a photo attached in the chat use firestarter_upload_image with dispute_id instead — never rebuild it as base64). 'accept' / 'reject' = respond to the seller's split offer (offer_id optional — defaults to the latest pending seller offer). 'counter' = propose your own split (needs buyer_pct + seller_pct). 'withdraw' = drop the dispute. 'escalate' = ask Firestarter to review."
           },
           "execution_id": {
             "type": "string",
@@ -2226,11 +2242,11 @@
             "items": {
               "type": "string"
             },
-            "description": "For 'message': evidence photos the buyer already has, as public https URLs. THIS IS THE ONE TO USE when a photo is attached in the conversation — pass its URL straight through. Never fetch an image and rebuild it as a base64 data-URI to fill image_base64: a photo is far too large to survive being printed into a tool call, which is why attaching used to fail. Up to 5."
+            "description": "For 'message': evidence photos that ALREADY EXIST at a public https URL — pass those straight through, up to 5. For a photo ATTACHED IN THE CHAT there is no such URL: do not ask the buyer for one, call firestarter_upload_image with dispute_id instead (it displays a drop zone and posts the photo to this thread). Never rebuild an image as a base64 data-URI — a photo is far too large to survive being printed into a tool call, which is why attaching used to fail."
           },
           "image_base64": {
             "type": "string",
-            "description": "For 'message': an evidence photo as a base64 data-URI ('data:image/jpeg;base64,…'). Only for an image you genuinely hold as raw bytes and small enough to inline — if you have a URL for it, use image_urls instead."
+            "description": "For 'message': LAST RESORT — an evidence photo as a base64 data-URI, only for bytes that exist at no URL and in no file. NEVER for a chat attachment: use firestarter_upload_image with dispute_id, which is lossless and takes seconds."
           },
           "offer_id": {
             "type": "string",

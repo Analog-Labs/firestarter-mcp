@@ -193,3 +193,82 @@ describe("listing card", () => {
     expect(root.textContent).toContain("Add a product photo");
   });
 });
+
+/**
+ * commerce#1007 — dispute evidence through the same side channel.
+ *
+ * The shape differs from the listing and avatar modes in one load-bearing way:
+ * nothing is "attached" afterwards. Each upload call carries the dispute id and
+ * firestarter_upload_image posts that photo to the thread itself, because the
+ * dispute tools move money (refund / accept / withdraw) and must not be
+ * reachable from a widget-originated call.
+ */
+describe("the drop zone in dispute mode", () => {
+  const DISPUTE = { dispute_id: "disp_1", dispute_side: "buyer" as const, dispute_label: "Bow and Arrow Toy" };
+
+  const uploadedAs = (url: string): FullResult => ({ ok: true, text: "posted", structured: { url } });
+
+  it("posts each photo to the dispute in the SAME call, never touching a dispute tool", async () => {
+    let n = 0;
+    const { host, calls, told } = fakeHost(() => uploadedAs(`https://api.test/v1/img/e${++n}`));
+    renderUploader(root, { ...DISPUTE, dispute_note: "the corner is crushed" }, undefined, () => host);
+
+    await dropFiles([imageFile("a.jpg"), imageFile("b.jpg")]);
+
+    expect(calls.map((c) => c.name)).toEqual(["firestarter_upload_image", "firestarter_upload_image"]);
+    // Money-moving tools stay out of reach of the widget.
+    expect(calls.some((c) => c.name.includes("disputes"))).toBe(false);
+    for (const c of calls) {
+      expect(c.args).toMatchObject({ dispute_id: "disp_1", dispute_side: "buyer" });
+    }
+    // The person's words belong in the thread once, not once per photo.
+    expect(calls[0].args.dispute_note).toBe("the corner is crushed");
+    expect(calls[1].args.dispute_note).toBeUndefined();
+    expect(told.join(" ")).toContain("posted to dispute disp_1");
+  });
+
+  it("sends the note with the first photo that actually lands", async () => {
+    let n = 0;
+    const { host, calls } = fakeHost(() =>
+      ++n === 1 ? { ok: false, text: "storage blip", structured: null } : uploadedAs("https://api.test/v1/img/e2"));
+    renderUploader(root, { ...DISPUTE, dispute_note: "see the tear" }, undefined, () => host);
+
+    await dropFiles([imageFile("a.jpg"), imageFile("b.jpg")]);
+
+    // The first call failed, so its note never reached the thread — the second
+    // must carry it rather than silently dropping the buyer's words.
+    expect(calls[1].args.dispute_note).toBe("see the tear");
+  });
+
+  it("caps a drop at the five attachments the thread will accept", async () => {
+    let n = 0;
+    const { host, calls } = fakeHost(() => uploadedAs(`https://api.test/v1/img/e${++n}`));
+    renderUploader(root, DISPUTE, undefined, () => host);
+
+    await dropFiles(Array.from({ length: 7 }, (_, i) => imageFile(`p${i}.jpg`)));
+
+    // Uploading a sixth would spend the bytes and then have the message
+    // endpoint refuse the whole post.
+    expect(calls).toHaveLength(5);
+    expect(root.querySelector("#dzs")!.textContent).toContain("Skipped");
+  });
+
+  it("names the dispute it is collecting evidence for", () => {
+    const { host } = fakeHost(() => null);
+    renderUploader(root, DISPUTE, undefined, () => host);
+    expect(root.querySelector(".dz-head")!.textContent).toBe("Bow and Arrow Toy");
+    expect(root.querySelector(".dz-big")!.textContent).toContain("evidence");
+    // One message takes several photos, unlike the single-file avatar mode.
+    expect(root.querySelector<HTMLInputElement>("#dzf")!.multiple).toBe(true);
+  });
+
+  it("reports a failed post instead of implying the evidence landed", async () => {
+    const { host, told } = fakeHost(() => ({ ok: false, text: "Dispute not found", structured: null }));
+    renderUploader(root, DISPUTE, undefined, () => host);
+
+    await dropFiles([imageFile("a.jpg")]);
+
+    expect(root.querySelector("#dzs")!.textContent).toContain("Dispute not found");
+    expect(told.join(" ")).toContain("FAILED");
+  });
+});
