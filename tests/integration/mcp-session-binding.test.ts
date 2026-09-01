@@ -1,23 +1,33 @@
 /**
- * An MCP session is a live credential. Binding and bounding it.
+ * An MCP session id is a transport handle, not a credential.
  *
- * The Streamable-HTTP route read the caller's API key once, at session creation,
- * and then never checked it again: a request carrying a known `mcp-session-id`
- * was routed straight to that session's transport, which is bound to the
- * ORIGINAL key. Anyone holding a leaked session id therefore operated as its
- * owner — buying, changing payout destinations, withdrawing wallet balances.
+ * The Streamable-HTTP route used to bind every session to the SHA-256 of the
+ * Bearer it was created with and answer any other Bearer on that session id
+ * with 404. That was written against raw API keys, which never change — but an
+ * OAuth access token (`fs_oauth_`, one-hour lifetime) is REPLACED on every
+ * refresh. claude.ai refreshed at 14:09:20 UTC on 2026-08-31 and its very next
+ * tool call, on the session it had been using for two minutes, got 404
+ * "Session not found": the user saw "Unable to reach Firestarter" and the
+ * shopping widget failed to render, twice. The same burst sits in the log after
+ * every earlier refresh. This recurs once an hour for every OAuth-connected
+ * client, in the middle of whatever they are doing.
  *
- * The map was also unbounded. `initialize` is reachable before the key has been
- * validated (validation happens upstream on the first TOOL call), so a caller
- * with a syntactically-valid-but-bogus Bearer could pin sessions in a loop. That
- * is not theoretical — against production, `Bearer fs_test_probe` returned 200
- * and a resident mcp-session-id. Each entry carries a full McpServer with 83
- * tools, 7 resources, and 10 prompts.
+ * The property the binding was protecting is real: a leaked session id must not
+ * let its holder act as the session's owner. The binding protected it the wrong
+ * way. The right way is the MCP spec's: Authorization is carried on EVERY
+ * request, and the session id MUST NOT be used for auth. So every upstream call
+ * now carries the Bearer presented on the request that triggered it. A leaked
+ * id then grants nothing — whoever presents it acts only as the credential they
+ * present — and a refreshed token rides the session it was refreshed for.
+ *
+ * `initialize` is still reachable before the key has been validated upstream,
+ * so the map stays bounded (S4/S5).
  *
  * Pinned here:
- *   S1  a different key cannot ride an existing session;
- *   S2  the rejection is indistinguishable from an unknown session id, so it is
- *       not an oracle for "does this session exist?";
+ *   S1  a refreshed Bearer keeps riding the session, and the calls it triggers
+ *       reach the API under the NEW Bearer;
+ *   S2  a session id confers no authority: a different Bearer's calls run as
+ *       that Bearer, and the creator's key never leaves the server for them;
  *   S3  the creating key still works, and repeated use keeps it alive;
  *   S4  idle sessions are swept;
  *   S5  the resident count is capped.
@@ -60,26 +70,57 @@ const followUp = (key: string, sessionId: string) =>
     body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" }),
   });
 
+const CALL = {
+  jsonrpc: "2.0", id: 3, method: "tools/call",
+  params: { name: "firestarter_wallet_balance", arguments: {} },
+};
+
+/** Stub the upstream API and record the Bearer each call arrives with. */
+function captureUpstream(): string[] {
+  const seen: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: RequestInit) => {
+    seen.push(String((init?.headers as Record<string, string> | undefined)?.Authorization ?? ""));
+    return new Response(JSON.stringify({ balance_cents: 0, currency: "USD" }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+  }));
+  return seen;
+}
+
+/** A tool call on an existing session; drains the SSE body so the handler has run. */
+async function callTool(key: string, sessionId: string): Promise<Response> {
+  const res = await app.request("/", {
+    method: "POST", headers: headers(key, sessionId), body: JSON.stringify(CALL),
+  });
+  await res.text().catch(() => "");
+  return res;
+}
+
 beforeEach(() => { resetMcpSessions(); });
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("MCP HTTP session binding", () => {
-  it("S1: a different API key cannot reuse an existing session", async () => {
-    const sessionId = await openSession("fs_live_alice");
-    const res = await followUp("fs_live_mallory", sessionId);
-    expect(res.status).toBe(404);
+  it("S1: a refreshed OAuth token keeps riding the session, and upstream calls carry the NEW token", async () => {
+    const sessionId = await openSession("fs_oauth_before_refresh");
+    const upstream = captureUpstream();
+
+    // claude.ai after POST /oauth/token: same mcp-session-id, new access token.
+    const res = await callTool("fs_oauth_after_refresh", sessionId);
+
+    expect(res.status).toBe(200);
+    expect(upstream.length).toBeGreaterThan(0);
+    expect(upstream.every((h) => h === "Bearer fs_oauth_after_refresh")).toBe(true);
   });
 
-  it("S2: a wrong key and an unknown session id are indistinguishable", async () => {
+  it("S2: a session id confers no authority — a different Bearer's calls run as THAT Bearer, never as the creator's", async () => {
     const sessionId = await openSession("fs_live_alice");
+    const upstream = captureUpstream();
 
-    const wrongKey = await followUp("fs_live_mallory", sessionId);
-    const unknownSession = await followUp("fs_live_mallory", "11111111-2222-3333-4444-555555555555");
+    await callTool("fs_live_mallory", sessionId);
 
-    // Differing responses would confirm a session id exists — exactly what an
-    // attacker probing leaked ids wants to learn.
-    expect(wrongKey.status).toBe(unknownSession.status);
-    expect(await wrongKey.text()).toBe(await unknownSession.text());
+    expect(upstream.length).toBeGreaterThan(0);
+    expect(upstream.every((h) => h === "Bearer fs_live_mallory")).toBe(true);
+    expect(upstream.some((h) => h.includes("fs_live_alice"))).toBe(false);
   });
 
   it("S3: the creating key still works", async () => {
