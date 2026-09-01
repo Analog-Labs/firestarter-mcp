@@ -127,7 +127,7 @@ export function buildMcpServer(apiKey: string, apiBase: string, onAuthError?: (a
     // scripts/sync-version.mjs. This is the version every REMOTE client sees in
     // the initialize handshake — api.firestarter.network/mcp reported 1.1.0
     // while the extension reported 2.1.0, because only server.ts was synced.
-    version: "2.17.3",
+    version: "2.17.4",
     name: "firestarter",
     // Icons, website and description: a client can only render what the
     // handshake declares, which is why the ChatGPT connector showed no icon.
