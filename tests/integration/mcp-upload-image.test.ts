@@ -388,3 +388,91 @@ describe("firestarter_upload_image — a host-bound chat attachment", () => {
     expect(res.structuredContent.upload_request).toBeDefined();
   });
 });
+
+/**
+ * commerce#561 — possession verification, the most acute case of the whole
+ * problem.
+ *
+ * firestarter_verify takes a `photo_url`, and its own description told the
+ * agent to pass "the URL of the photo the seller sent in chat". A photo sent in
+ * chat HAS no URL; the error hint then said to ask the seller to re-send it,
+ * which produces another attachment with no URL. A closed loop, on a gate that
+ * blocks the listing going live — and the seller took that shot on a phone
+ * seconds earlier, so it has never had a URL and never will.
+ */
+describe("firestarter_upload_image — possession verification (#561)", () => {
+  const PHOTO = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBD";
+  const HOSTED = "https://cdn.test/blob/evidence.jpg";
+
+  it("displays a drop zone for the listing that asked for a photo", async () => {
+    const tools = captureTools();
+    const calls = installFetch(() => ({ status: 200, json: {} }));
+
+    const res = await tools.firestarter_upload_image({ verify_listing_id: "lst_abc" });
+
+    expect(calls).toHaveLength(0);
+    expect(res.structuredContent.upload_request).toMatchObject({ verify_listing_id: "lst_abc" });
+    // The zone must not send the agent back to firestarter_verify in the same
+    // turn — that is the duplicate-zone mistake the listing path already made.
+    expect(res.content[0].text).toContain("END YOUR TURN");
+  });
+
+  it("uploads the photo and SUBMITS it for verification, not to the gallery", async () => {
+    const tools = captureTools();
+    const calls = installFetch((_m, url) => {
+      if (url.endsWith("/v1/sellers/upload-image")) return { status: 200, json: { url: HOSTED } };
+      return { status: 200, json: { verification_status: "verified", checked: { item_match: true, code_match: true } } };
+    });
+
+    const res = await tools.firestarter_upload_image({ image_base64: PHOTO, verify_listing_id: "lst_abc" });
+
+    expect(calls.map((c) => c.url)).toEqual([
+      "http://api.test/v1/sellers/upload-image",
+      "http://api.test/v1/listings/lst_abc/verification",
+    ]);
+    expect(calls[1].body).toEqual({ photo_url: HOSTED });
+    // Evidence is not a product photo: nothing may touch the listing's images.
+    expect(calls.some((c) => c.url.includes("/v1/listings/lst_abc") && c.method === "PATCH")).toBe(false);
+    expect(res.content[0].text).toContain("Verified");
+  });
+
+  it("relays a flagged verdict rather than reporting a clean upload", async () => {
+    const tools = captureTools();
+    installFetch((_m, url) => {
+      if (url.endsWith("/v1/sellers/upload-image")) return { status: 200, json: { url: HOSTED } };
+      return { status: 200, json: { verification_status: "flagged", checked: { item_match: true, code_match: false } } };
+    });
+
+    const res = await tools.firestarter_upload_image({ image_base64: PHOTO, verify_listing_id: "lst_abc" });
+
+    expect(res.content[0].text).toContain("Not verified");
+    expect(res.content[0].text).toContain("resubmit");
+  });
+
+  it("never lets a held photo read as verified", async () => {
+    const tools = captureTools();
+    installFetch((_m, url) => {
+      if (url.endsWith("/v1/sellers/upload-image")) return { status: 200, json: { url: HOSTED } };
+      return { status: 200, json: { verification_status: "pending", message: "Vision check unavailable." } };
+    });
+
+    const res = await tools.firestarter_upload_image({ image_base64: PHOTO, verify_listing_id: "lst_abc" });
+
+    expect(res.content[0].text).toContain("not auto-checked");
+    expect(res.content[0].text).not.toContain("**Verified.**");
+  });
+
+  it("hands the URL back when the photo stored but the submit failed", async () => {
+    const tools = captureTools();
+    installFetch((_m, url) => {
+      if (url.endsWith("/v1/sellers/upload-image")) return { status: 200, json: { url: HOSTED } };
+      return { status: 500, json: { error: "vision service down" } };
+    });
+
+    const res = await tools.firestarter_upload_image({ image_base64: PHOTO, verify_listing_id: "lst_abc" });
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain(HOSTED);
+    expect(res.content[0].text).toContain("do NOT upload the photo again");
+  });
+});

@@ -142,7 +142,11 @@ describe("firestarter_verify — evidence submission", () => {
     expect(text).toContain("Item match: no");
     expect(text).toContain("Code match: yes");
     expect(text).toContain("resubmit");
-    expect(text).toContain("firestarter_verify");
+    // The route back has to be named, and it differs by entry point — this one
+    // came through firestarter_verify, so calling it again is right. The drop
+    // zone gets the opposite advice, because a second call there opens a second
+    // zone on top of the one the seller is already looking at.
+    expect(text).toContain("firestarter_verify again");
   });
 
   it("pending (vision could not check): held for review, resubmit possible", async () => {
@@ -205,6 +209,11 @@ describe("firestarter_verify — evidence submission", () => {
     const text = textOf(res);
     expect(text).toContain("photo_url rejected");
     expect(text).toContain("public https image URL");
+    // …and the case where there is no URL to fix. This hint used to end with
+    // "ask the seller to re-send the photo", which is a loop: a chat
+    // attachment has no URL, and re-sending produces another one that also
+    // has none. The photo it is asking about was taken on a phone minutes ago.
+    expect(text).toContain("verify_listing_id");
   });
 });
 

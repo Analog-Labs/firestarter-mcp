@@ -57,6 +57,13 @@ export interface UploadRequest {
   /** The note the model was going to post with the photo. Sent with the FIRST
    *  file only, so the person's words appear once rather than once per photo. */
   dispute_note?: string;
+  /** commerce#561: POSSESSION EVIDENCE — the item beside its handwritten
+   *  FS-XXXX code. One photo, and it is SUBMITTED rather than attached: this
+   *  shot is not part of the listing's gallery. The most acute case of the
+   *  whole problem, since the seller took it on a phone seconds earlier and it
+   *  has never had a URL. */
+  verify_listing_id?: string;
+  verify_label?: string;
 }
 
 export interface ListingSummary {
@@ -142,7 +149,11 @@ export function renderUploader(
   // Dispute evidence: several photos, each posted to the thread as it lands.
   const disputeId = typeof req.dispute_id === "string" && req.dispute_id ? req.dispute_id : null;
   const disputeSide = req.dispute_side === "seller" ? "seller" : "buyer";
-  const title = marketId
+  // Possession evidence: ONE shot, showing the item and the code together.
+  const verifyId = typeof req.verify_listing_id === "string" && req.verify_listing_id ? req.verify_listing_id : null;
+  const title = verifyId
+    ? (typeof req.verify_label === "string" && req.verify_label ? req.verify_label : `Verification photo`)
+    : marketId
     ? (typeof req.market_name === "string" && req.market_name ? req.market_name : null)
     : disputeId
       ? (typeof req.dispute_label === "string" && req.dispute_label ? req.dispute_label : `Dispute ${disputeId}`)
@@ -160,13 +171,13 @@ export function renderUploader(
   root.innerHTML = `
     <div class="uploader">
       ${title ? `<div class="dz-head">${esc(title)}</div>` : ""}
-      <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="${marketId ? "Upload a community market avatar: drop a file here or press Enter to browse" : disputeId ? "Upload dispute evidence photos: drop files here or press Enter to browse" : "Upload product photos: drop files here or press Enter to browse"}">
-        <div class="dz-big">${marketId ? "Drop the community avatar here" : disputeId ? "Drop evidence photos here" : `Drop product photo${listingId ? "s" : "(s)"} here`}</div>
-        <small>or click to browse — JPEG, PNG, WebP or GIF, up to 6&nbsp;MB${marketId ? "" : " each"}${disputeId ? ` — up to ${MAX_DISPUTE_FILES}` : ""}</small>
+      <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="${verifyId ? "Upload the possession verification photo: drop a file here or press Enter to browse" : marketId ? "Upload a community market avatar: drop a file here or press Enter to browse" : disputeId ? "Upload dispute evidence photos: drop files here or press Enter to browse" : "Upload product photos: drop files here or press Enter to browse"}">
+        <div class="dz-big">${verifyId ? "Drop the verification photo here" : marketId ? "Drop the community avatar here" : disputeId ? "Drop evidence photos here" : `Drop product photo${listingId ? "s" : "(s)"} here`}</div>
+        <small>${verifyId ? "the item and the handwritten code both visible — " : ""}or click to browse — JPEG, PNG, WebP or GIF, up to 6&nbsp;MB${marketId || verifyId ? "" : " each"}${disputeId ? ` — up to ${MAX_DISPUTE_FILES}` : ""}</small>
       </div>
       <div class="dz-thumbs" id="dzt" hidden></div>
       <div class="dz-status" id="dzs" role="status" aria-live="polite"></div>
-      <input id="dzf" type="file"${marketId ? "" : " multiple"} accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" />
+      <input id="dzf" type="file"${marketId || verifyId ? "" : " multiple"} accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" />
     </div>`;
 
   const zone = root.querySelector<HTMLElement>("#dz")!;
@@ -209,11 +220,13 @@ export function renderUploader(
     // Partition up-front so the seller hears about every skipped file once,
     // instead of discovering them one failed upload at a time.
     const all = Array.from(list);
-    const cap = marketId ? 1 : disputeId ? MAX_DISPUTE_FILES : MAX_FILES_PER_BATCH;
+    const cap = marketId || verifyId ? 1 : disputeId ? MAX_DISPUTE_FILES : MAX_FILES_PER_BATCH;
     const batch = all.slice(0, cap);
     const skipped: string[] = all.length > cap
       ? [marketId
         ? `${all.length - 1} extra file(s) ignored — a market has one avatar`
+        : verifyId
+          ? `${all.length - 1} extra file(s) ignored — verification takes one photo`
         : disputeId
           ? `${all.length - cap} file(s) over the ${cap}-photo limit on a dispute message — drop them next`
           : `${all.length - cap} file(s) over the ${cap}-at-once limit — drop them next`]
@@ -237,6 +250,10 @@ export function renderUploader(
     zone.classList.add("busy");
     const uploaded: string[] = [];
     const failed: string[] = [];
+    /** The last successful upload call's reply. In verification mode this is
+     *  the verdict (verified / flagged / held), which is the whole point of
+     *  the drop — so it goes back to the model verbatim. */
+    let lastReply = "";
     try {
       for (let i = 0; i < accepted.length; i++) {
         const file = accepted[i];
@@ -259,6 +276,7 @@ export function renderUploader(
         const res = await host.callToolFull("firestarter_upload_image", {
           image_base64: dataUrl,
           filename: file.name,
+          ...(verifyId ? { verify_listing_id: verifyId } : {}),
           ...(disputeId
             ? {
               dispute_id: disputeId,
@@ -282,6 +300,7 @@ export function renderUploader(
         }
         uploaded.push(url);
         gallery.push(url);
+        lastReply = res.text ?? "";
         addThumb(file);
       }
 
@@ -294,6 +313,20 @@ export function renderUploader(
 
       let summary = `${uploaded.length} photo${uploaded.length === 1 ? "" : "s"} uploaded: ${uploaded.join(" ")}`;
       let headline = `✓ ${uploaded.length} photo${uploaded.length === 1 ? "" : "s"} uploaded.`;
+
+      if (verifyId) {
+        // The upload already submitted itself; the tool's reply IS the verdict,
+        // and it is the only thing worth showing — "uploaded" would bury it.
+        const verdict = lastReply.trim();
+        summary = `verification photo submitted for ${verifyId}: ${uploaded[0]}`;
+        headline = "✓ Verification photo submitted.";
+        if (problems.length) summary += ` Skipped: ${problems.join("; ").slice(0, 200)}`;
+        status.innerHTML = `<span class="dz-ok">${esc(headline)}</span>` +
+          `<br><small>The agent will report whether it verified.</small>` +
+          (problems.length ? `<br><span class="dz-err">Skipped: ${esc(problems.join("; ").slice(0, 200))}</span>` : "");
+        tell(summary + (verdict ? ` Outcome: ${verdict.slice(0, 400)}` : ""));
+        return;
+      }
 
       if (disputeId) {
         // Each upload already posted itself to the thread, so there is no

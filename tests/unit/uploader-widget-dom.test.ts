@@ -272,3 +272,63 @@ describe("the drop zone in dispute mode", () => {
     expect(told.join(" ")).toContain("FAILED");
   });
 });
+
+/**
+ * commerce#561 — the verification mode.
+ *
+ * Unlike every other mode, the drop's whole VALUE is the reply: the tool
+ * answers verified / flagged / held, and the seller cannot act until they know
+ * which. So the verdict is mirrored to the model verbatim rather than being
+ * flattened into "1 photo uploaded".
+ */
+describe("the drop zone in verification mode", () => {
+  const VERIFY = { verify_listing_id: "lst_9", verify_label: "Verification photo for lst_9" };
+
+  it("submits one photo and relays the verdict to the model", async () => {
+    const { host, calls, told } = fakeHost(() => ({
+      ok: true,
+      text: "**Verified.** The photo matches the listing and the handwritten code",
+      structured: { url: "https://api.test/v1/img/v1" },
+    }));
+    renderUploader(root, VERIFY, undefined, () => host);
+
+    await dropFiles([imageFile("code.jpg")]);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toMatchObject({ verify_listing_id: "lst_9" });
+    // The verdict is the point of the drop — losing it would leave the seller
+    // waiting on an answer the widget already had.
+    expect(told.join(" ")).toContain("Verified");
+  });
+
+  it("takes ONE photo — evidence is a single shot, not a gallery", async () => {
+    let n = 0;
+    const { host, calls } = fakeHost(() => ({
+      ok: true, text: "held", structured: { url: `https://api.test/v1/img/v${++n}` },
+    }));
+    renderUploader(root, VERIFY, undefined, () => host);
+
+    await dropFiles([imageFile("a.jpg"), imageFile("b.jpg")]);
+
+    expect(calls).toHaveLength(1);
+    expect(root.querySelector<HTMLInputElement>("#dzf")!.multiple).toBe(false);
+  });
+
+  it("tells the seller what the shot has to show", () => {
+    const { host } = fakeHost(() => null);
+    renderUploader(root, VERIFY, undefined, () => host);
+    expect(root.querySelector(".dz-head")!.textContent).toBe("Verification photo for lst_9");
+    expect(root.querySelector(".uploader")!.textContent).toContain("handwritten code");
+  });
+
+  it("never attaches the evidence to a listing gallery", async () => {
+    const { host, calls } = fakeHost(() => ({
+      ok: true, text: "verified", structured: { url: "https://api.test/v1/img/v1" },
+    }));
+    renderUploader(root, VERIFY, undefined, () => host);
+
+    await dropFiles([imageFile("code.jpg")]);
+
+    expect(calls.some((c) => c.name === "firestarter_update_listing")).toBe(false);
+  });
+});
