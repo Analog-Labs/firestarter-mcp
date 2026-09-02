@@ -231,6 +231,24 @@ describe("drop zone: videos", () => {
     expect(root.querySelector("#dzs")!.textContent).toContain("video limit 25 MB");
   });
 
+  it("routes an iPhone MOV (video/quicktime) to the video rail", async () => {
+    const { host, calls } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, {}, undefined, () => host);
+
+    await dropFiles([videoFile("clip.mov", 256, "video/quicktime")]);
+
+    expect(calls.map((c) => c.name)).toEqual(["firestarter_upload_video"]);
+  });
+
+  it("routes an AVIF to the image rail", async () => {
+    const { host, calls } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, {}, undefined, () => host);
+
+    await dropFiles([imageFile("pic.avif", 64, "image/avif")]);
+
+    expect(calls.map((c) => c.name)).toEqual(["firestarter_upload_image"]);
+  });
+
   it("keeps the market avatar zone image-only", async () => {
     const { host, calls } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
     renderUploader(root, { market_program_id: "apg_1", market_name: "Trailhead" }, undefined, () => host);

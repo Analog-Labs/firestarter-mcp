@@ -141,10 +141,11 @@ const api = createServer((req, res) => {
       const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
       const jpegComplete = bytes.length >= 2 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
       const isPng = bytes[0] === 0x89 && bytes[1] === 0x50;
+      const isAvif = bytes.length >= 12 && bytes.toString("latin1", 4, 8) === "ftyp" && bytes.toString("latin1", 8, 12).trim().toLowerCase().startsWith("avi");
       if (isJpeg && !jpegComplete) {
         return send(400, { error: "The image data arrived incomplete — the file was cut short in transit and would render broken.", code: "INVALID_IMAGE" });
       }
-      if (!isJpeg && !isPng) return send(400, { error: "Not a supported image", code: "INVALID_IMAGE" });
+      if (!isJpeg && !isPng && !isAvif) return send(400, { error: "Not a supported image", code: "INVALID_IMAGE" });
       return send(200, { url: hostedUrl(base, bytes) });
     }
     if (req.method === "POST" && req.url === "/v1/sellers/upload-video") {
@@ -153,7 +154,9 @@ const api = createServer((req, res) => {
       const b64 = String(body.video_base64).includes(",") ? String(body.video_base64).split(",", 2)[1] : String(body.video_base64);
       const bytes = Buffer.from(b64, "base64");
       // sniffVideoMime: MP4's ftyp box at offset 4, WebM's EBML header.
-      const isMp4 = bytes.length >= 12 && bytes.toString("latin1", 4, 8) === "ftyp";
+      const brand = bytes.length >= 12 && bytes.toString("latin1", 4, 8) === "ftyp" ? bytes.toString("latin1", 8, 12).trim().toLowerCase() : null;
+      // Brand-aware like the real sniffer: qt is a clip, HEIC/AVIF are images.
+      const isMp4 = !!brand && !/^(avi|hei|hev|mif|msf)/.test(brand);
       const isWebm = bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3;
       if (!isMp4 && !isWebm) return send(400, { error: "That file is not an MP4 or WebM video.", code: "INVALID_VIDEO" });
       return send(200, { url: hostedVideoUrl(base, bytes) });
@@ -431,6 +434,42 @@ let lampId;
   const byUrl = await call("firestarter_upload_video", { video_url: "https://cdn.example/clip.mp4" });
   ok(!byUrl.isError && /\/v1\/vid\//.test(byUrl.structuredContent?.url ?? ""),
     "V11 video_url re-hosts and returns the URL");
+}
+
+// T. Tier-1 formats: MOV and AVIF in, HEIC refused with a pointer
+{
+  const dir = mkdtempSync(join(tmpdir(), "e2e-t1-"));
+  try {
+    const ftypFile = (brand) => Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x14]),
+      Buffer.from("ftyp" + (brand + "    ").slice(0, 4), "latin1"),
+      Buffer.alloc(24),
+    ]);
+
+    const mov = join(dir, "clip.mov");
+    writeFileSync(mov, ftypFile("qt"));
+    const byMov = await call("firestarter_upload_video", { video_path: mov });
+    ok(!byMov.isError && /\/v1\/vid\//.test(byMov.structuredContent?.url ?? ""),
+      "T1 an iPhone MOV uploads through video_path");
+
+    const heicAsVid = join(dir, "photo-as.mov");
+    writeFileSync(heicAsVid, ftypFile("heic"));
+    const refusedVid = await call("firestarter_upload_video", { video_path: heicAsVid });
+    ok(refusedVid.isError && /not a supported video/i.test(refusedVid.text),
+      "T2 an HEIC handed to the video rail is refused, not stored as MP4");
+
+    const avif = join(dir, "pic.avif");
+    writeFileSync(avif, ftypFile("avif"));
+    const byAvif = await call("firestarter_upload_image", { image_path: avif });
+    ok(!byAvif.isError && /^http/.test(byAvif.structuredContent?.url ?? ""),
+      "T3 an AVIF uploads through image_path");
+
+    const heic = join(dir, "photo.heic");
+    writeFileSync(heic, ftypFile("heic"));
+    const refusedImg = await call("firestarter_upload_image", { image_path: heic });
+    ok(refusedImg.isError && /HEIC/.test(refusedImg.text) && /JPEG/.test(refusedImg.text),
+      "T4 an HEIC image is refused with the export-as-JPEG pointer");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
 child.kill();

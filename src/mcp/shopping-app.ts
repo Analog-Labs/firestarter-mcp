@@ -42,7 +42,9 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // listing) — clips ride firestarter_upload_video and attach via video_urls;
 // activation still keys on a photo. The market, dispute, and verification
 // modes stay image-only.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v14";
+// v15: tier-1 format widening — AVIF photos and QuickTime (.mov) clips join
+// the accept lists, matching the API's brand-aware sniffers.
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v15";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //

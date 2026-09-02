@@ -92,12 +92,15 @@ const MAX_FILES_PER_BATCH = 8;
 /** Mirrors MAX_DISPUTE_ATTACHMENTS in the API (services/disputes.ts). Accepting
  *  a sixth here would upload it and then have the thread refuse it. */
 const MAX_DISPUTE_FILES = 5;
-const IMAGE_TYPE_RE = /^image\/(png|jpe?g|webp|gif)$/i;
-const VIDEO_TYPE_RE = /^video\/(mp4|webm)$/i;
+const IMAGE_TYPE_RE = /^image\/(png|jpe?g|webp|gif|avif)$/i;
+// QuickTime is the iPhone camera's default container — browsers label a .mov
+// as video/quicktime. The server sniffs the real bytes (and refuses an HEVC-
+// free-riding HEIC), so accepting it here only widens the funnel.
+const VIDEO_TYPE_RE = /^video\/(mp4|webm|quicktime)$/i;
 /** Some drag sources hand over files with an empty MIME type; the extension is
  *  the only signal left. The server sniffs real bytes either way. */
-const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif)$/i;
-const VIDEO_EXT_RE = /\.(mp4|webm)$/i;
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|avif)$/i;
+const VIDEO_EXT_RE = /\.(mp4|webm|mov)$/i;
 
 const DASHBOARD_URL = "https://firestarter.network/seller";
 
@@ -187,14 +190,14 @@ export function renderUploader(
   // an image-only endpoint.
   const imageOnly = !!(marketId || verifyId || disputeId);
   const acceptAttr = imageOnly
-    ? "image/png,image/jpeg,image/webp,image/gif"
-    : "image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm";
+    ? "image/png,image/jpeg,image/webp,image/gif,image/avif"
+    : "image/png,image/jpeg,image/webp,image/gif,image/avif,video/mp4,video/webm,video/quicktime";
   root.innerHTML = `
     <div class="uploader">
       ${title ? `<div class="dz-head">${esc(title)}</div>` : ""}
       <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="${verifyId ? "Upload the possession verification photo: drop a file here or press Enter to browse" : marketId ? "Upload a community market avatar: drop a file here or press Enter to browse" : disputeId ? "Upload dispute evidence photos: drop files here or press Enter to browse" : "Upload product photos or videos: drop files here or press Enter to browse"}">
         <div class="dz-big">${verifyId ? "Drop the verification photo here" : marketId ? "Drop the community avatar here" : disputeId ? "Drop evidence photos here" : `Drop product photo${listingId ? "s" : "(s)"} or video${listingId ? "s" : "(s)"} here`}</div>
-        <small>${verifyId ? "the item and the handwritten code both visible — " : ""}or click to browse — ${imageOnly ? `JPEG, PNG, WebP or GIF, up to 6&nbsp;MB${marketId || verifyId ? "" : " each"}` : "photos up to 6&nbsp;MB · MP4/WebM clips up to 25&nbsp;MB"}${disputeId ? ` — up to ${MAX_DISPUTE_FILES}` : ""}</small>
+        <small>${verifyId ? "the item and the handwritten code both visible — " : ""}or click to browse — ${imageOnly ? `JPEG, PNG, WebP or GIF, up to 6&nbsp;MB${marketId || verifyId ? "" : " each"}` : "photos up to 6&nbsp;MB · MP4/MOV/WebM clips up to 25&nbsp;MB"}${disputeId ? ` — up to ${MAX_DISPUTE_FILES}` : ""}</small>
       </div>
       <div class="dz-thumbs" id="dzt" hidden></div>
       <div class="dz-status" id="dzs" role="status" aria-live="polite"></div>
