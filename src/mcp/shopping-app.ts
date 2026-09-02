@@ -38,7 +38,13 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // Apps on mobile in a native WebView and treats anything outside the safe area
 // as NOT INTERACTABLE — a drop zone under the chat input is a control the
 // seller cannot press, not a cosmetic nit.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v13";
+// v14: the listing drop zone takes VIDEOS too (MP4/WebM ≤ 25MB, ≤ 3 per
+// listing) — clips ride firestarter_upload_video and attach via video_urls;
+// activation still keys on a photo. The market, dispute, and verification
+// modes stay image-only.
+// v15: tier-1 format widening — AVIF photos and QuickTime (.mov) clips join
+// the accept lists, matching the API's brand-aware sniffers.
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v15";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //
@@ -103,7 +109,7 @@ export function registerShoppingApp(server: McpServer): void {
         // its model is told the widget shows, so it can decide when the
         // inline view answers the question and prose is unnecessary.
         "openai/widgetDescription":
-          "An inline product grid: each card rotates the listing's photos, and clicking one opens the product's full detail in place — photos (click one to view it full size), video, price, rating, seller and buyer reviews. For sellers it renders the created/updated listing as a card, and — when a listing still needs its photo — a drag-and-drop upload zone that attaches the seller's original photo files to the listing losslessly and activates it.",
+          "An inline product grid: each card rotates the listing's photos, and clicking one opens the product's full detail in place — photos (click one to view it full size), video, price, rating, seller and buyer reviews. For sellers it renders the created/updated listing as a card, and — when a listing still needs its photo — a drag-and-drop upload zone that attaches the seller's original photo and video files to the listing losslessly and activates it.",
         "openai/widgetPrefersBorder": false,
       },
     }],

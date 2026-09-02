@@ -447,6 +447,11 @@
     "destructiveHint": false,
     "openWorldHint": true
   },
+  "firestarter_upload_video": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "openWorldHint": true
+  },
   "firestarter_verify": {
     "readOnlyHint": false,
     "destructiveHint": false,

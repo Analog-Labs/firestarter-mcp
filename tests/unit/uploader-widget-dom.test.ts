@@ -45,6 +45,10 @@ function imageFile(name: string, bytes = 64, type = "image/jpeg"): File {
   return new File([new Uint8Array(bytes)], name, { type });
 }
 
+function videoFile(name: string, bytes = 256, type = "video/mp4"): File {
+  return new File([new Uint8Array(bytes)], name, { type });
+}
+
 /** Push files through the hidden input, then wait for the async pipeline. */
 async function dropFiles(files: File[]): Promise<void> {
   const input = root.querySelector<HTMLInputElement>("#dzf")!;
@@ -113,7 +117,7 @@ describe("drop zone: upload → attach → activate", () => {
 
     // Attach happened and is not rolled into the failed activation.
     expect(calls.filter((c) => c.name === "firestarter_update_listing")).toHaveLength(2);
-    expect(root.querySelector("#dzs")!.textContent).toContain("attached");
+    expect(root.querySelector("#dzs")!.textContent).toMatch(/attached/i);
     expect(told.join(" ")).toContain("possession verification");
   });
 
@@ -139,6 +143,120 @@ describe("drop zone: upload → attach → activate", () => {
 
     expect(calls.map((c) => c.name)).toEqual(["firestarter_upload_image"]);
     expect(told.join(" ")).toContain("https://api.test/v1/img/new1");
+  });
+});
+
+describe("drop zone: videos", () => {
+  const script = (urls: Record<string, string>) => (name: string): FullResult => {
+    if (name === "firestarter_upload_image") return { ok: true, text: "up", structured: { url: urls.image } };
+    if (name === "firestarter_upload_video") return { ok: true, text: "up", structured: { url: urls.video } };
+    return { ok: true, text: "updated", structured: null };
+  };
+
+  it("routes a clip to firestarter_upload_video and attaches via video_urls, keeping existing clips", async () => {
+    const { host, calls, told } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, {
+      listing_id: "lst_1",
+      existing_image_urls: ["https://api.test/v1/img/old"],
+      existing_video_urls: ["https://api.test/v1/vid/old"],
+      activate: false,
+    }, undefined, () => host);
+
+    await dropFiles([videoFile("demo.mp4")]);
+
+    expect(calls.map((c) => c.name)).toEqual(["firestarter_upload_video", "firestarter_update_listing"]);
+    // video_urls replaces wholesale — the existing clip must ride along; and a
+    // video-only drop must NOT touch image_urls (absent = untouched).
+    expect(calls[1].args).toEqual({
+      listing_id: "lst_1",
+      video_urls: ["https://api.test/v1/vid/old", "https://api.test/v1/vid/v1"],
+    });
+    expect(told.join(" ")).toContain("1 video");
+  });
+
+  it("attaches a mixed drop in one update carrying both rails, then activates", async () => {
+    const { host, calls } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, { listing_id: "lst_1", existing_image_urls: [], existing_video_urls: [], activate: true }, undefined, () => host);
+
+    await dropFiles([imageFile("a.jpg"), videoFile("b.mp4")]);
+
+    const attach = calls.find((c) => c.name === "firestarter_update_listing" && !c.args.status);
+    expect(attach?.args).toEqual({
+      listing_id: "lst_1",
+      image_urls: ["https://api.test/v1/img/i1"],
+      video_urls: ["https://api.test/v1/vid/v1"],
+    });
+    // The photo landed, so activation proceeds.
+    expect(calls.some((c) => c.args.status === "active")).toBe(true);
+    expect(root.querySelector("#dzs")!.textContent).toContain("live");
+  });
+
+  it("does not attempt activation on a video-only drop when the photo gate is still open", async () => {
+    const { host, calls, told } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, { listing_id: "lst_1", existing_image_urls: [], existing_video_urls: [], activate: true }, undefined, () => host);
+
+    await dropFiles([videoFile("only.mp4")]);
+
+    // Attach yes, activate no — the gallery still has no photo and the PATCH
+    // into active would be a guaranteed refusal.
+    expect(calls.some((c) => c.args.status === "active")).toBe(false);
+    expect(root.querySelector("#dzs")!.textContent).toContain("photo");
+    expect(told.join(" ")).toContain("needs a PHOTO");
+  });
+
+  it("refuses the clip that would exceed the 3-video listing cap before uploading it", async () => {
+    const { host, calls } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, {
+      listing_id: "lst_1",
+      existing_image_urls: [],
+      existing_video_urls: ["https://api.test/v1/vid/a", "https://api.test/v1/vid/b", "https://api.test/v1/vid/c"],
+      activate: false,
+    }, undefined, () => host);
+
+    await dropFiles([videoFile("fourth.mp4"), imageFile("still-fine.jpg")]);
+
+    // The 4th clip never rode the bridge; the photo still went through.
+    expect(calls.filter((c) => c.name === "firestarter_upload_video")).toHaveLength(0);
+    expect(calls.filter((c) => c.name === "firestarter_upload_image")).toHaveLength(1);
+    expect(root.querySelector("#dzs")!.textContent).toContain("at most 3 videos");
+  });
+
+  it("skips an oversized clip with the video limit named", async () => {
+    const { host, calls } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, {}, undefined, () => host);
+
+    await dropFiles([videoFile("huge.mp4", 26 * 1024 * 1024), imageFile("ok.jpg")]);
+
+    expect(calls.filter((c) => c.name === "firestarter_upload_video")).toHaveLength(0);
+    expect(root.querySelector("#dzs")!.textContent).toContain("video limit 25 MB");
+  });
+
+  it("routes an iPhone MOV (video/quicktime) to the video rail", async () => {
+    const { host, calls } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, {}, undefined, () => host);
+
+    await dropFiles([videoFile("clip.mov", 256, "video/quicktime")]);
+
+    expect(calls.map((c) => c.name)).toEqual(["firestarter_upload_video"]);
+  });
+
+  it("routes an AVIF to the image rail", async () => {
+    const { host, calls } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, {}, undefined, () => host);
+
+    await dropFiles([imageFile("pic.avif", 64, "image/avif")]);
+
+    expect(calls.map((c) => c.name)).toEqual(["firestarter_upload_image"]);
+  });
+
+  it("keeps the market avatar zone image-only", async () => {
+    const { host, calls } = fakeHost(script({ image: "https://api.test/v1/img/i1", video: "https://api.test/v1/vid/v1" }));
+    renderUploader(root, { market_program_id: "apg_1", market_name: "Trailhead" }, undefined, () => host);
+
+    await dropFiles([videoFile("clip.mp4")]);
+
+    expect(calls).toHaveLength(0);
+    expect(root.querySelector("#dzs")!.textContent).toContain("not a supported image");
   });
 });
 

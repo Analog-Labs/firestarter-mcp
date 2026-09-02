@@ -48,6 +48,10 @@ export const SERVER_LISTING_INGEST_BUDGET_MS = 20_000;
 // "the upload timed out" and retried until their Claude quota ran out, which
 // is the report in #849 verbatim.
 export const UPLOAD_IMAGE_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_UPLOAD_IMAGE_TIMEOUT_MS || 60_000);
+// A video is 4x the image cap and the server may fetch it remotely (video_url)
+// or write 25MB into the blob store — double the image budget rather than
+// letting a legitimate clip time out at the photo deadline.
+export const UPLOAD_VIDEO_TIMEOUT_MS = Number(process.env.FIRESTARTER_MCP_UPLOAD_VIDEO_TIMEOUT_MS || 120_000);
 // A listing create/update carrying image_urls ingests the whole gallery inside
 // the request (20s budget), then runs prohibited-item checks and the activation
 // gates on top. 12s could not cover the ingest alone.
@@ -2247,11 +2251,25 @@ function listingSummaryStructured(listing: any): Record<string, unknown> {
     price: typeof listing?.base_price === "number" ? listing.base_price : undefined,
     status: listing?.status ?? undefined,
     images,
+    // The drop zone needs the video set for the same wholesale-replacement
+    // reason as images (video_urls replaces the whole list). API shape is
+    // [{url, ...}] — flatten to the urls the widget re-sends.
+    videos: listingVideoUrls(listing),
   };
   const share = listingShareUrl(listing);
   if (share) summary.share_url = share;
   if (blocked.length) summary.blocked = blocked;
   return summary;
+}
+
+/** The listing's video URLs, whatever shape the API sent them in ([{url}] on
+ *  reads, occasionally bare strings) — the drop zone re-sends these wholesale
+ *  when a dropped clip grows the set. */
+function listingVideoUrls(listing: any): string[] {
+  if (!Array.isArray(listing?.videos)) return [];
+  return listing.videos
+    .map((v: any) => (typeof v === "string" ? v : typeof v?.url === "string" ? v.url : null))
+    .filter((u: string | null): u is string => !!u && /^https?:\/\//.test(u));
 }
 
 /**
@@ -2269,13 +2287,39 @@ function shouldActivateAfterPhoto(listing: any): boolean {
   return blocks.every((b: any) => b?.code === "NEEDS_IMAGE");
 }
 
-/** Magic-byte sniff for the four formats the API accepts. Local-path uploads
+/** Major brand of an ISO-BMFF `ftyp` container, or null. MP4, MOV, AVIF, and
+ *  HEIC all share the ftyp signature — only the brand tells a clip from an
+ *  iPhone photo, so both local sniffers read it (mirroring the API's own). */
+function isoBmffBrandLocal(bytes: Buffer): string | null {
+  if (bytes.length < 12 || bytes.toString("latin1", 4, 8) !== "ftyp") return null;
+  return bytes.toString("latin1", 8, 12).trim().toLowerCase();
+}
+const HEIF_BRANDS_LOCAL = new Set(["heic", "heix", "heim", "heis", "hevc", "hevm", "hevs", "mif1", "msf1"]);
+const AVIF_BRANDS_LOCAL = new Set(["avif", "avis"]);
+
+/** Magic-byte sniff for the video formats the API accepts (ISO-BMFF brands +
+ *  WebM's EBML header). Local-path uploads only — everywhere else the server
+ *  sniffs for itself. */
+function sniffVideoMimeLocal(bytes: Buffer): string | null {
+  const brand = isoBmffBrandLocal(bytes);
+  if (brand) {
+    if (AVIF_BRANDS_LOCAL.has(brand) || HEIF_BRANDS_LOCAL.has(brand)) return null; // still image, not a clip
+    if (brand === "qt") return "video/quicktime";
+    return "video/mp4";
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return "video/webm";
+  return null;
+}
+
+/** Magic-byte sniff for the image formats the API accepts. Local-path uploads
  *  only — everywhere else the server sniffs for itself. */
 function sniffImageMimeLocal(bytes: Buffer): string | null {
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
   if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
   if (bytes.length >= 4 && bytes.toString("latin1", 0, 4) === "GIF8") return "image/gif";
   if (bytes.length >= 12 && bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 12) === "WEBP") return "image/webp";
+  const brand = isoBmffBrandLocal(bytes);
+  if (brand && AVIF_BRANDS_LOCAL.has(brand)) return "image/avif";
   return null;
 }
 
@@ -4058,6 +4102,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // base64 is the fallback for images that exist nowhere as a URL, because a
   // data URI rebuilt from a linked image does not survive being emitted as a
   // tool argument (same mechanism as the dispute-photo fix, commerce#749).
+  const videoUploadSuccessResult = (url: string) => ({
+    content: [{ type: "text" as const, text: `✅ Video uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`video_urls\` array when calling firestarter_list or firestarter_update_listing (video_urls replaces the whole set — include existing clips to keep them).` }],
+    // The drop zone reads the hosted URL from here, same as the image tool.
+    structuredContent: { url },
+  });
   const uploadSuccessResult = (url: string, note = "") => ({
     content: [{ type: "text" as const, text: `✅ Image uploaded successfully.\n\nHosted URL: ${url}\n\nUse this URL in the \`image_urls\` array when calling firestarter_list or firestarter_update_listing.${note}` }],
     // The widget reads the hosted URL from here — the drop zone's own upload
@@ -4084,16 +4133,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     "firestarter_upload_image",
     {
       description:
-        "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat, the seller drops the photo onto it, and the ORIGINAL file uploads at full quality — then attaches to the listing and requests activation automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64)"
+        "Upload a product photo and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing image_urls. FOR A PHOTO OR VIDEO ATTACHED IN THE CHAT, call this tool with NO image input (plus listing_id when a draft listing needs the photo): an interactive DROP ZONE is displayed in the chat — it accepts photos AND videos (MP4/MOV/WebM ≤ 25 MB) — the seller drops the file onto it, and the ORIGINAL uploads at full quality, attaches to the listing, and activation is requested automatically. EXCEPTION: a firestarter_list or firestarter_update_listing reply that reports a photoless draft ALREADY displays that drop zone — do not call this tool on top of it (that opens a duplicate zone); just tell the seller to drop the photo and end the turn. Never re-encode a chat attachment as base64 yourself, even via a code sandbox that can read it: model-emitted base64 is fabricated or truncated (a real 360 KB photo arrived as 9.7 KB) and can stall for minutes; the drop zone takes seconds and is lossless. The direct inputs are for other cases: image_url when the photo already exists at a public URL (the server fetches and re-hosts it — always prefer this over any base64)"
         + (localFiles ? "; image_path when the photo is a file on THIS computer (this local build reads it directly — cheap and lossless)" : "")
         + "; image_base64 (data-URI, max 6 MB) ONLY for bytes produced programmatically that exist nowhere else — in practice it is unreliable above ~1 MB. On a host without interactive widgets, direct the seller to the dashboard (https://firestarter.network/seller) or ask for a public URL."
         + " On ChatGPT, a photo the user attached to their message is bound into image_file by the host automatically — do not fill that field yourself, and do not ask for a URL when it is present."
         + " ALSO HANDLES POSSESSION VERIFICATION: pass verify_listing_id to display the drop zone for a listing that asked for a photo of the item beside its handwritten FS-XXXX code — the dropped photo is submitted for verification, not added to the gallery."
         + " ALSO HANDLES DISPUTE EVIDENCE: pass dispute_id (and dispute_side 'seller' for an order they sold) to display the drop zone for that dispute — every photo dropped is uploaded AND posted to the dispute thread. Use that for a photo attached in the chat instead of asking the user for a publicly hosted image link, which they usually cannot produce.",
       inputSchema: {
-        image_url: z.string().optional().describe("PREFERRED when a URL exists. Public URL of the photo; the server fetches and re-hosts it (JPEG, PNG, WebP, or GIF under 6 MB)."),
+        image_url: z.string().optional().describe("PREFERRED when a URL exists. Public URL of the photo; the server fetches and re-hosts it (JPEG, PNG, WebP, GIF, or AVIF under 6 MB)."),
         ...(localFiles ? {
-          image_path: z.string().optional().describe("Absolute path of an image file on THIS computer (JPEG, PNG, WebP, or GIF under 6 MB). This local build reads the file from disk itself — no bytes travel through the conversation. Use for any photo the seller references by file location."),
+          image_path: z.string().optional().describe("Absolute path of an image file on THIS computer (JPEG, PNG, WebP, GIF, or AVIF under 6 MB). An iPhone HEIC is not supported yet — export it as JPEG first. This local build reads the file from disk itself — no bytes travel through the conversation. Use for any photo the seller references by file location."),
         } : {}),
         image_base64: z.string().optional().describe("LAST RESORT — only for bytes produced programmatically that exist at no URL and in no file. NEVER for a chat-attached photo: model-emitted base64 is fabricated or truncated; call with NO image instead to display the lossless drop zone. Data-URI format, max 6 MB, unreliable above ~1 MB; the server rejects a payload that arrives cut short."),
         filename: z.string().optional().describe("Optional original filename, kept only as a label. It does NOT decide the image format — the server reads that from the bytes — so a .jpg name on PNG data is harmless and a wrong extension can no longer mislabel the stored photo."),
@@ -4238,7 +4287,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }
           const mime = sniffImageMimeLocal(bytes);
           if (!mime) {
-            return { content: [{ type: "text" as const, text: `Error: ${image_path} is not a supported image. JPEG, PNG, WebP, or GIF only.` }], isError: true };
+            return { content: [{ type: "text" as const, text: `Error: ${image_path} is not a supported image. JPEG, PNG, WebP, GIF, or AVIF only. (An iPhone HEIC must be exported as JPEG first.)` }], isError: true };
           }
           const dataUri = `data:${mime};base64,${bytes.toString("base64")}`;
           const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_base64: dataUri, filename: filename || basename(image_path) }, UPLOAD_IMAGE_TIMEOUT_MS);
@@ -4252,7 +4301,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_url, filename }, UPLOAD_IMAGE_TIMEOUT_MS);
           const url = (res as any)?.url;
           if (!url) {
-            return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The URL must point to a public JPEG, PNG, WebP, or GIF under 6 MB." }], isError: true };
+            return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The URL must point to a public JPEG, PNG, WebP, GIF, or AVIF under 6 MB." }], isError: true };
           }
           return await finishUpload(url);
         }
@@ -4270,6 +4319,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               const listing = await apiRequest("GET", `/v1/listings/${id}`);
               summary = listingSummaryStructured(listing);
               uploadRequest.existing_image_urls = summary.images;
+              uploadRequest.existing_video_urls = summary.videos;
               uploadRequest.activate = shouldActivateAfterPhoto(listing);
               if (!product_name && typeof (listing as any)?.product_name === "string") {
                 uploadRequest.product_name = (listing as any).product_name;
@@ -4278,6 +4328,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               // The drop zone still works without the lookup; the widget just
               // starts from an empty gallery and attempts activation.
               uploadRequest.existing_image_urls = [];
+              uploadRequest.existing_video_urls = [];
               uploadRequest.activate = true;
             }
           }
@@ -4305,7 +4356,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             : uploadRequest.dispute_id
             ? ` Every dropped photo is posted to dispute ${uploadRequest.dispute_id} at full quality${dispute_note ? ", the first one carrying the note" : ""}.`
             : uploadRequest.listing_id
-              ? ` Every dropped photo attaches to listing ${uploadRequest.listing_id} at full quality${uploadRequest.activate ? " and activation is requested automatically" : ""}.`
+              ? ` Every dropped file (photo or video) attaches to listing ${uploadRequest.listing_id} at full quality${uploadRequest.activate ? " and activation is requested automatically" : ""}.`
               : " The hosted URLs will be reported back in the conversation.";
           // Same STOP phrasing as the firestarter_list draft reply — a
           // conditional fallback here would be executed immediately by a model
@@ -4314,7 +4365,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             ? `A drop zone is displayed — tell the seller to drop the verification photo onto it (the item and the handwritten FS-XXXX code both visible in one shot), or click it to pick the file.${attachNote} A \`[photo-upload widget]\` note will report whether it verified — do NOT call firestarter_verify or any other tool now, and END YOUR TURN after telling the seller. Only if they REPLY that no drop zone is visible: take a public photo URL from them and call firestarter_verify with it. Never re-encode a chat-attached photo as base64.`
             : uploadRequest.dispute_id
             ? `An upload drop zone is displayed — tell them to drop the evidence photo(s) onto it, or click it to pick files (up to 5 per message).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any dispute tool again now, and END YOUR TURN after telling them. Only if they REPLY that no drop zone is visible: take a public photo URL from them and pass it to firestarter_${dispute_side === "seller" ? "seller_" : ""}disputes as image_urls. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`
-            : `An upload drop zone is displayed — tell the seller to drop the product photo(s) onto it, or click it to pick files (several at once is fine; the first becomes the cover, and more can be dropped afterwards to grow the gallery).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: send them to the dashboard uploader (https://firestarter.network/seller) or take a public photo URL from them. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`;
+            : `An upload drop zone is displayed — tell the seller to drop the product photo(s) or video(s) onto it, or click it to pick files (several at once is fine; the first photo becomes the cover, videos join the listing's clips, and more can be dropped afterwards to grow the gallery).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: send them to the dashboard uploader (https://firestarter.network/seller) or take a public photo/video URL from them. Never re-encode a chat attachment as base64 — that path truncates the file and can stall.`;
           return {
             content: [{ type: "text" as const, text: zoneText }],
             structuredContent: summary ? { upload_request: uploadRequest, listing: summary } : { upload_request: uploadRequest },
@@ -4364,6 +4415,103 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           ? " For a photo attached in this chat, call this tool again with NO image to display the drop zone — never rebuild the base64."
           : "";
         return { content: [{ type: "text" as const, text: `Error uploading image: ${msg}${brokenBase64Hint}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool: firestarter_upload_video
+  // The video twin of firestarter_upload_image, POSTing to the API-key route
+  // commerce added for it (/v1/sellers/upload-video). The old "deliberately no
+  // upload_video tool" rationale — 25MB of base64 cannot survive being
+  // MODEL-emitted — still binds the model and the description says so; what
+  // changed is that the drop-zone widget fills video_base64 programmatically
+  // from the seller's original file, the same side channel as photos. No
+  // widget-display mode of its own: the drop zone (firestarter_upload_image
+  // with no image) already takes videos.
+  registerToolCompat(
+    server,
+    "firestarter_upload_video",
+    {
+      description:
+        "Upload a product video (MP4, MOV, or WebM, max 25 MB / ~60s) and get back a permanent hosted URL, accepted by firestarter_list and firestarter_update_listing video_urls. FOR A VIDEO ATTACHED IN THE CHAT: do NOT call this tool with bytes — call firestarter_upload_image with NO image instead, which displays the drop zone; it accepts videos too, and the seller's ORIGINAL file uploads at full quality. NEVER emit video_base64 yourself under any circumstances: 25 MB of base64 is far past any model's output budget and the result is always fabricated or truncated. The direct inputs are for other cases: video_url when the clip already exists at a public URL (the server fetches and re-hosts it)"
+        + (localFiles ? "; video_path when the clip is a file on THIS computer (this local build reads it directly)" : "")
+        + ". video_base64 exists ONLY for programmatic callers (the drop-zone widget) — max 25 MB data-URI.",
+      inputSchema: {
+        video_url: z.string().optional().describe("Public URL of the clip; the server fetches and re-hosts it (MP4, MOV, or WebM under 25 MB). Prefer this whenever the video exists at any URL — or simply pass it straight to video_urls on firestarter_list / firestarter_update_listing."),
+        ...(localFiles ? {
+          video_path: z.string().optional().describe("Absolute path of a video file on THIS computer (MP4, MOV, or WebM under 25 MB). This local build reads the file from disk itself — no bytes travel through the conversation."),
+        } : {}),
+        video_base64: z.string().optional().describe("PROGRAMMATIC CALLERS ONLY (the drop-zone widget). Never model-emitted: 25 MB of base64 cannot survive being written as a tool argument. Data-URI or raw base64, max 25 MB decoded."),
+        filename: z.string().optional().describe("Optional original filename, kept only as a label — the server reads the real format from the bytes."),
+      },
+      annotations: { title: "Upload Product Video", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+      // Same widget resource as the drop zone; widgetAccessible lets the
+      // zone's own video uploads through on hosts that gate widget calls.
+      _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI }, "openai/widgetAccessible": true },
+    },
+    async ({ video_url, video_path, video_base64, filename }: {
+      video_url?: string; video_path?: string; video_base64?: string; filename?: string;
+    }) => {
+      try {
+        if (video_path && localFiles) {
+          let bytes: Buffer;
+          try {
+            const info = await stat(video_path);
+            if (!info.isFile()) {
+              return { content: [{ type: "text" as const, text: `Error: ${video_path} is not a file.` }], isError: true };
+            }
+            if (info.size > 25 * 1024 * 1024) {
+              return { content: [{ type: "text" as const, text: `Error: ${video_path} is ${(info.size / 1024 / 1024).toFixed(1)} MB — the limit is 25 MB (about 60 seconds of phone video). Ask the seller for a shorter or smaller export.` }], isError: true };
+            }
+            bytes = await readFile(video_path);
+          } catch {
+            return { content: [{ type: "text" as const, text: `Error: could not read ${video_path}. Check the path — it must be a file this machine can open.` }], isError: true };
+          }
+          const mime = sniffVideoMimeLocal(bytes);
+          if (!mime) {
+            return { content: [{ type: "text" as const, text: `Error: ${video_path} is not a supported video. MP4, MOV, or WebM only. (An iPhone HEIC photo is an image — use image_path.)` }], isError: true };
+          }
+          const dataUri = `data:${mime};base64,${bytes.toString("base64")}`;
+          const res = await apiRequest("POST", "/v1/sellers/upload-video", { video_base64: dataUri, filename: filename || basename(video_path) }, UPLOAD_VIDEO_TIMEOUT_MS);
+          const url = (res as any)?.url;
+          if (!url) {
+            return { content: [{ type: "text" as const, text: "Error: video upload returned no URL. The file may not be a valid MP4, MOV, or WebM." }], isError: true };
+          }
+          return videoUploadSuccessResult(url);
+        }
+        if (video_url) {
+          const res = await apiRequest("POST", "/v1/sellers/upload-video", { video_url }, UPLOAD_VIDEO_TIMEOUT_MS);
+          const url = (res as any)?.url;
+          if (!url) {
+            return { content: [{ type: "text" as const, text: "Error: video upload returned no URL. The URL must point to a public MP4, MOV, or WebM under 25 MB." }], isError: true };
+          }
+          return videoUploadSuccessResult(url);
+        }
+        if (!video_base64) {
+          return { content: [{ type: "text" as const, text: "Error: pass video_url (any public URL of the clip)" + (localFiles ? ", video_path (a file on this computer)" : "") + ", or — for a video attached in the chat — call firestarter_upload_image with NO image to display the drop zone, which accepts videos. Never emit video_base64 yourself." }], isError: true };
+        }
+        const b64Part = String(video_base64).includes(",") ? String(video_base64).split(",", 2)[1] : String(video_base64);
+        const approx = Math.floor((b64Part.replace(/\s+/g, "").length * 3) / 4);
+        if (approx > 25 * 1024 * 1024) {
+          return { content: [{ type: "text" as const, text: `Error: video is too large (${(approx / 1024 / 1024).toFixed(1)} MB). Max is 25 MB.` }], isError: true };
+        }
+        const res = await apiRequest("POST", "/v1/sellers/upload-video", { video_base64, filename }, UPLOAD_VIDEO_TIMEOUT_MS);
+        const url = (res as any)?.url;
+        if (!url) {
+          return { content: [{ type: "text" as const, text: "Error: video upload returned no URL. The clip may be invalid or too large (max 25 MB)." }], isError: true };
+        }
+        return videoUploadSuccessResult(url);
+      } catch (err: any) {
+        const msg = toErrorMessage(err);
+        // The /v1 route ships in commerce#1052 and the API deploys from main —
+        // an older production API answers 404 here. Say that, not "not found".
+        if (err instanceof ApiError && err.status === 404) {
+          return { content: [{ type: "text" as const, text: "Error: this Firestarter API does not support video upload yet (the endpoint is not deployed). The seller can attach the video from the dashboard (https://firestarter.network/seller), or pass a public URL to video_urls on firestarter_update_listing." }], isError: true };
+        }
+        if (isTimeoutMessage(msg)) {
+          return { content: [{ type: "text" as const, text: "The video upload didn't return in time. Do not immediately repeat the same call — check the listing first: the upload may have completed on the server after this call stopped waiting." }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: `Error uploading video: ${msg}` }], isError: true };
       }
     }
   );
@@ -4438,7 +4586,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       dynamic_pricing: z.boolean().optional().describe("Enable demand-based pricing"),
       inventory_qty: z.number().optional().describe("Optional. Available quantity. Omit for unlimited — don't ask the seller unless they mention stock limits."),
       image_urls: z.array(z.string()).optional().describe("Public product photo URLs (first is the primary image), e.g. hosted URLs returned by firestarter_upload_image. For a photo the seller ATTACHED IN THE CHAT, do NOT try to pass it here — create the listing without photos and the draft response displays a drop zone that uploads the original file losslessly. Never rebuild an attachment as a base64 data-URI, and never ask the seller to re-send a photo already in the conversation."),
-      video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
+      video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4, MOV, or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — NEVER a base64 form: a 25 MB video does not survive being emitted as a tool argument. For a video ATTACHED IN THE CHAT, the drop zone accepts it (call firestarter_upload_image with NO image to display one); a local video file goes through firestarter_upload_video's video_path on the local build. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
       source_url: z.string().url().optional().describe("Optional. If the seller mentions or pastes a link to their OWN existing listing for this product elsewhere (their Etsy/eBay/Shopify page, etc.), pass it here. Firestarter will fetch it once and fill in whatever descriptive details (description, category, brand, materials, tags, condition) the seller didn't already give you — it never overwrites anything you explicitly set. Best-effort: if the fetch fails or finds nothing, the listing is still created normally."),
       shipping: z.number().optional().describe("Deprecated and ignored — shipping is always estimated live from a delivery service provider based on the buyer's destination; sellers no longer set a flat/free shipping price. Accepted for backward compatibility only."),
       ship_from: z.object({
@@ -4555,6 +4703,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             listing_id: listing.id,
             product_name: listing.product_name,
             existing_image_urls: [],
+            // Photoless, not necessarily videoless: a create can carry
+            // video_urls, and the widget must re-send those wholesale when a
+            // dropped clip grows the set.
+            existing_video_urls: listingVideoUrls(listing),
             activate: shouldActivateAfterPhoto(listing),
           };
           markZoneIssued(listing.id);
@@ -6136,7 +6288,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       inventory_qty: z.number().optional().describe("Updated inventory quantity"),
       status: z.enum(["active", "paused", "out_of_stock"]).optional().describe("New listing status"),
       image_urls: z.array(z.string()).optional().describe("Replace the listing's photos with these public image URLs (replaces the WHOLE gallery — include existing photos to keep them). For a photo the seller ATTACHED IN THE CHAT, call firestarter_upload_image with NO image and this listing_id instead: a drop zone appears and the original file attaches losslessly. Never rebuild an attachment as a base64 data-URI, and never ask the seller to re-send a photo already in the conversation."),
-      video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4 or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — there is no separate upload step and no base64 form: a 25 MB video does not survive being emitted as a tool argument. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
+      video_urls: z.array(z.string()).optional().describe("Product video URLs (MP4, MOV, or WebM, up to 25 MB and about 60 seconds each, max 3). The server fetches and re-hosts each one, so pass any public https URL — NEVER a base64 form: a 25 MB video does not survive being emitted as a tool argument. For a video ATTACHED IN THE CHAT, the drop zone accepts it (call firestarter_upload_image with NO image to display one); a local video file goes through firestarter_upload_video's video_path on the local build. Omit to leave existing videos untouched; pass an empty array to remove them. Videos are shown alongside the photos on the listing page and the share page."),
       fulfillment_mode: z.enum(["platform", "seller_managed"]).nullable().optional().describe("How orders for this listing get shipped. 'seller_managed' = NO platform label is ever bought: each paid order holds in awaiting_shipment until the seller ships it with their own carrier and enters tracking via firestarter_ship_order. 'platform' = the platform always books the carrier label. Pass null to clear back to auto (platform label when a carrier-ratable ship-from exists, otherwise seller-managed)."),
       allow_imageless: z.boolean().optional().describe("Override the NEEDS_IMAGE activation gate and let this listing go live with no photo. Only pass true if the seller explicitly can't provide one right now."),
       ...listingDetailFields,
@@ -6202,6 +6354,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               listing_id,
               product_name: listing?.product_name,
               existing_image_urls: [],
+              existing_video_urls: listingVideoUrls(listing),
               activate: shouldActivateAfterPhoto(listing),
             };
             markZoneIssued(listing_id);

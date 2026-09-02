@@ -93,9 +93,11 @@ describe("widget-initiated tool calls", () => {
     // zone's market mode calls it with a URL the server itself just minted, it
     // writes one image field on a market the caller already owns, and it has no
     // reach into money either.
+    // upload_video joins on the same terms as upload_image: the drop zone's
+    // clip path, writing a media blob under the caller's own key.
     for (const [name, meta] of toolMeta) {
       if (meta["openai/widgetAccessible"] !== true) continue;
-      expect(name).toMatch(/^firestarter_(product|preview|catalog_search|upload_image|update_listing|set_market_avatar)$/);
+      expect(name).toMatch(/^firestarter_(product|preview|catalog_search|upload_image|upload_video|update_listing|set_market_avatar)$/);
     }
   });
 });
