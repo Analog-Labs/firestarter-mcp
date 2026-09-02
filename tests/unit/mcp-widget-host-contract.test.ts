@@ -97,7 +97,7 @@ describe("widget-initiated tool calls", () => {
     // clip path, writing a media blob under the caller's own key.
     for (const [name, meta] of toolMeta) {
       if (meta["openai/widgetAccessible"] !== true) continue;
-      expect(name).toMatch(/^firestarter_(product|preview|catalog_search|upload_image|upload_video|update_listing|set_market_avatar)$/);
+      expect(name).toMatch(/^firestarter_(product|preview|catalog_search|marketplace_search|upload_image|upload_video|update_listing|set_market_avatar)$/);
     }
   });
 });

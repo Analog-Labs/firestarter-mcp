@@ -81,6 +81,13 @@ const IMAGE_DOMAINS = [
   // so ONE first-party origin covers the whole catalog; keep this list as the
   // stopgap for origins already in the wild.
   "https://cole.pocodot.ai",
+  // Marketplace scout (#1056): Shopee per-country photo CDNs and Lazada's, so
+  // cross-marketplace search results render photos in the grid.
+  "https://down-my.img.susercontent.com",
+  "https://down-sg.img.susercontent.com",
+  "https://down-th.img.susercontent.com",
+  "https://*.slatic.net",
+  "https://*.lazcdn.com",
 ];
 
 /**

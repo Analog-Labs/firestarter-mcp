@@ -551,3 +551,108 @@ export function toShelfStructured(community: any): ShelfStructured {
     listings: [...picks, ...sells],
   };
 }
+
+/* ─── Marketplace scout (#1056) ─────────────────────────────────────────── */
+
+const scoutNeedsInput = z.object({
+  kind: z.string(),
+  marketplace: z.string(),
+  live_view_url: z.string(),
+  expires_at: z.string(),
+});
+
+/**
+ * Raw shape advertised as `firestarter_marketplace_search`'s `outputSchema`.
+ * Rows reuse the preview option shape under `options` so the shopping-results
+ * MCP App renders them with no client change.
+ */
+export const marketplaceOutputShape = {
+  schema_version: z.literal(MCP_OUTPUT_SCHEMA_VERSION),
+  job_id: z.string(),
+  /** queued | running | needs_input | completed | failed | cancelled | expired */
+  status: z.string(),
+  query: z.string(),
+  environment: z.string(),
+  count: z.number().int(),
+  checkoutable_count: z.number().int(),
+  /** Per-source state: queued | running | done | cached | not_connected | needs_login | timeout | failed:<code> */
+  progress: z.record(z.string(), z.string()),
+  cached_sources: z.array(z.string()),
+  needs_input: scoutNeedsInput.nullable(),
+  options: z.array(previewOption),
+};
+
+export const marketplaceOutputSchema = z.object(marketplaceOutputShape);
+export type MarketplaceStructured = z.infer<typeof marketplaceOutputSchema>;
+
+const SCOUT_BLOCKER_LABELS: Record<string, string> = {
+  NOT_CONNECTED: "connect this marketplace to buy here",
+  EXTERNAL_LINK: "buy directly via the link",
+  ON_NETWORK: "buy with firestarter_execute (listing id in the result)",
+};
+
+/** Map a /v1/scout job (search) into the typed structured payload. Every field defaulted. */
+export function toMarketplaceStructured(job: any): MarketplaceStructured {
+  const results: any[] = Array.isArray(job?.results) ? job.results : [];
+  const progress: Record<string, string> = {};
+  for (const [k, v] of Object.entries(job?.progress ?? {})) progress[k] = typeof v === "string" ? v : String(v);
+  const options = results.map((r: any, i: number) => {
+    const currency = typeof r?.currency === "string" ? r.currency : "USD";
+    const amount_minor = Number.isInteger(r?.price_minor) ? r.price_minor : null;
+    const price_usd = typeof r?.price_usd === "number" ? r.price_usd : null;
+    const checkoutable = r?.checkoutable === true;
+    const media: Array<{ type: string; url: string }> = Array.isArray(r?.media)
+      ? r.media.filter((m: any) => m && typeof m.url === "string" && (m.type === "image" || m.type === "video"))
+      : [];
+    const rating = typeof r?.rating === "number" && Number.isFinite(r.rating) ? r.rating : null;
+    const blocker = checkoutable ? null
+      : r?.on_network ? "ON_NETWORK"
+      : r?.source === "shopee" || r?.source === "lazada" ? "NOT_CONNECTED"
+      : "EXTERNAL_LINK";
+    return {
+      rank: i + 1,
+      id: typeof r?.id === "string" ? r.id : "",
+      title: typeof r?.title === "string" ? r.title : "",
+      price_usd,
+      currency,
+      price: { currency, amount_minor },
+      shipping: { known: false, amount_usd: null },
+      total_usd: null,
+      seller: typeof r?.seller_name === "string" ? r.seller_name : null,
+      source: typeof r?.source === "string" ? r.source : "unknown",
+      url: typeof r?.product_url === "string" ? r.product_url : null,
+      image_url: typeof r?.image_url === "string" ? r.image_url : null,
+      images: media.filter((m) => m.type === "image").map((m) => m.url),
+      videos: media.filter((m) => m.type === "video").map((m) => ({ url: m.url, poster_url: null })),
+      // Marketplace ratings are per product; the scout has no seller aggregate.
+      product_rating: rating,
+      product_rating_count: 0,
+      seller_rating: null,
+      seller_rating_count: 0,
+      rating_is_seller_level: false,
+      rating,
+      rating_count: 0,
+      units_sold: Number.isInteger(r?.sold_count) && r.sold_count > 0 ? r.sold_count : 0,
+      in_stock: r?.in_stock !== false,
+      purchasable: checkoutable,
+      eligible: checkoutable,
+      blockers: blocker ? [{ code: blocker, label: SCOUT_BLOCKER_LABELS[blocker] }] : [],
+    };
+  });
+  const ni = job?.needs_input;
+  return {
+    schema_version: MCP_OUTPUT_SCHEMA_VERSION,
+    job_id: typeof job?.id === "string" ? job.id : "",
+    status: typeof job?.status === "string" ? job.status : "unknown",
+    query: typeof job?.query === "string" ? job.query : "",
+    environment: typeof job?.environment === "string" ? job.environment : "live",
+    count: options.length,
+    checkoutable_count: options.filter((o) => o.purchasable).length,
+    progress,
+    cached_sources: Object.entries(progress).filter(([, v]) => v === "cached").map(([k]) => k),
+    needs_input: ni && typeof ni === "object"
+      ? { kind: String(ni.kind ?? ""), marketplace: String(ni.marketplace ?? ""), live_view_url: String(ni.live_view_url ?? ""), expires_at: String(ni.expires_at ?? "") }
+      : null,
+    options,
+  };
+}

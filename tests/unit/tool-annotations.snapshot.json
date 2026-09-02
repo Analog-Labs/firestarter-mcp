@@ -69,6 +69,12 @@
     "destructiveHint": false,
     "openWorldHint": false
   },
+  "firestarter_connect_marketplace": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": true
+  },
   "firestarter_connect_payouts": {
     "readOnlyHint": false,
     "destructiveHint": true,
@@ -212,6 +218,18 @@
     "readOnlyHint": true,
     "destructiveHint": false,
     "openWorldHint": true
+  },
+  "firestarter_marketplace_search": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": true
+  },
+  "firestarter_marketplaces": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
   },
   "firestarter_message": {
     "readOnlyHint": false,
