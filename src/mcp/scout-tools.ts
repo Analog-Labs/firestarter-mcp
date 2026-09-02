@@ -69,7 +69,8 @@ export function renderScoutRows(results: any[]): string[] {
     const name = sanitizeUntrusted(String(r?.title ?? ""));
     const url = typeof r?.product_url === "string" ? r.product_url : null;
     const nameCell = url ? `[${name}](${url})` : name;
-    const tag = r?.checkoutable ? "✅ checkoutable" : r?.on_network ? "🏠 on Firestarter" : "👁 browse-only";
+    const buy = typeof r?.buy_url === "string" ? r.buy_url : null;
+    const tag = r?.checkoutable ? "✅ checkoutable" : r?.on_network ? "🏠 on Firestarter" : buy ? "🛒 buy in app" : "👁 browse-only";
     const bits = [
       r?.rating != null ? `⭐ ${Number(r.rating).toFixed(1)}` : null,
       compact(r?.sold_count) ? `${compact(r.sold_count)} sold` : null,
@@ -78,7 +79,7 @@ export function renderScoutRows(results: any[]): string[] {
     ].filter(Boolean).join(" · ");
     lines.push(
       `- **${nameCell}** — ${money(r?.price_minor, r?.currency)} [${label(String(r?.source ?? ""))}] ${tag}` +
-      `${bits ? `\n  ${bits}` : ""}\n  id: \`${String(r?.id ?? "")}\``,
+      `${bits ? `\n  ${bits}` : ""}${buy && buy !== url ? `\n  Buy: ${buy}` : ""}\n  id: \`${String(r?.id ?? "")}\``,
     );
   }
   return lines;
@@ -89,6 +90,7 @@ function progressSummary(progress: Record<string, string> | undefined): { done: 
   for (const [source, state] of Object.entries(progress ?? {})) {
     if (state === "done" || state === "cached") done.push(source);
     else if (state === "queued" || state === "running") pending.push(source);
+    else if (state === "not_configured") skipped.push(`${label(source)} (not set up on this API yet)`);
     else skipped.push(`${label(source)} (${state.replace(/^failed:/, "")})`);
   }
   return { done, pending, skipped };
@@ -202,7 +204,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
     server,
     "firestarter_marketplace_search",
     {
-      description: "Search EVERYWHERE the buyer shops at once: their connected Shopee/Lazada accounts (searched server-side in a cloud browser logged in as them), seeded Shopify stores, and the Firestarter catalog — one ranked comparison with photos, prices, ratings and sold counts. Ranked by price, rating and popularity; on-network items get a small bonus. Results marked checkoutable can be bought on that marketplace with the payment method already saved there (checkout tool follows); browse-only results carry a link to buy directly. Usually answers in under a minute; if a source is still running you get what's back so far plus a job_id — call again with that job_id to collect the rest (never treat a partial answer as 'no results'). If a marketplace needs the buyer (a sign-in or one-time code), the result includes a link for them to finish it; the search resumes on its own. Admin-only while the feature is proven.",
+      description: "Search EXTERNAL marketplaces and the Firestarter catalog at once — Shopee (Thailand first, via Shopee's own affiliate product API: no login or connection needed), Lazada, seeded Shopify stores — and return one ranked comparison with photos, prices, ratings and sold counts, rendered like firestarter_catalog_search. Ranked by price, rating and popularity; on-network items get a small bonus. Each external row carries a Buy link that opens the item in that marketplace's app, where the buyer picks the variant and pays with what the app already holds; Firestarter never touches their account. After they pay, record the order with firestarter_record_purchase. Usually answers in seconds; if a source is still running you get what's back so far plus a job_id — call again with that job_id to collect the rest (never treat a partial answer as 'no results'). Admin-only while the feature is proven.",
       inputSchema: {
         query: z.string().min(2).max(200).describe("What the buyer wants, in their words, e.g. 'cotton buds 200pcs' or 'สำลีก้าน'. Put price limits in max_price, not the query."),
         marketplaces: z.array(z.enum(["shopee", "lazada", "shopify", "firestarter"])).optional().describe("Restrict sources. Default: every connected marketplace plus Shopify stores and the Firestarter catalog."),
@@ -276,7 +278,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
           return { content: [{ type: "text" as const, text: lines.join("\n") }], structuredContent };
         }
         lines.push("", ...renderScoutRows(results));
-        lines.push("", "**Checkoutable** items can be bought on that marketplace with the payment method saved there. **Browse-only** items: share the link so the buyer can buy directly. **On Firestarter** items: buy with `firestarter_execute` using the listing id in the result.");
+        lines.push("", "**To buy a Shopee or Lazada item:** open its Buy link — it lands in the marketplace app, where the buyer picks the variant and pays with what that app already has (ShopeePay, card, cash on delivery). Firestarter never touches their marketplace account. When they've paid, ask for the order number and record it with `firestarter_record_purchase` (source \"shopee\" or \"lazada\") so it shows in `firestarter_purchases`. **On Firestarter** items: buy with `firestarter_execute` using the listing id in the result.");
         const images = await inlineImageBlocks(results.slice(0, 8).map((r) => (typeof r?.image_url === "string" ? r.image_url : null)));
         return { content: [{ type: "text" as const, text: lines.join("\n") }, ...images], structuredContent };
       } catch (err: any) {

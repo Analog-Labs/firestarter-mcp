@@ -86,6 +86,9 @@ const IMAGE_DOMAINS = [
   "https://down-my.img.susercontent.com",
   "https://down-sg.img.susercontent.com",
   "https://down-th.img.susercontent.com",
+  "https://cf.shopee.co.th",
+  "https://cf.shopee.com.my",
+  "https://cf.shopee.sg",
   "https://*.slatic.net",
   "https://*.lazcdn.com",
 ];

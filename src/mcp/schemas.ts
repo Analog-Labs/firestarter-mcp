@@ -586,7 +586,7 @@ export const marketplaceOutputSchema = z.object(marketplaceOutputShape);
 export type MarketplaceStructured = z.infer<typeof marketplaceOutputSchema>;
 
 const SCOUT_BLOCKER_LABELS: Record<string, string> = {
-  NOT_CONNECTED: "connect this marketplace to buy here",
+  NOT_CONNECTED: "buy in the marketplace app via the link",
   EXTERNAL_LINK: "buy directly via the link",
   ON_NETWORK: "buy with firestarter_execute (listing id in the result)",
 };
@@ -620,7 +620,7 @@ export function toMarketplaceStructured(job: any): MarketplaceStructured {
       total_usd: null,
       seller: typeof r?.seller_name === "string" ? r.seller_name : null,
       source: typeof r?.source === "string" ? r.source : "unknown",
-      url: typeof r?.product_url === "string" ? r.product_url : null,
+      url: typeof r?.buy_url === "string" ? r.buy_url : typeof r?.product_url === "string" ? r.product_url : null,
       image_url: typeof r?.image_url === "string" ? r.image_url : null,
       images: media.filter((m) => m.type === "image").map((m) => m.url),
       videos: media.filter((m) => m.type === "video").map((m) => ({ url: m.url, poster_url: null })),
