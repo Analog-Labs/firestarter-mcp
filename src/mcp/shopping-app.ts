@@ -44,7 +44,7 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // modes stay image-only.
 // v15: tier-1 format widening — AVIF photos and QuickTime (.mov) clips join
 // the accept lists, matching the API's brand-aware sniffers.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v15";
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v16";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //
@@ -81,6 +81,16 @@ const IMAGE_DOMAINS = [
   // so ONE first-party origin covers the whole catalog; keep this list as the
   // stopgap for origins already in the wild.
   "https://cole.pocodot.ai",
+  // Marketplace scout (#1056): Shopee per-country photo CDNs and Lazada's, so
+  // cross-marketplace search results render photos in the grid.
+  "https://down-my.img.susercontent.com",
+  "https://down-sg.img.susercontent.com",
+  "https://down-th.img.susercontent.com",
+  "https://cf.shopee.co.th",
+  "https://cf.shopee.com.my",
+  "https://cf.shopee.sg",
+  "https://*.slatic.net",
+  "https://*.lazcdn.com",
 ];
 
 /**

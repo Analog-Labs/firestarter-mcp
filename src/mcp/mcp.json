@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.18.1",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 92 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 95 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -622,6 +622,106 @@
           }
         },
         "required": []
+      }
+    },
+    {
+      "name": "firestarter_marketplaces",
+      "description": "Which of the buyer's OWN marketplace accounts (Shopee, Lazada) are connected for marketplace search and checkout, with the countries supported (MY, SG, TH). A connected marketplace is searched by firestarter_marketplace_search and can be bought from with the payment method already saved on that marketplace. `needs_login` means the saved sign-in expired — reconnect with firestarter_connect_marketplace. Read-only. Admin-only while the feature is proven; other callers get a plain refusal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "firestarter_connect_marketplace",
+      "description": "Connect the buyer's OWN Shopee or Lazada account for marketplace search and checkout. Step 1 (default): opens a private cloud browser on the marketplace's sign-in page and returns a link — the buyer opens it (phone is fine), signs in as they normally would including any code the marketplace sends, then says they're done. Nothing they type reaches Firestarter or the agent; the sign-in is kept as a browser profile at the provider, never as cookies here. Step 2: call again with verify: true to confirm the sign-in stuck; if the marketplace still shows its login page you get a fresh link. `country` picks the storefront (MY, SG, TH) and is required the first time.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "marketplace": {
+            "type": "string",
+            "enum": [
+              "shopee",
+              "lazada"
+            ],
+            "description": "Which marketplace to connect"
+          },
+          "country": {
+            "description": "Storefront country, ISO 3166-1 alpha-2: MY, SG or TH. Required on first connect; remembered afterwards.",
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2
+          },
+          "verify": {
+            "description": "true = the buyer says they've signed in; confirm it and mark the marketplace connected.",
+            "type": "boolean"
+          },
+          "mobile": {
+            "description": "true when the buyer will open the sign-in link on a phone (mobile-sized browser).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "marketplace"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_marketplace_search",
+      "description": "Search EXTERNAL marketplaces and the Firestarter catalog at once — Shopee (Thailand first; no login or connection needed — results come from localized Google Shopping filtered to shopee.co.th, or Shopee's affiliate API when the server has credentials), Lazada, seeded Shopify stores — and return one ranked comparison with photos, prices, ratings and sold counts, rendered like firestarter_catalog_search. Ranked by price, rating and popularity; on-network items get a small bonus. Each external row carries a Buy link that opens the item in that marketplace's app, where the buyer picks the variant and pays with what the app already holds; Firestarter never touches their account. After they pay, record the order with firestarter_record_purchase. Usually answers in seconds; if a source is still running you get what's back so far plus a job_id — call again with that job_id to collect the rest (never treat a partial answer as 'no results'). Admin-only while the feature is proven.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 200,
+            "description": "What the buyer wants, in their words, e.g. 'cotton buds 200pcs' or 'สำลีก้าน'. Put price limits in max_price, not the query."
+          },
+          "marketplaces": {
+            "description": "Restrict sources. Default: every connected marketplace plus Shopify stores and the Firestarter catalog.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "shopee",
+                "lazada",
+                "shopify",
+                "firestarter"
+              ]
+            }
+          },
+          "country": {
+            "description": "Storefront country (MY, SG, TH). Default: the buyer's connected marketplace's country.",
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2
+          },
+          "max_price": {
+            "description": "Maximum price in the storefront currency (e.g. 15 for RM15 / ฿15).",
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "currency": {
+            "description": "Currency of max_price (MYR, SGD, THB). Default: the storefront's.",
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
+          },
+          "limit": {
+            "description": "Max results per source (default 20).",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "job_id": {
+            "description": "Re-poll an earlier search instead of starting a new one — pass the job_id from a partial result.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
       }
     },
     {

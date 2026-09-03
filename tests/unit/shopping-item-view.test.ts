@@ -48,6 +48,13 @@ describe("badgeFor", () => {
     });
   });
 
+  it("shows where a non-Firestarter row can be bought when told explicitly", () => {
+    expect(badgeFor({ buyable: false, external_buy_label: "Buy in app" })).toEqual({ text: "Buy in app", cls: "muted" });
+    expect(badgeFor({ buyable: false, external_buy_label: "  " })).toEqual({ text: "Browse-only", cls: "muted" });
+    // Still never masks explicit buyability.
+    expect(badgeFor({ buyable: true, external_buy_label: "Buy in app" })?.text).toMatch(/Buyable/);
+  });
+
   it("ignores a blank status label rather than rendering an empty pill", () => {
     expect(badgeFor({ status_label: "   " })).toBeNull();
   });

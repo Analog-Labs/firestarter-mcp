@@ -13,6 +13,7 @@ import { previewOutputShape, toPreviewStructured, PREVIEW_REASON_LABELS, catalog
 import { SHARE_LINK_BASE, listingShareUrl } from "../lib/share-link.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { registerShoppingApp, SHOPPING_RESULTS_URI, SHOPPING_RESULTS_STABLE_URI } from "./shopping-app.js";
+import { registerScoutTools } from "./scout-tools.js";
 import { isWidgetCall } from "./ui/widget-call.js";
 import { enforceSchemaDialect } from "./schema-dialect.js";
 import { sanitizeUntrusted, neutralizeAuthority } from "./untrusted.js";
@@ -3961,6 +3962,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
       }
     }
   );
+
+  // Marketplace scout (#1056): firestarter_marketplaces, firestarter_connect_marketplace,
+  // firestarter_marketplace_search. Own module; same apiRequest closure.
+  registerScoutTools(server, { apiRequest, registerToolCompat, inlineImageBlocks, toErrorMessage, pollIntervalMs: POLL_INTERVAL_MS });
 
   // Tool: firestarter_record_purchase
   server.tool(
