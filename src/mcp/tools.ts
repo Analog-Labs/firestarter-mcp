@@ -732,6 +732,27 @@ function disputeWindowClosedText(err: unknown): string | null {
   );
 }
 
+/**
+ * commerce#1030: `POST /v1/executions/:id/dispute` answers 409 HOLD_FROZEN
+ * (with `dispute_id` when the freeze belongs to a dispute) when the order's
+ * escrow is already frozen. Not a failure and not a closed window — the money
+ * is being held, just under someone else's name.
+ */
+function holdFrozenText(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.code !== "HOLD_FROZEN") return null;
+  const existing = typeof err.body?.dispute_id === "string" ? err.body.dispute_id : null;
+  if (existing) {
+    return (
+      `**This order already has a dispute holding its funds** (${existing}). ${toErrorMessage(err)}\n\n` +
+      `View or respond to it with firestarter_disputes dispute_id "${existing}" — a second dispute cannot be opened on the same hold.`
+    );
+  }
+  return (
+    `**This order's funds are already frozen**, so a new dispute cannot hold them again. ${toErrorMessage(err)}\n\n` +
+    `That is usually a card chargeback or an admin hold in progress. Contact Firestarter support with the order id if the buyer believes it should be a dispute.`
+  );
+}
+
 /** Plain-language cause for a possession-verification requirement. */
 function verificationWhy(reason: unknown): string {
   return reason === "source_conflict"
@@ -6962,8 +6983,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (action === "withdraw") {
             const did = await resolveDisputeId(dispute_id, execution_id);
             if (!did) return textBlock("I need the dispute id (disp_…) or the order id to withdraw. List your disputes with firestarter_disputes.", true);
-            await apiRequest("POST", `/buyer/disputes/${did}/withdraw`);
-            return textBlock(`Dispute ${did} withdrawn. The escrow hold is unfrozen and the order goes back to normal processing (the usual release timer resumes).`);
+            const w = await apiRequest("POST", `/buyer/disputes/${did}/withdraw`);
+            // commerce#1030: this copy used to assert "the hold is unfrozen"
+            // on faith, and for every connector-opened dispute it was false —
+            // the withdrawal never thawed the hold, and the buyer then could
+            // not re-file. The API now says what it did; repeat that, not a
+            // wish.
+            if (w?.escrow_unfrozen === true) {
+              return textBlock(`Dispute ${did} withdrawn. The escrow hold is unfrozen and the order goes back to normal processing (the usual release timer resumes). If the problem persists, a new dispute can be opened on this order while its inspection window is still open.`);
+            }
+            if (w?.escrow_unfrozen === false) {
+              return textBlock(`Dispute ${did} withdrawn. The escrow hold on this order was NOT thawed by the withdrawal: either nothing was frozen, or it is frozen for another reason (a card chargeback or an admin hold) that a withdrawal must not undo. If the buyer expected the order to go back to normal processing, contact Firestarter support with the order id.`);
+            }
+            return textBlock(`Dispute ${did} withdrawn. The order goes back to normal processing once its escrow hold is released from this dispute.`);
           }
 
           // ── ESCALATE to Firestarter ────────────────────────────────────────
@@ -7084,6 +7116,13 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // malformed request and an unknown order all stay errors.
           const closed = disputeWindowClosedText(err);
           if (closed) return textBlock(closed);
+          // commerce#1030: a hold that is already FROZEN is a rule too, and
+          // the opposite of "released" — the buyer is being pointed at an
+          // existing dispute (or a chargeback / admin hold), not told the
+          // money is gone. Presenting it as a failure invited "retry", and
+          // one agent paraphrased it as "the escrow hold was released".
+          const frozen = holdFrozenText(err);
+          if (frozen) return textBlock(frozen);
           return textBlock(`Error with disputes: ${toErrorMessage(err)}`, true);
         }
       }
