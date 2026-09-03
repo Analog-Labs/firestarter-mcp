@@ -254,6 +254,71 @@ describe("firestarter_disputes (buyer)", () => {
     expect(esc!.body).toMatchObject({ reason: "no response" });
   });
 
+  // commerce#1030 — the copy after a withdrawal repeats what the API says it
+  // did to the hold, instead of asserting "unfrozen" on faith.
+  it("withdraw says the hold is unfrozen only when the API says so", async () => {
+    const tools = captureTools();
+    installFetch((method, url) =>
+      method === "POST" && url.endsWith(`/${DID}/withdraw`)
+        ? { status: 200, json: { ok: true, dispute: { id: DID, status: "closed" }, escrow_unfrozen: true } }
+        : { status: 200, json: {} }
+    );
+    const res = await tools.firestarter_disputes({ action: "withdraw", dispute_id: DID });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/hold is unfrozen/i);
+    expect(textOf(res)).toMatch(/new dispute can be opened/i);
+  });
+
+  it("withdraw does not claim the hold was thawed when the API says it was not", async () => {
+    const tools = captureTools();
+    installFetch((method, url) =>
+      method === "POST" && url.endsWith(`/${DID}/withdraw`)
+        ? { status: 200, json: { ok: true, dispute: { id: DID, status: "closed" }, escrow_unfrozen: false } }
+        : { status: 200, json: {} }
+    );
+    const res = await tools.firestarter_disputes({ action: "withdraw", dispute_id: DID });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/NOT thawed/);
+    expect(textOf(res)).not.toMatch(/hold is unfrozen/i);
+  });
+
+  it("withdraw stays neutral against an API that does not report the hold (pre-#1030 deploy)", async () => {
+    const tools = captureTools();
+    installFetch(() => ({ status: 200, json: { ok: true } }));
+    const res = await tools.firestarter_disputes({ action: "withdraw", dispute_id: DID });
+    expect(textOf(res)).toMatch(/withdrawn/i);
+    expect(textOf(res)).not.toMatch(/hold is unfrozen/i);
+    expect(textOf(res)).not.toMatch(/NOT thawed/);
+  });
+
+  // commerce#1030 — a frozen hold is the OPPOSITE of a released one. The old
+  // 409 listed both states in one sentence and an agent relayed "released".
+  it("open on an already-frozen hold points at the existing dispute, not at an error", async () => {
+    const tools = captureTools();
+    installFetch((method, url) => {
+      if (method === "GET" && url === "http://api.test/buyer/disputes") return { status: 200, json: { disputes: [] } };
+      if (method === "POST" && url.endsWith(`/v1/executions/${EXEC}/dispute`)) {
+        return {
+          status: 409,
+          json: {
+            code: "HOLD_FROZEN",
+            error: "This order's funds are already frozen for dispute disp_prior — view or respond to that dispute instead of opening a new one",
+            status: 409,
+            freeze_reason: "dispute:disp_prior",
+            dispute_id: "disp_prior",
+          },
+        };
+      }
+      return { status: 200, json: {} };
+    });
+    const res = await tools.firestarter_disputes({ action: "open", execution_id: EXEC, reason: "never arrived" });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/disp_prior/);
+    expect(textOf(res)).toMatch(/already has a dispute/i);
+    expect(textOf(res)).not.toMatch(/Error with disputes/);
+    expect(textOf(res)).not.toMatch(/released/i);
+  });
+
   it("surfaces an API error instead of claiming success", async () => {
     const tools = captureTools();
     installFetch(() => ({ status: 409, json: { code: "NOT_DISPUTABLE", error: "Execution is not in a disputable state" } }));
