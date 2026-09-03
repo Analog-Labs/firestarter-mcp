@@ -119,6 +119,9 @@ const previewOption = z.object({
   /** Passes every hard gate (budget / deadline / serviceability). */
   eligible: z.boolean(),
   blockers: z.array(z.object({ code: z.string(), label: z.string() })),
+  /** Marketplace scout: badge for a row that is not purchasable THROUGH
+   *  Firestarter but is buyable elsewhere ("Buy in app"). Absent for native rows. */
+  external_buy_label: z.string().nullable().optional(),
 });
 
 /** Raw shape advertised as `firestarter_preview`'s `outputSchema`. */
@@ -605,6 +608,7 @@ export function toMarketplaceStructured(job: any): MarketplaceStructured {
       ? r.media.filter((m: any) => m && typeof m.url === "string" && (m.type === "image" || m.type === "video"))
       : [];
     const rating = typeof r?.rating === "number" && Number.isFinite(r.rating) ? r.rating : null;
+    const ratingCount = Number.isInteger(r?.rating_count) && r.rating_count > 0 ? r.rating_count : 0;
     const blocker = checkoutable ? null
       : r?.on_network ? "ON_NETWORK"
       : r?.source === "shopee" || r?.source === "lazada" ? "NOT_CONNECTED"
@@ -626,17 +630,18 @@ export function toMarketplaceStructured(job: any): MarketplaceStructured {
       videos: media.filter((m) => m.type === "video").map((m) => ({ url: m.url, poster_url: null })),
       // Marketplace ratings are per product; the scout has no seller aggregate.
       product_rating: rating,
-      product_rating_count: 0,
+      product_rating_count: ratingCount,
       seller_rating: null,
       seller_rating_count: 0,
       rating_is_seller_level: false,
       rating,
-      rating_count: 0,
+      rating_count: ratingCount,
       units_sold: Number.isInteger(r?.sold_count) && r.sold_count > 0 ? r.sold_count : 0,
       in_stock: r?.in_stock !== false,
       purchasable: checkoutable,
       eligible: checkoutable,
       blockers: blocker ? [{ code: blocker, label: SCOUT_BLOCKER_LABELS[blocker] }] : [],
+      external_buy_label: checkoutable || r?.on_network ? null : typeof r?.buy_url === "string" ? "Buy in app" : null,
     };
   });
   const ni = job?.needs_input;

@@ -31,6 +31,8 @@ export interface ShoppingItem {
   /** Provenance/lifecycle badge for surfaces with no buyability flag
    *  (a seller's own listings, a community shelf). */
   status_label?: string | null;
+  /** Marketplace scout: where a non-Firestarter row can be bought ("Buy in app"). */
+  external_buy_label?: string | null;
   /** Rating aggregate (phase 2 wiring): rendered ONLY when count > 0. */
   rating?: number | null;
   rating_count?: number | null;
@@ -131,7 +133,12 @@ export function badgeFor(it: ShoppingItem): { text: string; cls: string } | null
       ? { text: "Buyable now", cls: "ok" }
       : { text: "Buyable", cls: "ok" };
   }
-  if (buyable === false) return { text: "Browse-only", cls: "muted" };
+  if (buyable === false) {
+    // A provenance label ("★ Pick") must never mask buyability, but a row that
+    // is buyable ELSEWHERE says so explicitly via external_buy_label.
+    const ext = typeof it.external_buy_label === "string" ? it.external_buy_label.trim() : "";
+    return { text: ext || "Browse-only", cls: "muted" };
+  }
   const label = typeof it.status_label === "string" ? it.status_label.trim() : "";
   return label ? { text: label, cls: "muted" } : null;
 }

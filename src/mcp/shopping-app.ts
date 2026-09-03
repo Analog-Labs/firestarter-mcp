@@ -44,7 +44,7 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // modes stay image-only.
 // v15: tier-1 format widening — AVIF photos and QuickTime (.mov) clips join
 // the accept lists, matching the API's brand-aware sniffers.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v15";
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v16";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //
