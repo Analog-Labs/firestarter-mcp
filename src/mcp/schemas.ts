@@ -594,6 +594,14 @@ const SCOUT_BLOCKER_LABELS: Record<string, string> = {
   ON_NETWORK: "buy with firestarter_execute (listing id in the result)",
 };
 
+/** "Pay only" / "Buy in app · 2 taps" — the handoff, stated honestly from the adapter's buy_steps. */
+function buyBadge(r: any): string {
+  const steps = Array.isArray(r?.buy_steps) ? r.buy_steps.filter((s: unknown) => typeof s === "string") : [];
+  if (steps.length === 1 && /^pay$/i.test(steps[0])) return "Pay only";
+  if (steps.length > 0) return `Buy in app · ${steps.length} tap${steps.length === 1 ? "" : "s"}`;
+  return "Buy in app";
+}
+
 /** Map a /v1/scout job (search) into the typed structured payload. Every field defaulted. */
 export function toMarketplaceStructured(job: any): MarketplaceStructured {
   const results: any[] = Array.isArray(job?.results) ? job.results : [];
@@ -641,7 +649,7 @@ export function toMarketplaceStructured(job: any): MarketplaceStructured {
       purchasable: checkoutable,
       eligible: checkoutable,
       blockers: blocker ? [{ code: blocker, label: SCOUT_BLOCKER_LABELS[blocker] }] : [],
-      external_buy_label: checkoutable || r?.on_network ? null : typeof r?.buy_url === "string" ? "Buy in app" : null,
+      external_buy_label: checkoutable || r?.on_network ? null : typeof r?.buy_url === "string" ? buyBadge(r) : null,
     };
   });
   const ni = job?.needs_input;
