@@ -70,7 +70,9 @@ export function renderScoutRows(results: any[]): string[] {
     const url = typeof r?.product_url === "string" ? r.product_url : null;
     const nameCell = url ? `[${name}](${url})` : name;
     const buy = typeof r?.buy_url === "string" ? r.buy_url : null;
-    const tag = r?.checkoutable ? "✅ checkoutable" : r?.on_network ? "🏠 on Firestarter" : buy ? "🛒 buy in app" : "👁 browse-only";
+    const steps: string[] = Array.isArray(r?.buy_steps) ? r.buy_steps.filter((s: unknown) => typeof s === "string") : [];
+    const payOnly = steps.length === 1 && /^pay$/i.test(steps[0]);
+    const tag = r?.checkoutable ? "✅ checkoutable" : r?.on_network ? "🏠 on Firestarter" : payOnly ? "💳 pay only" : buy ? `🛒 buy in app · ${steps.length || "?"} tap${steps.length === 1 ? "" : "s"}` : "👁 browse-only";
     const bits = [
       r?.rating != null ? `⭐ ${Number(r.rating).toFixed(1)}` : null,
       compact(r?.sold_count) ? `${compact(r.sold_count)} sold` : null,
@@ -79,7 +81,7 @@ export function renderScoutRows(results: any[]): string[] {
     ].filter(Boolean).join(" · ");
     lines.push(
       `- **${nameCell}** — ${money(r?.price_minor, r?.currency)} [${label(String(r?.source ?? ""))}] ${tag}` +
-      `${bits ? `\n  ${bits}` : ""}${buy && buy !== url ? `\n  Buy: ${buy}` : ""}\n  id: \`${String(r?.id ?? "")}\``,
+      `${bits ? `\n  ${bits}` : ""}${buy && buy !== url ? `\n  Buy: ${buy}` : ""}${steps.length ? `\n  Then: ${steps.join(" → ")}` : ""}\n  id: \`${String(r?.id ?? "")}\``,
     );
   }
   return lines;
@@ -278,7 +280,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
           return { content: [{ type: "text" as const, text: lines.join("\n") }], structuredContent };
         }
         lines.push("", ...renderScoutRows(results));
-        lines.push("", "**To buy a Shopee or Lazada item:** open its Buy link — it lands in the marketplace app, where the buyer picks the variant and pays with what that app already has (ShopeePay, card, cash on delivery). Firestarter never touches their marketplace account. When they've paid, ask for the order number and record it with `firestarter_record_purchase` (source \"shopee\" or \"lazada\") so it shows in `firestarter_purchases`. **On Firestarter** items: buy with `firestarter_execute` using the listing id in the result.");
+        lines.push("", "**To buy:** open the row's Buy link. Each row says exactly what is left (\"Then: …\"): Shopify stores land on checkout with the item already added (pay only); Shopee and Lazada open the item in the app, where the buyer taps Buy Now and Place Order with what the app already has, plus a variant choice only when the row says so. Firestarter never touches their marketplace account. When they've paid, ask for the order number and record it with `firestarter_record_purchase` so it shows in `firestarter_purchases`. **On Firestarter** items: buy with `firestarter_execute` using the listing id in the result.");
         const images = await inlineImageBlocks(results.slice(0, 8).map((r) => (typeof r?.image_url === "string" ? r.image_url : null)));
         return { content: [{ type: "text" as const, text: lines.join("\n") }, ...images], structuredContent };
       } catch (err: any) {
