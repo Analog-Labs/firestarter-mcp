@@ -6713,19 +6713,25 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_ship_order
   server.tool(
     "firestarter_ship_order",
-    "Mark an order shipped by attaching a carrier and tracking number — the final step of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required; carrier is optional and defaults to USPS. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
+    "Mark an order shipped by attaching a carrier and tracking number — the final step of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required. carrier is inferred from the number when its format identifies the carrier (UPS 1Z…, USPS); for any other number the API asks for it (CARRIER_REQUIRED) — then ask the seller which courier they used and call again with carrier. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
     {
       order_id: z.string().describe("REQUIRED. The order_id from firestarter_seller_orders (the seller_earnings id, not the exec_... execution id)."),
       tracking_number: z.string().describe("REQUIRED. The carrier's tracking number for the shipment."),
-      carrier: z.string().optional().describe("Optional. Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL'). Defaults to USPS when omitted — don't ask the seller unless they used a non-USPS carrier."),
+      carrier: z.string().optional().describe("Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL', or a regional courier's own name such as 'Kerry Express'). Pass it whenever the seller named one. May be omitted only when the tracking number identifies the carrier by itself (UPS 1Z…, USPS) — otherwise the API answers CARRIER_REQUIRED and the seller has to be asked."),
     },
     { title: "Ship an Order", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     async ({ order_id, tracking_number, carrier }) => {
       try {
         const body: any = { tracking_number };
         if (carrier) body.carrier = carrier;
-        await apiRequest("POST", `/v1/sellers/orders/${order_id}/ship`, body);
-        return { content: [{ type: "text" as const, text: `**Order shipped.** Tracking: ${carrier || "USPS"} ${tracking_number}. The buyer has been notified and can now track their delivery.` }] };
+        const shipped = (await apiRequest("POST", `/v1/sellers/orders/${order_id}/ship`, body)) as { carrier?: string; tracking_number?: string; tracking_url?: string | null } | null;
+        // The carrier the API RECORDED, never a client-side default: the API
+        // infers it from the number when it can (commerce #526) and refuses
+        // otherwise, so echoing "USPS" here would tell the seller a DHL parcel
+        // went USPS.
+        const recordedCarrier = shipped?.carrier || carrier || "the carrier";
+        const link = shipped?.tracking_url ? ` Track: ${shipped.tracking_url}` : "";
+        return { content: [{ type: "text" as const, text: `**Order shipped.** Tracking: ${recordedCarrier} ${shipped?.tracking_number || tracking_number}.${link} The buyer has been notified and can now track their delivery.` }] };
       } catch (err: any) {
         const msg = toErrorMessage(err);
         let hint = "";
@@ -6733,6 +6739,8 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           hint = "\n\nNo order matched that id. Run firestarter_seller_orders to get the exact order_id (use the order_id field, not the exec_... id).";
         } else if (err instanceof ApiError && err.code === "NO_SELLER") {
           hint = "\n\nThe seller has no active seller profile yet. Call `firestarter_register_seller` with their business name first.";
+        } else if (err instanceof ApiError && err.code === "CARRIER_REQUIRED") {
+          hint = "\n\nThat tracking number does not identify the carrier on its own. Ask the seller which carrier or courier they shipped with (USPS, UPS, FedEx, DHL, Kerry Express, Thailand Post, …) and call firestarter_ship_order again with `carrier` set to that name.";
         }
         return { content: [{ type: "text" as const, text: `Error marking shipped: ${msg}${hint}` }], isError: true };
       }

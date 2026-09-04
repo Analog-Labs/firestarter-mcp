@@ -2254,7 +2254,7 @@
     },
     {
       "name": "firestarter_ship_order",
-      "description": "Mark an order shipped by attaching a carrier and tracking number — the final step of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required; carrier is optional and defaults to USPS. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
+      "description": "Mark an order shipped by attaching a carrier and tracking number — the final step of the seller fulfillment flow (firestarter_seller_orders → firestarter_confirm_order → firestarter_ship_order). The buyer is notified and can track delivery automatically; no separate buyer message is needed. Call once the seller has actually handed the package to the carrier and has a tracking number. ONLY order_id and tracking_number are required. carrier is inferred from the number when its format identifies the carrier (UPS 1Z…, USPS); for any other number the API asks for it (CARRIER_REQUIRED) — then ask the seller which courier they used and call again with carrier. Pass the order_id exactly as firestarter_seller_orders shows it (NOT the exec_... execution id).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2268,7 +2268,7 @@
           },
           "carrier": {
             "type": "string",
-            "description": "Optional. Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL'). Defaults to USPS when omitted — don't ask the seller unless they used a non-USPS carrier."
+            "description": "Carrier name (e.g. 'USPS', 'UPS', 'FedEx', 'DHL', or a regional courier's own name such as 'Kerry Express'). Pass it whenever the seller named one. May be omitted only when the tracking number identifies the carrier by itself (UPS 1Z…, USPS) — otherwise the API answers CARRIER_REQUIRED and the seller has to be asked."
           }
         },
         "required": [
