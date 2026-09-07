@@ -44,7 +44,12 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // modes stay image-only.
 // v15: tier-1 format widening — AVIF photos and QuickTime (.mov) clips join
 // the accept lists, matching the API's brand-aware sniffers.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v16";
+// v17: the drop zone downsizes photos over ~1 MB in the browser before the
+// bridge call — the claude.ai host refused the multi-MB tool-call payload a
+// full-size phone photo produced, which surfaced as "Unable to reach
+// Firestarter" with no request ever reaching the API (commerce#1090, #1074,
+// #1111, #1118).
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v17";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //
