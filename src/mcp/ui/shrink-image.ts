@@ -1,13 +1,15 @@
 /**
  * Downsize a photo IN THE BROWSER before it rides the host bridge.
  *
- * Why (commerce#1090 / #1074 / #1111 / #1118): the drop zone puts the whole
- * file into an `image_base64` tool argument. A 6 MB phone photo becomes an
- * ~8 MB JSON-RPC message, and the claude.ai host refuses it BEFORE it reaches
- * the server — the seller sees "Unable to reach Firestarter", the API logs
- * show no request at all (Loki, 2026-09-04), and small files through the same
- * zone succeed. So the bound is the host's tool-call payload, not our 6 MB
- * server cap, and the only place to honour it is here, before the call.
+ * Why: the drop zone puts the whole file into an `image_base64` tool argument,
+ * so a 6 MB phone photo becomes an ~8 MB JSON-RPC message that has to travel
+ * widget → host bridge → server in one tool call. Nothing about that path is
+ * ours to size: a chat host can refuse or drop an oversized argument before it
+ * reaches the server, and our 6 MB server cap is not the bound that matters.
+ * The only place to honour the host's bound is here, before the call.
+ * (Prompted by commerce#1090/#1074/#1111/#1118; the "Unable to reach
+ * Firestarter" in those reports traced to lost MCP sessions, fixed in
+ * route.ts — this module is the hardening that makes big drops robust too.)
  *
  * What this does: photos over BRIDGE_PHOTO_BUDGET_BYTES are decoded, scaled
  * down (longest edge stepping 2048 → 1024) and re-encoded as JPEG until they

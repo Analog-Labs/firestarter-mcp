@@ -45,10 +45,11 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // v15: tier-1 format widening — AVIF photos and QuickTime (.mov) clips join
 // the accept lists, matching the API's brand-aware sniffers.
 // v17: the drop zone downsizes photos over ~1 MB in the browser before the
-// bridge call — the claude.ai host refused the multi-MB tool-call payload a
-// full-size phone photo produced, which surfaced as "Unable to reach
-// Firestarter" with no request ever reaching the API (commerce#1090, #1074,
-// #1111, #1118).
+// bridge call, so a full-size phone photo (a multi-MB JSON-RPC message as
+// image_base64) stays within whatever the chat host will carry in one
+// tool-call argument. Hardening prompted by commerce#1090/#1074/#1111/#1118;
+// the "Unable to reach Firestarter" in those reports traced to lost MCP
+// sessions (route.ts resurrection), not to payload size.
 export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v17";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.

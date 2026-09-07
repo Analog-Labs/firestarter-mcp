@@ -2,8 +2,8 @@
  * The browser-side photo downsizer (commerce#1090/#1074/#1111/#1118).
  *
  * The bound being honoured is the chat HOST's tool-call payload, not our 6 MB
- * server cap: a full-size phone photo as image_base64 never reached the API and
- * surfaced as "Unable to reach Firestarter". These pin the decisions:
+ * server cap: a full-size phone photo as image_base64 is a multi-MB JSON-RPC
+ * message the host has to carry in one argument. These pin the decisions:
  *  - under budget → the ORIGINAL bytes, untouched (quality is never spent
  *    where it isn't needed);
  *  - GIFs are never re-encoded (an animation would lose all but one frame);

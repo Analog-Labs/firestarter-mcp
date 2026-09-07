@@ -308,11 +308,10 @@ export function renderUploader(
         const { file, kind } = accepted[i];
         const progress = accepted.length > 1 ? `${i + 1} of ${accepted.length} — ${file.name}` : "";
         status.textContent = progress ? `Uploading ${progress}…` : "Uploading…";
-        // The bytes ride inside a tool-call argument, and the chat host caps
+        // The bytes ride inside a tool-call argument, and a chat host may cap
         // that payload well below our 6 MB server limit — a full-size phone
-        // photo never reached the API at all and surfaced as "Unable to reach
-        // Firestarter" (commerce#1090/#1074/#1111/#1118). Downsize a big photo
-        // in the browser first; anything under the budget goes through as-is.
+        // photo is a multi-MB JSON-RPC message. Downsize a big photo in the
+        // browser first; anything under the budget goes through as-is.
         let payload: Blob = file;
         let payloadName = file.name;
         if (kind === "image" && shouldShrink(file) && canShrinkHere()) {
