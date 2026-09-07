@@ -143,7 +143,13 @@ export function buildMcpServer(apiKey: string, apiBase: string, onAuthError?: (a
   return server;
 }
 
-function createTransport(apiKey: string, apiBase: string): WebStandardStreamableHTTPServerTransport {
+function createTransport(
+  apiKey: string,
+  apiBase: string,
+  // Resurrection (below) re-mints a transport under the id the client is
+  // already presenting; a fresh session gets a random one.
+  sessionIdGenerator: () => string = () => randomUUID(),
+): WebStandardStreamableHTTPServerTransport {
   // Shared mutable box: buildMcpServer needs the callback before the transport
   // (and its session entry) exists, so the flag lives here and the entry
   // carries a reference to it.
@@ -151,7 +157,7 @@ function createTransport(apiKey: string, apiBase: string): WebStandardStreamable
   const server = buildMcpServer(apiKey, apiBase, (failedKey) => { auth.failedKeyHash = hashKey(failedKey); });
 
   const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
+    sessionIdGenerator,
     onsessioninitialized: (sessionId: string) => {
       const now = Date.now();
       sessions.set(sessionId, { transport, lastSeen: now, auth });
@@ -170,6 +176,105 @@ function createTransport(apiKey: string, apiBase: string): WebStandardStreamable
   server.connect(transport);
 
   return transport;
+}
+
+/**
+ * Resurrect a session the server no longer holds.
+ *
+ * The session map is in-memory. Every API deploy empties it, the 30-minute idle
+ * sweep empties it for anyone who paused a conversation, and the LRU cap can
+ * empty it under load. The MCP spec says a client that gets 404 on its session
+ * id MUST re-initialize — claude.ai does not: its next tool call and every
+ * retry keep presenting the dead id, the user sees "Unable to reach
+ * Firestarter", and the shopping widget / drop zone never renders
+ * (commerce#1090, #1074, #1111, #1118 — two of them filed within 30–50 minutes
+ * of a prod API deploy, the others after a long pause). The 2026-08-31 OAuth
+ * incident (#102) was the same symptom with a different trigger.
+ *
+ * So when an unknown id arrives with a valid Bearer and a NON-initialize
+ * request, mint a fresh transport UNDER THAT ID: run a synthetic initialize
+ * through it so the SDK considers the session established, then serve the
+ * request. The client never learns the session was lost. This grants nothing a
+ * fresh initialize would not: a session id is not a credential (see the
+ * sessions map above) — every upstream call still carries the Bearer on the
+ * request that triggered it — and the map stays bounded by MAX_SESSIONS.
+ *
+ * Not resurrected: malformed ids (ours are UUIDs, so anything else is not a
+ * session we ever issued), DELETE (closing a dead session is already done),
+ * and initialize requests carrying a stale id (those simply create a new
+ * session, as if the header were absent).
+ */
+const RESURRECTABLE_SESSION_ID = /^[A-Za-z0-9._-]{8,128}$/;
+const resurrections = new Map<string, Promise<SessionEntry | null>>();
+let resurrectedTotal = 0;
+
+/** Test seam: how many sessions have been resurrected since boot. */
+export function mcpResurrectionCount(): number {
+  return resurrectedTotal;
+}
+
+/** Does this POST body carry an initialize request? Reads a clone; the original stays consumable. */
+async function bodyIsInitialize(req: Request): Promise<boolean> {
+  try {
+    const body: unknown = await req.clone().json();
+    const messages = Array.isArray(body) ? body : [body];
+    return messages.some((m) => m && typeof m === "object" && (m as { method?: unknown }).method === "initialize");
+  } catch {
+    return false;
+  }
+}
+
+function resurrectSession(sessionId: string, req: Request, apiKey: string, apiBase: string): Promise<SessionEntry | null> {
+  if (!RESURRECTABLE_SESSION_ID.test(sessionId)) return Promise.resolve(null);
+  if (req.method !== "POST" && req.method !== "GET") return Promise.resolve(null);
+  // Two requests racing on the same dead id share one resurrection, so the
+  // second cannot overwrite the first transport in the map.
+  const inflight = resurrections.get(sessionId);
+  if (inflight) return inflight;
+  const work = (async (): Promise<SessionEntry | null> => {
+    const transport = createTransport(apiKey, apiBase, () => sessionId);
+    try {
+      const protocolVersion = req.headers.get("mcp-protocol-version");
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        ...(protocolVersion ? { "mcp-protocol-version": protocolVersion } : {}),
+      };
+      const init = await transport.handleRequest(new Request(req.url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "resurrect",
+          method: "initialize",
+          params: {
+            protocolVersion: protocolVersion ?? "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "resurrected-session", version: "0" },
+          },
+        }),
+      }));
+      await init.text().catch(() => "");
+      if (init.status !== 200) throw new Error(`synthetic initialize answered ${init.status}`);
+      const initialized = await transport.handleRequest(new Request(req.url, {
+        method: "POST",
+        headers: { ...headers, "mcp-session-id": sessionId },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+      }));
+      await initialized.text().catch(() => "");
+      const entry = sessions.get(sessionId);
+      if (!entry) throw new Error("resurrected transport did not register its session");
+      resurrectedTotal++;
+      return entry;
+    } catch {
+      void transport.close?.();
+      return null;
+    } finally {
+      resurrections.delete(sessionId);
+    }
+  })();
+  resurrections.set(sessionId, work);
+  return work;
 }
 
 // Extract API key from Authorization header
@@ -200,11 +305,21 @@ app.all("/", async (c) => {
   // Check for existing session
   const sessionId = c.req.header("mcp-session-id");
 
-  if (sessionId) {
-    const entry = sessions.get(sessionId);
-    if (!entry) {
-      return c.json({ error: "Session not found" }, 404);
+  let entry = sessionId ? sessions.get(sessionId) : undefined;
+  if (sessionId && !entry) {
+    // A stale id on an initialize request just means "new session": the client
+    // is re-initializing, which is exactly what the spec asks of it — fall
+    // through to the create path below.
+    const reinitializing = c.req.method === "POST" && (await bodyIsInitialize(c.req.raw));
+    if (!reinitializing) {
+      entry = (await resurrectSession(sessionId, c.req.raw, apiKey, apiBase)) ?? undefined;
+      if (!entry) {
+        return c.json({ error: "Session not found" }, 404);
+      }
     }
+  }
+
+  if (entry) {
     // commerce#824: a prior call on this session hit an upstream credential
     // 401 for the fs_oauth_ grant being presented again now — most likely
     // simple expiry (grants live one hour). Answer with the RFC 6750 challenge
