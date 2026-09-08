@@ -11,6 +11,7 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { currencyExponent } from "./currency.js";
 import { marketplaceOutputShape, toMarketplaceStructured } from "./schemas.js";
 import { SHOPPING_RESULTS_URI } from "./shopping-app.js";
 import { sanitizeUntrusted } from "./untrusted.js";
@@ -51,10 +52,13 @@ function label(m: string): string {
   return MARKETPLACE_LABEL[m] ?? m;
 }
 
+/** Minor units → the prose price. Exponent-aware: /100 rendered ¥1290 as "JPY 12.90". */
 function money(minor: unknown, currency: unknown): string {
   const n = Number(minor);
   if (!Number.isFinite(n)) return "";
-  return `${typeof currency === "string" ? currency : ""} ${(n / 100).toFixed(2)}`.trim();
+  const code = typeof currency === "string" ? currency : "";
+  const exp = currencyExponent(code);
+  return `${code} ${(n / 10 ** exp).toFixed(exp)}`.trim();
 }
 
 function compact(n: unknown): string | null {
@@ -206,7 +210,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
     server,
     "firestarter_marketplace_search",
     {
-      description: "Search EXTERNAL marketplaces and the Firestarter catalog at once — Shopee (Thailand first; no login or connection needed — results come from localized Google Shopping filtered to shopee.co.th, or Shopee's affiliate API when the server has credentials), Lazada, seeded Shopify stores — and return one ranked comparison with photos, prices, ratings and sold counts, rendered like firestarter_catalog_search. Ranked by price, rating and popularity; on-network items get a small bonus. Each external row carries a Buy link that opens the item in that marketplace's app, where the buyer picks the variant and pays with what the app already holds; Firestarter never touches their account. After they pay, record the order with firestarter_record_purchase. Usually answers in seconds; if a source is still running you get what's back so far plus a job_id — call again with that job_id to collect the rest (never treat a partial answer as 'no results'). Admin-only while the feature is proven.",
+      description: "Search EXTERNAL marketplaces and the Firestarter catalog at once — Shopee (Thailand first; no login or connection needed — results come from localized Google Shopping filtered to shopee.co.th, or Shopee's affiliate API when the server has credentials), Lazada, seeded Shopify stores — and return one ranked comparison with photos, prices, ratings and sold counts, rendered like firestarter_catalog_search. Ranked by price, rating and popularity; on-network items get a small bonus. Each external row carries a Buy link that opens the item in that marketplace's app, where the buyer picks the variant and pays with what the app already holds; Firestarter never touches their account. After they pay, record the order with firestarter_record_purchase. Usually answers in seconds; if a source is still running you get what's back so far plus a job_id — call again with that job_id to collect the rest (never treat a partial answer as 'no results'). Admin-only while the feature is proven. PRICES: each row's `price.amount_minor` is an INTEGER in the currency's ISO-4217 minor units (1290 with currency MYR is RM 12.90; the exponent is 0 for JPY/KRW/VND, so 1290 JPY is ¥1290), `current_price` is that same amount in MAJOR units and is what you quote the buyer and copy into firestarter_record_purchase's `amount` — never pass `amount_minor` there.",
       inputSchema: {
         query: z.string().min(2).max(200).describe("What the buyer wants, in their words, e.g. 'cotton buds 200pcs' or 'สำลีก้าน'. Put price limits in max_price, not the query."),
         marketplaces: z.array(z.enum(["shopee", "lazada", "shopify", "firestarter"])).optional().describe("Restrict sources. Default: every connected marketplace plus Shopify stores and the Firestarter catalog."),

@@ -19,7 +19,7 @@ function ratingOf(v: unknown): number | null {
   return Number.isFinite(n) && v !== null && v !== "" ? n : null;
 }
 import { sanitizeUntrusted, sanitizeUntrustedOrNull } from "./untrusted.js";
-import { toMinorUnits } from "./ucp-schema.js";
+import { currencyExponent, toMinorUnits } from "./ucp-schema.js";
 import { listingShareUrl } from "../lib/share-link.js";
 
 /**
@@ -74,15 +74,48 @@ function ratingOrNull(v: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/* ─── The money unit contract, stated ON THE WIRE ────────────────────────────
+ *
+ * These four strings exist because JSDoc does not reach an agent. Every price
+ * field below already carried an "Integer minor units" doc comment — and zod
+ * emits none of it into the JSON Schema a model actually receives, so a
+ * consumer integrating against this server read `amount_minor: 1290` as 1290
+ * currency units and reported "Firestarter prices off by 100x".
+ *
+ * Only `.describe()` is published. The contract is therefore written here once
+ * and attached to every shape that carries a price: change the wording in one
+ * place, or the shapes start telling agents different things.
+ */
+const AMOUNT_MINOR_DESC =
+  "INTEGER amount in the currency's ISO-4217 MINOR units — 1290 with currency MYR means RM 12.90. "
+  + "To get the amount a buyer is quoted, divide by 10^(ISO-4217 exponent for `currency`), NEVER by a hardcoded 100: "
+  + "the exponent is 2 for MYR/SGD/THB/USD/EUR, 0 for JPY/KRW/VND (1290 JPY minor units IS ¥1290), and 3 for KWD/BHD/OMR. "
+  + "Use `current_price` instead when you just need the displayable amount.";
+const PRICE_CURRENCY_DESC =
+  "ISO-4217 currency code for BOTH `amount_minor` and `current_price` — it sets the minor-unit exponent, so read it before dividing.";
+const CURRENT_PRICE_DESC =
+  "The price in MAJOR units (12.90 for RM 12.90, 1290 for ¥1290) in `currency` — already divided by the ISO-4217 exponent. "
+  + "This is the number to quote a buyer and the number to pass to firestarter_record_purchase's `amount`. Null when the row carries no price.";
+const PRICE_USD_DESC =
+  "Price in MAJOR units and ONLY when `currency` is USD; null for every other currency — it is never a converted estimate. "
+  + "For a non-USD row read `current_price` (major units) or `price.amount_minor` (minor units) instead.";
+
 const previewOption = z.object({
   rank: z.number().int(),
   /** Listing/result id — chain to firestarter_execute when source is a FS store. */
   id: z.string(),
   title: z.string(),
-  price_usd: z.number().nullable(),
-  currency: z.string(),
+  price_usd: z.number().nullable().describe(PRICE_USD_DESC),
+  /** Major units in `currency` — the displayable price. Optional because
+   *  firestarter_preview's own rows predate it and carry price_usd only; every
+   *  marketplace-scout row sets it. */
+  current_price: z.number().nullable().optional().describe(CURRENT_PRICE_DESC),
+  currency: z.string().describe(PRICE_CURRENCY_DESC),
   /** Integer minor units (e.g. cents) in the option's native currency. */
-  price: z.object({ currency: z.string(), amount_minor: z.number().int().nullable() }),
+  price: z.object({
+    currency: z.string().describe(PRICE_CURRENCY_DESC),
+    amount_minor: z.number().int().nullable().describe(AMOUNT_MINOR_DESC),
+  }),
   shipping: z.object({ known: z.boolean(), amount_usd: z.number().nullable() }),
   /** price + shipping when both are known, else null. */
   total_usd: z.number().nullable(),
@@ -242,10 +275,13 @@ const catalogListing = z.object({
   id: z.string(),
   product_name: z.string(),
   category: z.string().nullable(),
-  current_price: z.number().nullable(),
-  currency: z.string(),
+  current_price: z.number().nullable().describe(CURRENT_PRICE_DESC),
+  currency: z.string().describe(PRICE_CURRENCY_DESC),
   /** Integer minor units (e.g. cents) in the listing's native currency. */
-  price: z.object({ currency: z.string(), amount_minor: z.number().int().nullable() }),
+  price: z.object({
+    currency: z.string().describe(PRICE_CURRENCY_DESC),
+    amount_minor: z.number().int().nullable().describe(AMOUNT_MINOR_DESC),
+  }),
   buyable: z.boolean(),
   share_url: z.string().nullable(),
   /** http(s) product photo URLs; the shopping-results app renders images[0]. */
@@ -385,10 +421,13 @@ const sellerListing = z.object({
    *  a seller checking their own listing can SEE the description is saved —
    *  "descriptions not saving" was partly descriptions never being shown. */
   description: z.string().nullable(),
-  current_price: z.number().nullable(),
-  currency: z.string(),
+  current_price: z.number().nullable().describe(CURRENT_PRICE_DESC),
+  currency: z.string().describe(PRICE_CURRENCY_DESC),
   /** Integer minor units (e.g. cents) in the listing's native currency. */
-  price: z.object({ currency: z.string(), amount_minor: z.number().int().nullable() }),
+  price: z.object({
+    currency: z.string().describe(PRICE_CURRENCY_DESC),
+    amount_minor: z.number().int().nullable().describe(AMOUNT_MINOR_DESC),
+  }),
   /** Raw lifecycle status from the API (active, draft, …). */
   status: z.string().nullable(),
   /** Human-readable badge for the grid; null when the API sent no status. */
@@ -482,10 +521,13 @@ const shelfItem = z.object({
   /** Listing id (lst_...) — chain to firestarter_execute's listing_id to buy. */
   id: z.string(),
   product_name: z.string(),
-  current_price: z.number().nullable(),
-  currency: z.string(),
+  current_price: z.number().nullable().describe(CURRENT_PRICE_DESC),
+  currency: z.string().describe(PRICE_CURRENCY_DESC),
   /** Integer minor units (e.g. cents) in the listing's native currency. */
-  price: z.object({ currency: z.string(), amount_minor: z.number().int().nullable() }),
+  price: z.object({
+    currency: z.string().describe(PRICE_CURRENCY_DESC),
+    amount_minor: z.number().int().nullable().describe(AMOUNT_MINOR_DESC),
+  }),
   /** http(s) product photo URLs; the shopping-results app renders images[0]. */
   images: z.array(z.string()),
   /** Which surface this came from: a curated pick, or the community's own stock. */
@@ -610,7 +652,19 @@ export function toMarketplaceStructured(job: any): MarketplaceStructured {
   const options = results.map((r: any, i: number) => {
     const currency = typeof r?.currency === "string" ? r.currency : "USD";
     const amount_minor = Number.isInteger(r?.price_minor) ? r.price_minor : null;
-    const price_usd = typeof r?.price_usd === "number" ? r.price_usd : null;
+    // THE fix. This mapper was the only one emitting no major-unit price, so a
+    // consumer had nothing correct to read — and the field it did emit as
+    // `price_usd` is not a price at all: it is scout/rank.ts's ranking key,
+    // computed from a deliberately over-estimating static FX table whose own
+    // source comment says "never use for charging or displaying money". Read as
+    // this row's price it turned RM 12.90 into "MYR 3.87", reported from the
+    // field as "prices off by 100x".
+    //
+    // So: derive the displayable amount from the minor units the adapters
+    // genuinely produce, honoring the ISO-4217 exponent (MYR=2, JPY=0, KWD=3),
+    // and keep price_usd only where it is literally true.
+    const current_price = amount_minor == null ? null : amount_minor / 10 ** currencyExponent(currency);
+    const price_usd = currency.trim().toUpperCase() === "USD" ? current_price : null;
     const checkoutable = r?.checkoutable === true;
     const media: Array<{ type: string; url: string }> = Array.isArray(r?.media)
       ? r.media.filter((m: any) => m && typeof m.url === "string" && (m.type === "image" || m.type === "video"))
@@ -626,6 +680,7 @@ export function toMarketplaceStructured(job: any): MarketplaceStructured {
       id: typeof r?.id === "string" ? r.id : "",
       title: typeof r?.title === "string" ? r.title : "",
       price_usd,
+      current_price,
       currency,
       price: { currency, amount_minor },
       shipping: { known: false, amount_usd: null },

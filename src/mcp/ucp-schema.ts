@@ -21,6 +21,7 @@
  *     exponent (USD=2, JPY=0, KWD=3) — not a hardcoded *100.
  */
 import { z } from "zod";
+import { currencyExponent } from "./currency.js";
 
 /** Dated UCP catalog spec version this projection targets. */
 export const UCP_CATALOG_VERSION = "2026-04-08";
@@ -30,22 +31,12 @@ export const UCP_CATALOG_CAPABILITY = "dev.ucp.shopping.catalog";
 
 // ─── Currency minor units ─────────────────────────────────────────────────────
 // UCP Price.amount is an integer in the currency's minor unit, where the number
-// of minor digits is the ISO-4217 exponent. Most currencies use 2 (cents), but
-// zero-decimal (JPY, KRW, ...) and three-decimal (KWD, BHD, ...) currencies
-// exist. Default to 2 for anything not listed.
-const ZERO_DECIMAL = new Set([
-  "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG",
-  "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF",
-]);
-const THREE_DECIMAL = new Set(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"]);
-
-/** ISO-4217 minor-unit exponent for a currency code (defaults to 2). */
-export function currencyExponent(currency: string | null | undefined): number {
-  const code = (currency ?? "USD").trim().toUpperCase();
-  if (ZERO_DECIMAL.has(code)) return 0;
-  if (THREE_DECIMAL.has(code)) return 3;
-  return 2;
-}
+// of minor digits is the ISO-4217 exponent. The table itself lives in
+// ./currency.js — import-free, so the shopping-results widget bundle can share
+// the SAME exponents without pulling this server-side schema module into the
+// iframe — and is re-exported here so the published `./ucp-schema` entrypoint
+// keeps its existing surface.
+export { currencyExponent, toMajorUnits } from "./currency.js";
 
 /**
  * Convert a major-unit amount (e.g. dollars 18.5) to integer minor units in the

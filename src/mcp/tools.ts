@@ -3974,7 +3974,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     {
       source: z.string().describe("Where the purchase happened, lowercase (e.g. \"lazada\", \"shopify\", \"shopee\", \"amazon\", \"other\")"),
       title: z.string().describe("Product title as shown by the store"),
-      amount: z.number().optional().describe("Total paid, in the purchase currency"),
+      amount: z.number().optional().describe("Total paid, in the purchase currency and in MAJOR units — 12.90, never 1290. Copy a search row's `current_price`, not its `price.amount_minor` (which is minor units)."),
       currency: z.string().optional().describe("ISO currency code (e.g. \"MYR\", \"USD\")"),
       seller_name: z.string().optional().describe("Store / seller name"),
       seller_domain: z.string().optional().describe("Seller's domain (e.g. \"watsons.com.my\") — powers later reorders and seller discovery"),

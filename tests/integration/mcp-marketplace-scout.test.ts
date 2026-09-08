@@ -9,6 +9,7 @@
  * issues only GETs.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { z } from "zod";
 
 vi.hoisted(() => {
   process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS = "1";
@@ -17,6 +18,7 @@ vi.hoisted(() => {
 
 import { registerTools } from "../../src/mcp/tools.js";
 import { marketplaceOutputSchema, toMarketplaceStructured } from "../../src/mcp/schemas.js";
+import { renderScoutRows } from "../../src/mcp/scout-tools.js";
 
 type ToolHandler = (args: any) => Promise<any>;
 
@@ -222,5 +224,94 @@ describe("toMarketplaceStructured", () => {
     expect(out.count).toBe(1);
     expect(out.checkoutable_count).toBe(1);
     expect(out.options[0].url).toBe(RESULT.product_url);
+  });
+});
+
+/* ─── Price units ────────────────────────────────────────────────────────────
+ *
+ * Reported from the field as "Firestarter prices off by 100x". The arithmetic
+ * was never wrong — every adapter emits genuine minor units — but this mapper
+ * published NO major-unit price at all, and put the API's ranking key (a
+ * deliberately over-estimating static FX table, whose own source says "never
+ * use for charging or displaying money") in the field named `price_usd`. A
+ * consumer had nothing correct to read, so the RM 12.90 row below rendered as
+ * "MYR 3.87".
+ */
+const USD_ROW = { ...RESULT, id: "shopify:usd:1", source: "shopify", currency: "USD", price_minor: 4200, price_usd: 42 };
+const THB_ROW = { ...RESULT, id: "shopee:th:1", currency: "THB", price_minor: 39900, price_usd: 11.2 };
+// Zero-decimal (ISO-4217 exponent 0): ¥1290 is 1290 minor units, not ¥12.90.
+const JPY_ROW = { ...RESULT, id: "shopee:jp:1", currency: "JPY", price_minor: 1290, price_usd: 8.6 };
+
+describe("scout price units", () => {
+  it("publishes a major-unit current_price alongside the minor units", () => {
+    const out = toMarketplaceStructured({ results: [RESULT, THB_ROW] });
+    expect(out.options[0]).toMatchObject({
+      currency: "MYR",
+      current_price: 12.9,
+      price: { currency: "MYR", amount_minor: 1290 },
+    });
+    expect(out.options[1]).toMatchObject({ currency: "THB", current_price: 399 });
+    expect(() => marketplaceOutputSchema.parse(out)).not.toThrow();
+  });
+
+  it("never republishes the FX over-estimate as price_usd on a non-USD row", () => {
+    const out = toMarketplaceStructured({ results: [RESULT, THB_ROW, JPY_ROW] });
+    expect(out.options.map((o) => o.price_usd)).toEqual([null, null, null]);
+  });
+
+  it("keeps price_usd on a genuinely USD row, equal to current_price", () => {
+    const out = toMarketplaceStructured({ results: [USD_ROW] });
+    expect(out.options[0].current_price).toBe(42);
+    expect(out.options[0].price_usd).toBe(42);
+  });
+
+  it("does not divide a zero-decimal currency by 100", () => {
+    const out = toMarketplaceStructured({ results: [JPY_ROW] });
+    expect(out.options[0].current_price).toBe(1290);
+  });
+
+  it("leaves current_price null when the row carries no price", () => {
+    const out = toMarketplaceStructured({ results: [{ ...RESULT, price_minor: null, price_usd: null }] });
+    expect(out.options[0].current_price).toBeNull();
+    expect(out.options[0].price_usd).toBeNull();
+    expect(() => marketplaceOutputSchema.parse(out)).not.toThrow();
+  });
+});
+
+describe("scout prose money formatting", () => {
+  it("renders a 2-decimal currency from its minor units", () => {
+    expect(renderScoutRows([RESULT])[0]).toContain("MYR 12.90");
+  });
+
+  it("does not divide a zero-decimal currency by 100", () => {
+    const line = renderScoutRows([JPY_ROW])[0];
+    expect(line).toContain("JPY 1290");
+    expect(line).not.toContain("JPY 12.90");
+  });
+
+  it("uses the three-decimal exponent for a Gulf currency", () => {
+    expect(renderScoutRows([{ ...RESULT, currency: "KWD", price_minor: 12900 }])[0]).toContain("KWD 12.900");
+  });
+});
+
+describe("the unit contract on the wire", () => {
+  // JSDoc is invisible to an agent: zod never emits it into the JSON Schema a
+  // model actually receives. Only .describe() reaches the wire, and its absence
+  // is what made "off by 100x" a reasonable reading of the payload.
+  it("states minor units, the ISO-4217 exponent and the price_usd rule in the advertised schema", () => {
+    const schema = z.toJSONSchema(marketplaceOutputSchema, { io: "output" }) as any;
+    const option = schema.properties.options.items.properties;
+
+    const minor = String(option.price.properties.amount_minor.description ?? "");
+    expect(minor).toMatch(/minor unit/i);
+    expect(minor).toMatch(/1290/);
+    expect(minor).toMatch(/JPY/);
+    expect(minor).toMatch(/exponent/i);
+
+    expect(String(option.current_price.description ?? "")).toMatch(/major unit/i);
+    const usd = String(option.price_usd.description ?? "");
+    expect(usd).toMatch(/major unit/i);
+    expect(usd).toMatch(/null/i);
+    expect(String(option.currency.description ?? "")).toMatch(/4217/);
   });
 });
