@@ -634,14 +634,16 @@ export type MarketplaceStructured = z.infer<typeof marketplaceOutputSchema>;
  * One product card as the buyer's OWN browser saw it (Cole's browser_products).
  *
  * Deliberately loose, and that is load-bearing: the MCP SDK enforces this
- * shape BEFORE the handler runs and answers any failure as a JSON-RPC
- * InvalidParams error — which the host this exists for throws on. So one card
- * with `price: ""` (routine: browser_products types price as a non-nullable
- * string) or one from a store the API does not know must not be able to fail
- * the other four. No `min(1)` on `price_text` or `items`, and `marketplace` is
- * a string rather than an enum; the handler drops what the API would refuse
- * and says so in the `compared:` header, and the API remains the validator
- * for everything else (its 400 renders as a plain sentence).
+ * shape BEFORE the handler runs and answers any failure as an `isError: true`
+ * result carrying "MCP error -32602" text — which the host this exists for
+ * throws on. So one card with `price: ""` (routine: browser_products types
+ * price as a non-nullable string) or one from a store the API does not know
+ * must not be able to fail the other four. No `min(1)` on `price_text`,
+ * `title`, `url` or `items`, and `marketplace` is a string rather than an
+ * enum; the handler drops what the API would refuse and says so in the
+ * `compared:` header, and the API remains the validator for everything else
+ * (its 400 renders as a plain sentence). The caps mirror the route's own so a
+ * card this shape accepts is a card the route accepts.
  *
  * Only `.describe()` reaches the wire, so the parsing contract for `price_text`
  * and `sold_text` lives there, not in a comment.
@@ -649,9 +651,9 @@ export type MarketplaceStructured = z.infer<typeof marketplaceOutputSchema>;
 const capturedItem = z.object({
   marketplace: z.string().max(32).describe("Which storefront the card came from: lazada or shopee. A card from any other store is dropped from the comparison (the header says how many)."),
   title: z.string().max(500).describe("Product title as shown on the card."),
-  price_text: z.string().max(100).describe("The price EXACTLY as the page shows it — '฿29', '29 บาท', 'RM12.90', 'S$4.50', '1,290', '฿1,290 - ฿1,590'. Firestarter parses it; do not convert it or strip the currency. Send an empty string when the card shows no price: that card is dropped from the comparison, never priced 0, and the others still rank."),
+  price_text: z.string().max(80).describe("The price EXACTLY as the page shows it — '฿29', '29 บาท', 'RM12.90', 'S$4.50', '1,290', '฿1,290 - ฿1,590'. Firestarter parses it; do not convert it or strip the currency. Send an empty string when the card shows no price: that card is dropped from the comparison, never priced 0, and the others still rank."),
   url: z.string().max(2048).describe("The card's product page URL — becomes the row id and the Buy link."),
-  image_url: z.string().max(2048).nullable().optional().describe("Product photo URL from the card, if any."),
+  image_url: z.string().max(2048).nullable().optional().describe("Product photo URL from the card, if any. Omit it (or send null) when the card has none; a value that is not a URL is ignored, never a reason to drop the card."),
   sold_text: z.string().max(100).nullable().optional().describe("The sold count EXACTLY as shown — 'ขายแล้ว 1.2พัน', '2.5k sold', '350 sold', '10K+ sold'. Parsed server-side into a number for ranking."),
   rating: z.number().min(0).nullable().optional().describe("Star rating on the card, if shown (e.g. 4.8)."),
   reviews: z.number().int().min(0).nullable().optional().describe("Review count on the card, if shown."),

@@ -20,7 +20,7 @@ vi.hoisted(() => {
 });
 
 import { registerTools } from "../../src/mcp/tools.js";
-import { marketplaceOutputSchema, toMarketplaceStructured } from "../../src/mcp/schemas.js";
+import { marketplaceCompareInputShape, marketplaceOutputSchema, toMarketplaceStructured } from "../../src/mcp/schemas.js";
 import { renderScoutRows } from "../../src/mcp/scout-tools.js";
 
 type ToolHandler = (args: any) => Promise<any>;
@@ -74,7 +74,20 @@ function mockFetch(route: Route) {
 const textOf = (res: any) => res.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
 const CLAIMS_NO_RESULTS = /no (results|matches)|nothing found|couldn't find/i;
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+/**
+ * A clock the test advances by hand, plus a record of every request timeout
+ * apiRequest asked for (it builds `AbortSignal.timeout(ms)` per call). Lets a
+ * test say "the POST took 15 s" without waiting 15 s, and see what budget the
+ * next GET was given.
+ */
+function fakeClock(startAt = 1_000_000) {
+  const clock = { now: startAt, timeouts: [] as number[] };
+  vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => { clock.timeouts.push(ms); return new AbortController().signal; });
+  return clock;
+}
 
 const RESULT = {
   id: "shopee:55501:1234567890", source: "shopee", on_network: false, checkoutable: true,
@@ -266,7 +279,9 @@ describe("firestarter_marketplace_search for a text-only host", () => {
     const started = Date.now();
     const res = await captureTools().firestarter_marketplace_search({ query: "cotton buds", wait_ms: 300 });
     const elapsed = Date.now() - started;
-    expect(elapsed).toBeGreaterThanOrEqual(250);
+    // The loop stops once less than a read's floor timeout remains (a quarter
+    // of a budget this small), so it runs ~225 ms of the 300, never past it.
+    expect(elapsed).toBeGreaterThanOrEqual(200);
     expect(elapsed).toBeLessThan(3000);
     const text = textOf(res);
     expect(text).toMatch(/^job_id: job_1$/m);
@@ -274,17 +289,87 @@ describe("firestarter_marketplace_search for a text-only host", () => {
     expect(res.isError).toBeFalsy();
   });
 
-  it("wait_ms: 0 makes exactly one POST and one GET, and still prints the job_id line", async () => {
-    // Cole's actual direction, and deterministic: no loop at all, one read of
-    // the job, hand back whatever exists with the job_id to come back for.
+  it("wait_ms: 0 makes exactly one POST and no GET, and still prints the job_id line", async () => {
+    // Cole's actual direction, and deterministic: the POST's own answer IS the
+    // job as it stands, so with no budget left there is nothing a read would
+    // add — hand back what the POST said plus the job_id to come back for.
     const calls = mockFetch((method) => method === "POST"
       ? { status: 202, data: { job: job({ id: "job_0", status: "queued", results: [], progress: { lazada: "queued" } }) } }
       : { data: { job: job({ id: "job_0", status: "running", results: [], progress: { lazada: "running" } }) } });
     const res = await captureTools().firestarter_marketplace_search({ query: "cotton buds", wait_ms: 0 });
-    expect(calls.map((c) => c.method)).toEqual(["POST", "GET"]);
+    expect(calls.map((c) => c.method)).toEqual(["POST"]);
+    expect(textOf(res)).toMatch(/Still searching/);
     expect(textOf(res)).toMatch(/^job_id: job_0$/m);
     expect(textOf(res)).not.toMatch(CLAIMS_NO_RESULTS);
     expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toMatchObject({ job_id: "job_0", status: "queued" });
+  });
+
+  it("a re-poll with wait_ms: 0 still reads the job exactly once — that read is the point of the call", async () => {
+    const clock = fakeClock();
+    const calls = mockFetch(() => ({ data: { job: job() } }));
+    const res = await captureTools().firestarter_marketplace_search({ query: "cotton buds", job_id: "scj_1", wait_ms: 0 });
+    expect(calls.map((c) => c.method)).toEqual(["GET"]);
+    // Nothing left of a zero budget, so the one read gets the floor timeout,
+    // never 0 ms (which would abort before the API could answer).
+    expect(clock.timeouts).toEqual([2000]);
+    expect(textOf(res)).toContain("2 results");
+  });
+
+  it("the budget covers the POST: a 15 s POST leaves the first GET at most 5 s of a 20 s budget", async () => {
+    const clock = fakeClock();
+    const calls = mockFetch((method) => {
+      if (method === "POST") {
+        clock.now += 15_000;
+        return { status: 202, data: { job: job({ id: "job_slow", status: "queued", results: [], progress: { lazada: "queued" } }) } };
+      }
+      clock.now += 4_000; // the read itself takes 4 s; 1 s left afterwards
+      return { data: { job: job({ id: "job_slow", status: "running", results: [RESULT], progress: { lazada: "done", shopee: "running" } }) } };
+    });
+    const res = await captureTools().firestarter_marketplace_search({ query: "cotton buds", wait_ms: 20_000 });
+    expect(calls.map((c) => c.method)).toEqual(["POST", "GET"]);
+    // [POST's own default, first GET bounded by what the POST left]
+    expect(clock.timeouts).toHaveLength(2);
+    expect(clock.timeouts[1]).toBeLessThanOrEqual(5_000);
+    expect(clock.timeouts[1]).toBeGreaterThanOrEqual(2_000);
+    // With 1 s left no further read starts — 1 s is under the floor — and
+    // what was read is handed back with the job_id.
+    expect(clock.now - 1_000_000).toBeLessThanOrEqual(20_000);
+    const text = textOf(res);
+    expect(text).toMatch(/Still searching — 1\/2 sources back/);
+    expect(text).toContain("Watsons Cotton Buds");
+    expect(text).toMatch(/^job_id: job_slow$/m);
+    expect(text).not.toMatch(CLAIMS_NO_RESULTS);
+  });
+
+  it("a POST that eats 19 s of a 20 s budget makes no GET at all and still prints job_id", async () => {
+    const clock = fakeClock();
+    const calls = mockFetch((method) => {
+      if (method === "POST") {
+        clock.now += 19_000;
+        return { status: 202, data: { job: job({ id: "job_slower", status: "queued", results: [], progress: { lazada: "queued" } }) } };
+      }
+      throw new Error("no GET may start with under 2 s left");
+    });
+    const res = await captureTools().firestarter_marketplace_search({ query: "cotton buds", wait_ms: 20_000 });
+    expect(calls.map((c) => c.method)).toEqual(["POST"]);
+    expect(clock.now - 1_000_000).toBeLessThanOrEqual(20_000);
+    const text = textOf(res);
+    expect(text).toMatch(/Still searching/);
+    expect(text).toMatch(/^job_id: job_slower$/m);
+    expect(text).not.toMatch(CLAIMS_NO_RESULTS);
+    expect(res.isError).toBeFalsy();
+    expect(() => marketplaceOutputSchema.parse(res.structuredContent)).not.toThrow();
+  });
+
+  it("never lets a poll read run past the 12 s API ceiling even with a long budget", async () => {
+    const clock = fakeClock();
+    mockFetch((method) => method === "POST"
+      ? { status: 202, data: { job: job({ id: "j", status: "queued", results: [] }) } }
+      : { data: { job: job({ id: "j" }) } });
+    await captureTools().firestarter_marketplace_search({ query: "cotton buds", wait_ms: 55_000 });
+    // [POST default, one GET that completed the job]
+    expect(clock.timeouts).toEqual([12_000, 12_000]);
   });
 
   it("skips image inlining when wait_ms is set — the budget must bound the whole call", async () => {
@@ -432,8 +517,9 @@ describe("firestarter_marketplace_compare", () => {
 
   /* One bad card must never cost the whole comparison. browser_products types
    * `price` as a non-nullable string, so a card with price "" is routine; the
-   * SDK enforces the Zod shape BEFORE the handler and answers a JSON-RPC error
-   * the host throws on — so these go through the real SDK, not the stub. */
+   * SDK enforces the Zod shape BEFORE the handler and answers any failure as an
+   * `isError: true` result carrying "MCP error -32602" text, which the host
+   * throws on — so these go through the real SDK, not the stub. */
   it("tolerates an unpriced card through the SDK: 5 cards, one with price_text '' → compared: 4 of 5", async () => {
     const FOUR = [...OPTIONS, { ...OPTIONS[0], id: "lazada:9", title: "Cotton buds 500", price_minor: 4900, image_url: null }];
     const calls = mockFetch((method, url, body) => {
@@ -492,6 +578,56 @@ describe("firestarter_marketplace_compare", () => {
     expect(textOf(res)).toMatch(/^compared: 0 of 2 \(dropped 1 with no readable price; 1 from an unsupported marketplace\)$/m);
     expect(textOf(res)).toMatch(/nothing to rank/i);
     expect(calls).toHaveLength(0);
+  });
+
+  /* The API route (firestarter-commerce routes/scout.ts) requires a non-blank
+   * title, `url` and any present `image_url` to be URLs, and price_text ≤ 80 —
+   * and 400s the WHOLE batch on one bad card. So the same "drop the card, not
+   * the batch" rule covers those too, and an empty image_url is omitted rather
+   * than sent as "". */
+  it("drops blank-title and non-URL cards, omits an empty image_url, and keeps the rest: compared: 3 of 5", async () => {
+    const THREE = OPTIONS;
+    const calls = mockFetch((method, url, body) => {
+      expect(body.items).toHaveLength(3);
+      for (const it of body.items) {
+        expect(it.title.trim().length).toBeGreaterThan(0);
+        expect(it.url).toMatch(/^https:\/\//);
+        if ("image_url" in it) expect(it.image_url).toMatch(/^https?:\/\//);
+      }
+      // The card whose image_url was "" travels without the key at all.
+      expect(body.items.find((it: any) => it.title === "Cotton buds 300")).not.toHaveProperty("image_url");
+      return { data: { count: 3, options: THREE } };
+    });
+    const res = await captureTools().firestarter_marketplace_compare({
+      country: "TH",
+      items: [
+        CARDS[0],
+        { ...CARDS[1], image_url: "" },
+        { ...CARDS[2], image_url: "not a url" },
+        { marketplace: "lazada", title: "   ", price_text: "฿19", url: "https://www.lazada.co.th/products/blank-i2.html" },
+        { marketplace: "shopee", title: "Priceless", price_text: "", url: "https://shopee.co.th/p-i.7.8" },
+      ],
+    });
+    expect(calls).toHaveLength(1);
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/^compared: 3 of 5 \(dropped 1 with no readable price; 1 with no title\/url\)$/m);
+  });
+
+  it("drops a card whose url is not a URL, counted with the blank titles", async () => {
+    const calls = mockFetch(() => ({ data: { count: 2, options: OPTIONS.slice(0, 2) } }));
+    const res = await captureTools().firestarter_marketplace_compare({
+      country: "TH",
+      items: [CARDS[0], CARDS[1], { ...CARDS[2], url: "lazada.co.th/products/no-scheme" }],
+    });
+    expect(calls[0].body.items).toHaveLength(2);
+    expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped 1 with no title\/url\)$/m);
+  });
+
+  it("caps price_text at the API's 80 characters on the wire", () => {
+    const schema = z.toJSONSchema(z.object(marketplaceCompareInputShape)) as any;
+    expect(schema.properties.items.items.properties.price_text.maxLength).toBe(80);
+    expect(schema.properties.items.items.properties.price_text.minLength).toBeUndefined();
+    expect(schema.properties.items.minItems).toBeUndefined();
   });
 
   it("treats a 200 without a result list as a failure, not as a claim about the cards", async () => {

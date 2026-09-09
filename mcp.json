@@ -719,7 +719,7 @@
             "type": "string"
           },
           "wait_ms": {
-            "description": "How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. When set, no image blocks are inlined (each row's `image:` line carries the photo URL instead), so the budget bounds the whole call.",
+            "description": "How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. The budget bounds the whole call — the search request and every read of the job — and when set, no image blocks are inlined (each row's `image:` line carries the photo URL instead).",
             "type": "integer",
             "minimum": 0,
             "maximum": 55000
@@ -760,7 +760,7 @@
                 },
                 "price_text": {
                   "type": "string",
-                  "maxLength": 100,
+                  "maxLength": 80,
                   "description": "The price EXACTLY as the page shows it — '฿29', '29 บาท', 'RM12.90', 'S$4.50', '1,290', '฿1,290 - ฿1,590'. Firestarter parses it; do not convert it or strip the currency. Send an empty string when the card shows no price: that card is dropped from the comparison, never priced 0, and the others still rank."
                 },
                 "url": {
@@ -769,7 +769,7 @@
                   "description": "The card's product page URL — becomes the row id and the Buy link."
                 },
                 "image_url": {
-                  "description": "Product photo URL from the card, if any.",
+                  "description": "Product photo URL from the card, if any. Omit it (or send null) when the card has none; a value that is not a URL is ignored, never a reason to drop the card.",
                   "anyOf": [
                     {
                       "type": "string",

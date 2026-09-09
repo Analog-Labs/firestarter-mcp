@@ -42,9 +42,36 @@ function scoutWaitMs(input: { wait_ms?: number }): number {
 }
 const POLL_MAX_CONSECUTIVE_ERRORS = 3;
 
+/**
+ * The budget bounds the WHOLE call, not just the loop. The clock starts before
+ * the POST, and every read of the job is given `min(12 s, what is left)` —
+ * 12 s being apiRequest's own default — so a slow POST cannot be followed by
+ * a read that runs the call past the host's limit.
+ *
+ * A read is never given less than a floor: with under 2 s left, a real API
+ * round-trip cannot complete, so no read starts. The floor shrinks with a
+ * tiny budget (a quarter of it) only so a test-sized budget of 60 ms still
+ * polls; at any real budget it is 2 s.
+ */
+const MAX_READ_TIMEOUT_MS = 12_000;
+const MIN_READ_TIMEOUT_MS = 2_000;
+function readTimeoutFloor(budgetMs: number): number {
+  return Math.min(MIN_READ_TIMEOUT_MS, Math.max(1, Math.floor(budgetMs / 4)));
+}
+
 const MARKETPLACE_LABEL: Record<string, string> = { shopee: "Shopee", lazada: "Lazada", shopify: "Shopify stores", firestarter: "Firestarter" };
 /** Storefront currency per scout country — what a captured card's price text is parsed in. */
 const STOREFRONT_CURRENCY: Record<string, string> = { TH: "THB", MY: "MYR", SG: "SGD" };
+
+/** What the compare route's `z.url()` will take: an absolute http(s) URL. */
+function isHttpUrl(s: string): boolean {
+  try {
+    const u = new URL(s);
+    return u.protocol === "https:" || u.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
 const TERMINAL = new Set(["completed", "failed", "cancelled", "expired"]);
 const PAUSED = new Set(["needs_input", "awaiting_confirm"]);
 
@@ -134,25 +161,48 @@ function progressSummary(progress: Record<string, string> | undefined): { done: 
   return { done, pending, skipped };
 }
 
-async function pollScoutJob(apiRequest: ApiRequest, jobId: string, pollIntervalMs: number, budgetMs: number): Promise<any> {
-  const start = Date.now();
+/**
+ * Poll one job until it settles or the budget runs out.
+ *
+ * `startedAt` is when the CALL began — before any POST — so the budget is the
+ * host's, not the loop's. `seed` is the job as the POST that created it
+ * answered (null on a job_id re-poll): when the budget is spent before a
+ * single read, a just-created job is handed back as the POST described it
+ * rather than read again past the deadline, while a re-poll — whose entire
+ * purpose is one read — always gets that read, at the floor timeout.
+ */
+async function pollScoutJob(
+  apiRequest: ApiRequest,
+  jobId: string,
+  pollIntervalMs: number,
+  budget: { startedAt: number; budgetMs: number },
+  seed: any | null,
+): Promise<any> {
+  const path = `/v1/scout/jobs/${encodeURIComponent(jobId)}`;
+  const deadline = budget.startedAt + budget.budgetMs;
+  const floor = readTimeoutFloor(budget.budgetMs);
+  const remaining = () => deadline - Date.now();
+  const read = async (minMs: number) => {
+    const res = await apiRequest("GET", path, undefined, Math.max(minMs, Math.min(MAX_READ_TIMEOUT_MS, remaining())));
+    return res?.job ?? res;
+  };
   let consecutiveErrors = 0;
   let last: any = null;
-  while (Date.now() - start < budgetMs) {
+  while (remaining() > 0 && remaining() >= floor) {
     try {
-      const res = await apiRequest("GET", `/v1/scout/jobs/${encodeURIComponent(jobId)}`);
+      last = await read(floor);
       consecutiveErrors = 0;
-      last = res?.job ?? res;
       if (TERMINAL.has(last?.status) || PAUSED.has(last?.status)) return last;
     } catch (err: any) {
       if (err?.status === 404 || scoutGateText(err)) throw err;
       if (++consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) break;
     }
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    // Never sleep past the deadline either.
+    await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, Math.max(0, remaining()))));
   }
   if (last) return last;
-  const res = await apiRequest("GET", `/v1/scout/jobs/${encodeURIComponent(jobId)}`);
-  return res?.job ?? res;
+  if (seed && remaining() < floor) return seed;
+  return read(MIN_READ_TIMEOUT_MS);
 }
 
 export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void {
@@ -252,7 +302,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         limit: z.number().int().min(1).max(50).optional().describe("Max results per source (default 20)."),
         job_id: z.string().optional().describe("Re-poll an earlier search instead of starting a new one — pass the job_id from a partial result."),
         wait_ms: z.number().int().min(0).max(MAX_SCOUT_WAIT_MS).optional()
-          .describe("How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. When set, no image blocks are inlined (each row's `image:` line carries the photo URL instead), so the budget bounds the whole call."),
+          .describe("How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. The budget bounds the whole call — the search request and every read of the job — and when set, no image blocks are inlined (each row's `image:` line carries the photo URL instead)."),
       },
       outputSchema: marketplaceOutputShape,
       annotations: { title: "Search Marketplaces", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -262,7 +312,12 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
       query: string; marketplaces?: string[]; country?: string; max_price?: number; currency?: string; limit?: number; job_id?: string; wait_ms?: number;
     }) => {
       try {
+        // The clock starts here, before the POST: wait_ms is the host's budget
+        // for the whole call, and a slow POST comes out of it.
+        const startedAt = Date.now();
+        const budgetMs = scoutWaitMs({ wait_ms });
         let jobId = job_id;
+        let seed: any | null = null;
         if (!jobId) {
           const body: Record<string, unknown> = { query };
           if (marketplaces?.length) body.marketplaces = marketplaces;
@@ -271,9 +326,10 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
           if (currency) body.currency = currency.toUpperCase();
           if (typeof limit === "number") body.limit = limit;
           const created = await apiRequest("POST", "/v1/scout/search", body);
-          jobId = String(created?.job?.id ?? created?.id ?? "");
+          seed = created?.job ?? created ?? null;
+          jobId = String(seed?.id ?? "");
         }
-        const job = await pollScoutJob(apiRequest, jobId, pollIntervalMs, scoutWaitMs({ wait_ms }));
+        const job = await pollScoutJob(apiRequest, jobId, pollIntervalMs, { startedAt, budgetMs }, seed);
         const results: any[] = Array.isArray(job?.results) ? job.results : [];
         const { done, pending, skipped } = progressSummary(job?.progress);
         const total = done.length + pending.length + skipped.length;
@@ -307,7 +363,9 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
 
         const stillRunning = !TERMINAL.has(job?.status);
         if (stillRunning) {
-          lines.push(`**Still searching — ${done.length}/${total || done.length} sources back.** ${pending.map(label).join(", ") || "A source"} ${pending.length === 1 ? "is" : "are"} still running; nothing has failed. Call \`firestarter_marketplace_search\` again with job_id \`${jobId}\` in a few seconds to collect the rest.`);
+          lines.push(total
+            ? `**Still searching — ${done.length}/${total} sources back.** ${pending.map(label).join(", ") || "A source"} ${pending.length === 1 ? "is" : "are"} still running; nothing has failed. Call \`firestarter_marketplace_search\` again with job_id \`${jobId}\` in a few seconds to collect the rest.`
+            : `**Still searching — the search is queued and the wait budget ran out before a result could be read.** Call \`firestarter_marketplace_search\` again with job_id \`${jobId}\` in a few seconds.`);
         } else {
           const checkoutable = results.filter((r) => r?.checkoutable).length;
           lines.push(`**Marketplace search** — ${results.length} result${results.length === 1 ? "" : "s"} for "${sanitizeUntrusted(String(job?.query ?? query), 120)}" across ${done.map(label).join(", ") || "no sources"} (${checkoutable} checkoutable)`);
@@ -363,30 +421,42 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
       const hasMax = typeof max_price === "number";
 
       // Drop here what the API would refuse outright, so one bad card never
-      // costs the comparison: a blank price (browser_products emits "" for a
-      // card with no price shown) or a store the API does not know. Both are
-      // counted and named in the header; nothing is silently lost.
+      // costs the comparison. The route 400s the WHOLE batch on: a blank price
+      // (browser_products emits "" for a card with no price shown), a store it
+      // does not know, a blank title, a url or image_url that is not a URL.
+      // Every drop is counted and named in the header; an unusable image_url
+      // is simply omitted (never sent as ""), since the card itself is fine.
       const sendable: any[] = [];
       let unpriced = 0;
       let unsupported = 0;
+      let unaddressed = 0;
       for (const it of items ?? []) {
         const marketplace = String(it?.marketplace ?? "").trim().toLowerCase();
         if (marketplace !== "lazada" && marketplace !== "shopee") { unsupported++; continue; }
+        const title = String(it?.title ?? "").trim();
+        const url = String(it?.url ?? "").trim();
+        if (!title || !isHttpUrl(url)) { unaddressed++; continue; }
         if (!String(it?.price_text ?? "").trim()) { unpriced++; continue; }
-        sendable.push({ ...it, marketplace });
+        const { image_url, ...rest } = it;
+        const image = typeof image_url === "string" && isHttpUrl(image_url.trim()) ? image_url.trim() : null;
+        sendable.push({ ...rest, marketplace, title, url, ...(image ? { image_url: image } : {}) });
       }
       const sent = items?.length ?? 0;
       const header = (apiDropped: number) => {
-        const parts: string[] = [];
         const noPrice = unpriced + apiDropped;
-        if (noPrice) parts.push(`${noPrice} with no readable price${hasMax ? " or above max_price" : ""}`);
-        if (unsupported) parts.push(`${unsupported} from an unsupported marketplace`);
-        return `compared: ${sent - noPrice - unsupported} of ${sent}${parts.length ? ` (dropped ${parts.join("; ")})` : ""}`;
+        const parts = [
+          noPrice ? `${noPrice} with no readable price${hasMax ? " or above max_price" : ""}` : null,
+          unaddressed ? `${unaddressed} with no title/url` : null,
+          unsupported ? `${unsupported} from an unsupported marketplace` : null,
+        ].filter(Boolean);
+        return `compared: ${sent - noPrice - unaddressed - unsupported} of ${sent}${parts.length ? ` (dropped ${parts.join("; ")})` : ""}`;
       };
       const nothingToRank = (apiDropped: number) => {
         const why = unpriced + apiDropped
-          ? `None of the cards had a readable price${hasMax ? " at or under max_price" : ""}${unsupported ? " or came from a supported marketplace (lazada, shopee)" : ""}`
-          : "None of the cards came from a supported marketplace (lazada, shopee)";
+          ? `None of the cards had a readable price${hasMax ? " at or under max_price" : ""}${unsupported || unaddressed ? " (the rest lacked a title, a URL, or a supported marketplace)" : ""}`
+          : unaddressed
+            ? "None of the cards had both a title and a product URL"
+            : "None of the cards came from a supported marketplace (lazada, shopee)";
         return `${why}, so there is nothing to rank. Send each price EXACTLY as the page shows it (e.g. ฿29, RM12.90, 1,290), or search with \`firestarter_marketplace_search\`.`;
       };
 
