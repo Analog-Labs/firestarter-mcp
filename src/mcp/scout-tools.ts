@@ -12,7 +12,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { currencyExponent } from "./currency.js";
-import { marketplaceOutputShape, toMarketplaceStructured } from "./schemas.js";
+import { marketplaceCompareInputShape, marketplaceOutputShape, toMarketplaceStructured } from "./schemas.js";
 import { SHOPPING_RESULTS_URI } from "./shopping-app.js";
 import { sanitizeUntrusted } from "./untrusted.js";
 
@@ -43,6 +43,8 @@ function scoutWaitMs(input: { wait_ms?: number }): number {
 const POLL_MAX_CONSECUTIVE_ERRORS = 3;
 
 const MARKETPLACE_LABEL: Record<string, string> = { shopee: "Shopee", lazada: "Lazada", shopify: "Shopify stores", firestarter: "Firestarter" };
+/** Storefront currency per scout country — what a captured card's price text is parsed in. */
+const STOREFRONT_CURRENCY: Record<string, string> = { TH: "THB", MY: "MYR", SG: "SGD" };
 const TERMINAL = new Set(["completed", "failed", "cancelled", "expired"]);
 const PAUSED = new Set(["needs_input", "awaiting_confirm"]);
 
@@ -68,7 +70,10 @@ function label(m: string): string {
  * produced duplicate history rows. Only a purchase made outside Firestarter
  * (the buyer paying in the marketplace app) is recorded by hand, in MAJOR units.
  */
-const BUY_PROSE = "**To buy:** open the Buy link in the person's own browser session and complete the purchase there. Each row says exactly what is left (\"Then: …\"): Shopify stores land on checkout with the item already added (pay only); Shopee and Lazada open the item in the app, where the buyer taps Buy Now and Place Order with what the app already has, plus a variant choice only when the row says so. Firestarter never touches their marketplace account. Do NOT call firestarter_record_purchase for a checkout that Firestarter itself ran (its /paid step records it). Record only purchases made outside Firestarter, in MAJOR units (the row's `price:` line, e.g. 12.90 — never 1290). **On Firestarter** items: buy with `firestarter_execute` using the listing id in the result.";
+const RECORD_RULE = "Do NOT call firestarter_record_purchase for a checkout that Firestarter itself ran (its /paid step records it). Record only purchases made outside Firestarter, in MAJOR units (the row's `price:` line, e.g. 12.90 — never 1290).";
+const BUY_PROSE = `**To buy:** open the Buy link in the person's own browser session and complete the purchase there. Each row says exactly what is left ("Then: …"): Shopify stores land on checkout with the item already added (pay only); Shopee and Lazada open the item in the app, where the buyer taps Buy Now and Place Order with what the app already has, plus a variant choice only when the row says so. Firestarter never touches their marketplace account. ${RECORD_RULE} **On Firestarter** items: buy with \`firestarter_execute\` using the listing id in the result.`;
+/** Compare rows are only ever Lazada/Shopee cards from the person's own browser. */
+const COMPARE_BUY_PROSE = `**To buy:** open the Buy link in the person's own browser session and complete the purchase there. ${RECORD_RULE}`;
 
 /** Minor units → the prose price. Exponent-aware: /100 rendered ¥1290 as "JPY 12.90". */
 function money(minor: unknown, currency: unknown): string {
@@ -324,6 +329,57 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
           return { content: [{ type: "text" as const, text: `That search job wasn't found. Start a new search without job_id.` }], isError: true };
         }
         return gateOrError(err, "Marketplace search failed");
+      }
+    },
+  );
+
+  // Tool: firestarter_marketplace_compare
+  //
+  // The rows come from the person's OWN browser (Cole's browser_products, on
+  // their signed-in session and residential exit — where Firestarter's own
+  // Layer-1 search gets price-less Google hits). Firestarter's part is the
+  // parsing and the ranking: one stateless POST, no job row, no polling, no
+  // widget. Everything the model acts on is in the text block, rendered by the
+  // same renderScoutRows as search so the two read identically.
+  //
+  // Every failure is a plain sentence with isError: false. The host this
+  // exists for throws on isError, and a thrown refusal reaches its model as a
+  // bare "Error:" with none of the guidance below.
+  server.tool(
+    "firestarter_marketplace_compare",
+    "Rank product cards the person's OWN browser captured (browser_products) across Lazada and Shopee. Send the price text exactly as shown on the page; Firestarter parses it. Rows with no readable price are dropped, never priced 0. One stateless call — no job, no polling — answering `compared: <n> of <sent>` and then the same rows firestarter_marketplace_search renders: per row `id:`, `image:` (photo URL) and `price:` (MAJOR units, e.g. `THB 39.00`) lines, plus the Buy link. Use it whenever the person has a store open in their own browser; fall back to firestarter_marketplace_search only when they have no store to search in. Admin-only while the feature is proven; other callers get a plain refusal.",
+    marketplaceCompareInputShape,
+    { title: "Compare Captured Cards", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    async ({ country, items, max_price }) => {
+      const plain = (text: string) => ({ content: [{ type: "text" as const, text }], isError: false });
+      const cc = country ? country.toUpperCase() : undefined;
+      const body: Record<string, unknown> = { items };
+      if (cc) body.country = cc;
+      if (typeof max_price === "number") {
+        // MY/SG/TH are all exponent-2 today; the exponent table keeps this
+        // honest if a zero-decimal storefront is ever added.
+        body.max_price_minor = Math.round(max_price * 10 ** currencyExponent(STOREFRONT_CURRENCY[cc ?? ""]));
+      }
+      try {
+        const res = await apiRequest("POST", "/v1/scout/compare", body);
+        const options: any[] = Array.isArray(res?.options) ? res.options : [];
+        const count = Number.isInteger(res?.count) ? res.count : options.length;
+        const dropped = Math.max(0, items.length - count);
+        const why = `no readable price${typeof max_price === "number" ? " or above max_price" : ""}`;
+        const lines: string[] = [`compared: ${count} of ${items.length}${dropped ? ` (dropped ${dropped} with ${why})` : ""}`];
+        if (options.length === 0) {
+          lines.push("", `None of the cards had a readable price${typeof max_price === "number" ? " at or under max_price" : ""}, so there is nothing to rank. Send each price EXACTLY as the page shows it (e.g. ฿29, RM12.90, 1,290), or search with \`firestarter_marketplace_search\`.`);
+          return plain(lines.join("\n"));
+        }
+        lines.push("", ...renderScoutRows(options), "", COMPARE_BUY_PROSE);
+        return plain(lines.join("\n"));
+      } catch (err: any) {
+        const gate = scoutGateText(err);
+        if (gate) return plain(gate);
+        if (err?.status === 404) {
+          return plain("This Firestarter API doesn't have marketplace compare yet (it needs POST /v1/scout/compare). Rank the cards by price yourself for now, or use `firestarter_marketplace_search`.");
+        }
+        return plain(`Couldn't compare the cards: ${toErrorMessage(err)}. Nothing was ranked; fix the input or try again in a moment.`);
       }
     },
   );

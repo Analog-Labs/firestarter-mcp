@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.19.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 95 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 96 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -727,6 +727,121 @@
         },
         "required": [
           "query"
+        ]
+      }
+    },
+    {
+      "name": "firestarter_marketplace_compare",
+      "description": "Rank product cards the person's OWN browser captured (browser_products) across Lazada and Shopee. Send the price text exactly as shown on the page; Firestarter parses it. Rows with no readable price are dropped, never priced 0. One stateless call — no job, no polling — answering `compared: <n> of <sent>` and then the same rows firestarter_marketplace_search renders: per row `id:`, `image:` (photo URL) and `price:` (MAJOR units, e.g. `THB 39.00`) lines, plus the Buy link. Use it whenever the person has a store open in their own browser; fall back to firestarter_marketplace_search only when they have no store to search in. Admin-only while the feature is proven; other callers get a plain refusal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "description": "Storefront country the cards came from — TH, MY or SG. Sets the currency the prices are parsed in (THB, MYR, SGD). Default: the buyer's connected marketplace's country, else the API's default storefront.",
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2
+          },
+          "items": {
+            "minItems": 1,
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "marketplace": {
+                  "type": "string",
+                  "enum": [
+                    "lazada",
+                    "shopee"
+                  ],
+                  "description": "Which storefront the card came from."
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500,
+                  "description": "Product title as shown on the card."
+                },
+                "price_text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "description": "The price EXACTLY as the page shows it — '฿29', '29 บาท', 'RM12.90', 'S$4.50', '1,290', '฿1,290 - ฿1,590'. Firestarter parses it; do not convert it or strip the currency. A card whose price cannot be read is dropped from the comparison, never priced 0."
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048,
+                  "description": "The card's product page URL — becomes the row id and the Buy link."
+                },
+                "image_url": {
+                  "description": "Product photo URL from the card, if any.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 2048
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sold_text": {
+                  "description": "The sold count EXACTLY as shown — 'ขายแล้ว 1.2พัน', '2.5k sold', '350 sold', '10K+ sold'. Parsed server-side into a number for ranking.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "rating": {
+                  "description": "Star rating on the card, if shown (e.g. 4.8).",
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reviews": {
+                  "description": "Review count on the card, if shown.",
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "marketplace",
+                "title",
+                "price_text",
+                "url"
+              ]
+            },
+            "description": "The cards browser_products returned — 1 to 50, from every marketplace the person searched, in ONE call."
+          },
+          "max_price": {
+            "description": "Drop rows above this price, in the storefront currency's MAJOR units (e.g. 30 for ฿30 / RM30).",
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "items"
         ]
       }
     },

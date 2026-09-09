@@ -630,6 +630,35 @@ export const marketplaceOutputShape = {
 export const marketplaceOutputSchema = z.object(marketplaceOutputShape);
 export type MarketplaceStructured = z.infer<typeof marketplaceOutputSchema>;
 
+/**
+ * One product card as the buyer's OWN browser saw it (Cole's browser_products).
+ *
+ * Deliberately loose: the API (`POST /v1/scout/compare`) is the validator and
+ * answers a 400 the tool renders as a plain sentence. A strict shape here would
+ * make the SDK reject the whole call as an `isError` result before the handler
+ * runs — and the host this exists for throws on `isError`.
+ *
+ * Only `.describe()` reaches the wire, so the parsing contract for `price_text`
+ * and `sold_text` lives there, not in a comment.
+ */
+const capturedItem = z.object({
+  marketplace: z.enum(["lazada", "shopee"]).describe("Which storefront the card came from."),
+  title: z.string().min(1).max(500).describe("Product title as shown on the card."),
+  price_text: z.string().min(1).max(100).describe("The price EXACTLY as the page shows it — '฿29', '29 บาท', 'RM12.90', 'S$4.50', '1,290', '฿1,290 - ฿1,590'. Firestarter parses it; do not convert it or strip the currency. A card whose price cannot be read is dropped from the comparison, never priced 0."),
+  url: z.string().min(1).max(2048).describe("The card's product page URL — becomes the row id and the Buy link."),
+  image_url: z.string().max(2048).nullable().optional().describe("Product photo URL from the card, if any."),
+  sold_text: z.string().max(100).nullable().optional().describe("The sold count EXACTLY as shown — 'ขายแล้ว 1.2พัน', '2.5k sold', '350 sold', '10K+ sold'. Parsed server-side into a number for ranking."),
+  rating: z.number().min(0).nullable().optional().describe("Star rating on the card, if shown (e.g. 4.8)."),
+  reviews: z.number().int().min(0).nullable().optional().describe("Review count on the card, if shown."),
+});
+
+/** Raw shape advertised as `firestarter_marketplace_compare`'s input. */
+export const marketplaceCompareInputShape = {
+  country: z.string().length(2).optional().describe("Storefront country the cards came from — TH, MY or SG. Sets the currency the prices are parsed in (THB, MYR, SGD). Default: the buyer's connected marketplace's country, else the API's default storefront."),
+  items: z.array(capturedItem).min(1).max(50).describe("The cards browser_products returned — 1 to 50, from every marketplace the person searched, in ONE call."),
+  max_price: z.number().positive().optional().describe("Drop rows above this price, in the storefront currency's MAJOR units (e.g. 30 for ฿30 / RM30)."),
+};
+
 const SCOUT_BLOCKER_LABELS: Record<string, string> = {
   NOT_CONNECTED: "buy in the marketplace app via the link",
   EXTERNAL_LINK: "buy directly via the link",

@@ -287,6 +287,104 @@ describe("firestarter_marketplace_search for a text-only host", () => {
   });
 });
 
+/* ─── firestarter_marketplace_compare ────────────────────────────────────────
+ *
+ * The rows come from the person's OWN browser (Cole's browser_products); the
+ * tool sends them to POST /v1/scout/compare, which parses the price text,
+ * drops what it cannot price, ranks, and answers `{ count, options }` in one
+ * stateless call. No job, no polling, no widget. Every refusal is a plain
+ * sentence with isError false — Cole's client throws on isError.
+ */
+describe("firestarter_marketplace_compare", () => {
+  const CARDS = [
+    { marketplace: "lazada", title: "Cotton buds 100", price_text: "฿29", url: "https://www.lazada.co.th/products/x-i1.html", image_url: "https://img.test/l1.jpg", sold_text: "ขายแล้ว 1.2พัน" },
+    { marketplace: "shopee", title: "Cotton buds 300", price_text: "39 บาท", url: "https://shopee.co.th/a-i.1.2", image_url: "https://img.test/s1.jpg", sold_text: "2.5k sold", rating: 4.8 },
+    { marketplace: "shopee", title: "Bundle", price_text: "1,290", url: "https://shopee.co.th/b-i.3.4" },
+  ];
+  /** What the API answers for CARDS: same row shape as a search result, in ITS order. */
+  const OPTIONS = [
+    { id: "shopee:1:2", source: "shopee", title: "Cotton buds 300", price_minor: 3900, currency: "THB", image_url: "https://img.test/s1.jpg", product_url: "https://shopee.co.th/a-i.1.2", buy_url: "https://shopee.co.th/a-i.1.2", sold_count: 2500, rating: 4.8, checkoutable: false, on_network: false },
+    { id: "lazada:1", source: "lazada", title: "Cotton buds 100", price_minor: 2900, currency: "THB", image_url: "https://img.test/l1.jpg", product_url: "https://www.lazada.co.th/products/x-i1.html", buy_url: "https://www.lazada.co.th/products/x-i1.html", sold_count: 1200, rating: null, checkoutable: false, on_network: false },
+    { id: "shopee:3:4", source: "shopee", title: "Bundle", price_minor: 129000, currency: "THB", image_url: null, product_url: "https://shopee.co.th/b-i.3.4", buy_url: "https://shopee.co.th/b-i.3.4", sold_count: null, rating: null, checkoutable: false, on_network: false },
+  ];
+
+  it("POSTs the cards once and renders the rows in the API's order under a compared: header", async () => {
+    const calls = mockFetch((method, url, body) => {
+      expect(method).toBe("POST");
+      expect(url).toBe("http://api.test/v1/scout/compare");
+      expect(body).toMatchObject({ country: "TH", items: CARDS });
+      expect(body.max_price_minor).toBeUndefined();
+      return { data: { count: 3, options: OPTIONS } };
+    });
+    const res = await captureTools().firestarter_marketplace_compare({ country: "th", items: CARDS });
+    expect(calls).toHaveLength(1);
+    const text = textOf(res);
+    expect(text).toMatch(/^compared: 3 of 3$/m);
+    // The API ranked; the tool does not reorder.
+    expect(text.indexOf("Cotton buds 300")).toBeLessThan(text.indexOf("Cotton buds 100"));
+    expect(text.indexOf("Cotton buds 100")).toBeLessThan(text.indexOf("Bundle"));
+    // Same per-row lines as search, so the two read identically to the model.
+    expect(text).toMatch(/^  id: `shopee:1:2`$/m);
+    expect(text).toMatch(/^  image: https:\/\/img\.test\/s1\.jpg$/m);
+    expect(text).toMatch(/^  price: THB 39\.00$/m);
+    expect(text).toMatch(/^  price: THB 1290\.00$/m);
+    expect(text).toContain("2.5k sold");
+    expect(text).not.toMatch(/image: null/);
+    expect(res.isError).toBeFalsy();
+    expect(res.content.every((b: any) => b.type === "text")).toBe(true);
+  });
+
+  it("says how many rows were dropped for having no readable price", async () => {
+    mockFetch(() => ({ data: { count: 2, options: OPTIONS.slice(0, 2) } }));
+    const res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: [...CARDS.slice(0, 2), { ...CARDS[2], price_text: "ราคาพิเศษ" }] });
+    const text = textOf(res);
+    expect(text).toMatch(/^compared: 2 of 3 \(dropped 1 with no readable price\)$/m);
+    expect(text).not.toContain("Bundle");
+    expect(res.isError).toBeFalsy();
+  });
+
+  it("converts max_price to storefront minor units with the currency exponent", async () => {
+    const calls = mockFetch(() => ({ data: { count: 1, options: OPTIONS.slice(1, 2) } }));
+    await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS, max_price: 30 });
+    expect(calls[0].body).toMatchObject({ country: "TH", max_price_minor: 3000 });
+  });
+
+  it("renders a 4xx as a plain sentence with isError false", async () => {
+    mockFetch(() => ({ status: 403, data: { error: "nope", code: "STAFF_ONLY", status: 403 } }));
+    let res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS });
+    expect(res.isError).toBe(false);
+    expect(textOf(res)).toMatch(/limited to Firestarter admins/);
+
+    mockFetch(() => ({ status: 400, data: { error: "items: at least one item is required", code: "INVALID_REQUEST", status: 400 } }));
+    res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS });
+    expect(res.isError).toBe(false);
+    expect(textOf(res)).toMatch(/at least one item is required/);
+
+    // An API deployed before /v1/scout/compare existed: say so, plainly.
+    mockFetch(() => ({ status: 404, data: { error: "Not found", status: 404 } }));
+    res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS });
+    expect(res.isError).toBe(false);
+    expect(textOf(res)).toMatch(/doesn't have marketplace compare yet/);
+  });
+
+  it("answers an empty comparison honestly", async () => {
+    mockFetch(() => ({ data: { count: 0, options: [] } }));
+    const res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: [{ ...CARDS[2], price_text: "ราคาพิเศษ" }] });
+    const text = textOf(res);
+    expect(text).toMatch(/^compared: 0 of 1 \(dropped 1 with no readable price\)$/m);
+    expect(text).toMatch(/none of the cards had a readable price/i);
+    expect(res.isError).toBeFalsy();
+  });
+
+  it("describes itself as ranking what the person's own browser captured", () => {
+    const d = describeOf("firestarter_marketplace_compare");
+    expect(d).toMatch(/OWN browser/);
+    expect(d).toMatch(/browser_products/);
+    expect(d).toMatch(/price text exactly as shown/);
+    expect(d).toMatch(/never priced 0/);
+  });
+});
+
 describe("toMarketplaceStructured", () => {
   it("is schema-valid on degraded input", () => {
     for (const j of [null, {}, { results: [{}] }, { results: [{ price_minor: "12", currency: 5 }], progress: { shopee: 7 } }]) {
