@@ -412,7 +412,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
   // bare "Error:" with none of the guidance below.
   server.tool(
     "firestarter_marketplace_compare",
-    "Rank product cards the person's OWN browser captured (browser_products) across Lazada and Shopee. Send the price text exactly as shown on the page; Firestarter parses it. Rows with no readable price are dropped, never priced 0. One stateless call — no job, no polling — answering `compared: <n> of <sent>` and then the same rows firestarter_marketplace_search renders: per row `id:`, `image:` (photo URL) and `price:` (MAJOR units, e.g. `THB 39.00`) lines, plus the Buy link. Use it whenever the person has a store open in their own browser; fall back to firestarter_marketplace_search only when they have no store to search in. Admin-only while the feature is proven; other callers get a plain refusal.",
+    "Rank product cards the person's OWN browser captured (browser_products) across Lazada and Shopee. Send the price text exactly as shown on the page; Firestarter parses it. Rows with no readable price are dropped, never priced 0. One stateless call — no job, no polling — answering `compared: <kept> of <sent> (dropped: <n> no readable price, <n> no title/url, <n> duplicate title, <n> over max_price, <n> unsupported marketplace)` (zero buckets omitted; two cards with the same title collapse to the cheapest) and then the same rows firestarter_marketplace_search renders: per row `id:`, `image:` (photo URL) and `price:` (MAJOR units, e.g. `THB 39.00`) lines, plus the Buy link. Use it whenever the person has a store open in their own browser; fall back to firestarter_marketplace_search only when they have no store to search in. Admin-only while the feature is proven; other callers get a plain refusal.",
     marketplaceCompareInputShape,
     { title: "Compare Captured Cards", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     async ({ country, items, max_price }) => {
@@ -442,26 +442,37 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         sendable.push({ ...rest, marketplace, title, url, ...(image ? { image_url: image } : {}) });
       }
       const sent = items?.length ?? 0;
-      const header = (apiDropped: number) => {
-        const noPrice = unpriced + apiDropped;
-        const parts = [
-          noPrice ? `${noPrice} with no readable price${hasMax ? " or above max_price" : ""}` : null,
-          unaddressed ? `${unaddressed} with no title/url` : null,
-          unsupported ? `${unsupported} from an unsupported marketplace` : null,
-        ].filter(Boolean);
-        return `compared: ${sent - noPrice - unaddressed - unsupported} of ${sent}${parts.length ? ` (dropped ${parts.join("; ")})` : ""}`;
+
+      // The header's arithmetic always holds: sent = kept + Σ dropped. The
+      // API reports its own drops per reason (`dropped: { no_price,
+      // no_title_or_url, duplicate, over_max_price }` — it dedupes captured
+      // cards on title, since they carry no seller, and applies max_price
+      // itself); the pre-drops above are ADDED into the same buckets. What
+      // the API returned fewer of without explaining is named as exactly
+      // that, never given an invented reason.
+      const dropReasons = (apiDropped: Record<string, unknown> | null, kept: number) => {
+        const n = (k: string) => { const v = Number(apiDropped?.[k]); return Number.isInteger(v) && v > 0 ? v : 0; };
+        const buckets: Array<[number, string]> = [
+          [unpriced + n("no_price"), "no readable price"],
+          [unaddressed + n("no_title_or_url"), "no title/url"],
+          [n("duplicate"), "duplicate title"],
+          [n("over_max_price"), "over max_price"],
+          [unsupported, "unsupported marketplace"],
+        ];
+        const explained = buckets.reduce((s, [c]) => s + c, 0);
+        const unexplained = Math.max(0, sent - kept - explained);
+        if (unexplained) buckets.push([unexplained, "not ranked (no reason given)"]);
+        return buckets.filter(([c]) => c > 0).map(([c, why]) => `${c} ${why}`).join(", ");
       };
-      const nothingToRank = (apiDropped: number) => {
-        const why = unpriced + apiDropped
-          ? `None of the cards had a readable price${hasMax ? " at or under max_price" : ""}${unsupported || unaddressed ? " (the rest lacked a title, a URL, or a supported marketplace)" : ""}`
-          : unaddressed
-            ? "None of the cards had both a title and a product URL"
-            : "None of the cards came from a supported marketplace (lazada, shopee)";
-        return `${why}, so there is nothing to rank. Send each price EXACTLY as the page shows it (e.g. ฿29, RM12.90, 1,290), or search with \`firestarter_marketplace_search\`.`;
+      const header = (apiDropped: Record<string, unknown> | null, kept: number) => {
+        const reasons = dropReasons(apiDropped, kept);
+        return `compared: ${kept} of ${sent}${reasons ? ` (dropped: ${reasons})` : ""}`;
       };
+      const nothingToRank = (apiDropped: Record<string, unknown> | null) =>
+        `None of the cards could be ranked: ${dropReasons(apiDropped, 0) || "the API returned no rows"}. Send each price EXACTLY as the page shows it (e.g. ฿29, RM12.90, 1,290) — a card with no readable price is dropped — or search with \`firestarter_marketplace_search\`.`;
 
       if (sent === 0) return plain("compared: 0 of 0\n\nNothing to compare — send at least one card from browser_products (marketplace, title, price text as shown, url).");
-      if (sendable.length === 0) return plain(`${header(0)}\n\n${nothingToRank(0)}`);
+      if (sendable.length === 0) return plain(`${header(null, 0)}\n\n${nothingToRank(null)}`);
 
       const body: Record<string, unknown> = { items: sendable };
       if (cc) body.country = cc;
@@ -479,9 +490,8 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
           return plain("Couldn't compare the cards: the API answered without a result list. Nothing was ranked; try again in a moment.");
         }
         const options: any[] = res.options;
-        const count = Number.isInteger(res?.count) ? res.count : options.length;
-        const apiDropped = Math.max(0, sendable.length - count);
-        const lines: string[] = [header(apiDropped)];
+        const apiDropped = res?.dropped && typeof res.dropped === "object" ? res.dropped as Record<string, unknown> : null;
+        const lines: string[] = [header(apiDropped, options.length)];
         if (options.length === 0) {
           lines.push("", nothingToRank(apiDropped));
           return plain(lines.join("\n"));

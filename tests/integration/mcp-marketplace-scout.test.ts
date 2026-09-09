@@ -440,6 +440,8 @@ describe("firestarter_marketplace_compare", () => {
     { marketplace: "shopee", title: "Cotton buds 300", price_text: "39 บาท", url: "https://shopee.co.th/a-i.1.2", image_url: "https://img.test/s1.jpg", sold_text: "2.5k sold", rating: 4.8 },
     { marketplace: "shopee", title: "Bundle", price_text: "1,290", url: "https://shopee.co.th/b-i.3.4" },
   ];
+  /** The API's per-reason drop counts; every key present, zeros included. */
+  const NONE = { no_price: 0, no_title_or_url: 0, duplicate: 0, over_max_price: 0 };
   /** What the API answers for CARDS: same row shape as a search result, in ITS order. */
   const OPTIONS = [
     { id: "shopee:1:2", source: "shopee", title: "Cotton buds 300", price_minor: 3900, currency: "THB", image_url: "https://img.test/s1.jpg", product_url: "https://shopee.co.th/a-i.1.2", buy_url: "https://shopee.co.th/a-i.1.2", sold_count: 2500, rating: 4.8, checkoutable: false, on_network: false },
@@ -453,7 +455,7 @@ describe("firestarter_marketplace_compare", () => {
       expect(url).toBe("http://api.test/v1/scout/compare");
       expect(body).toMatchObject({ country: "TH", items: CARDS });
       expect(body.max_price_minor).toBeUndefined();
-      return { data: { count: 3, options: OPTIONS } };
+      return { data: { count: 3, dropped: NONE, options: OPTIONS } };
     });
     const res = await captureTools().firestarter_marketplace_compare({ country: "th", items: CARDS });
     expect(calls).toHaveLength(1);
@@ -473,19 +475,58 @@ describe("firestarter_marketplace_compare", () => {
     expect(res.content.every((b: any) => b.type === "text")).toBe(true);
   });
 
-  it("says how many rows were dropped for having no readable price", async () => {
-    mockFetch(() => ({ data: { count: 2, options: OPTIONS.slice(0, 2) } }));
+  it("renders the API's per-reason drop counts: a price the API could not parse", async () => {
+    mockFetch(() => ({ data: { count: 2, dropped: { ...NONE, no_price: 1 }, options: OPTIONS.slice(0, 2) } }));
     const res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: [...CARDS.slice(0, 2), { ...CARDS[2], price_text: "ราคาพิเศษ" }] });
     const text = textOf(res);
-    expect(text).toMatch(/^compared: 2 of 3 \(dropped 1 with no readable price\)$/m);
+    expect(text).toMatch(/^compared: 2 of 3 \(dropped: 1 no readable price\)$/m);
     expect(text).not.toContain("Bundle");
     expect(res.isError).toBeFalsy();
   });
 
-  it("converts max_price to storefront minor units with the currency exponent", async () => {
-    const calls = mockFetch(() => ({ data: { count: 1, options: OPTIONS.slice(1, 2) } }));
-    await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS, max_price: 30 });
+  it("converts max_price to storefront minor units with the currency exponent, and renders the API's over_max_price count", async () => {
+    const calls = mockFetch(() => ({ data: { count: 1, dropped: { ...NONE, over_max_price: 2 }, options: OPTIONS.slice(1, 2) } }));
+    const res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS, max_price: 30 });
     expect(calls[0].body).toMatchObject({ country: "TH", max_price_minor: 3000 });
+    expect(textOf(res)).toMatch(/^compared: 1 of 3 \(dropped: 2 over max_price\)$/m);
+  });
+
+  it("renders a duplicate the API collapsed (same title, no seller → cheapest wins)", async () => {
+    mockFetch(() => ({ data: { count: 2, dropped: { ...NONE, duplicate: 1 }, options: OPTIONS.slice(0, 2) } }));
+    const res = await captureTools().firestarter_marketplace_compare({
+      country: "TH",
+      items: [CARDS[0], CARDS[1], { ...CARDS[1], price_text: "฿45", url: "https://shopee.co.th/a-i.9.9" }],
+    });
+    expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped: 1 duplicate title\)$/m);
+    expect(res.isError).toBeFalsy();
+  });
+
+  it("adds its own pre-drops into the API's buckets so sent = kept + Σdropped, and omits zero buckets", async () => {
+    const calls = mockFetch(() => ({ data: { count: 1, dropped: { no_price: 1, no_title_or_url: 0, duplicate: 0, over_max_price: 1 }, options: OPTIONS.slice(1, 2) } }));
+    const res = await captureTools().firestarter_marketplace_compare({
+      country: "TH",
+      max_price: 40,
+      items: [
+        CARDS[0],                                       // kept
+        { ...CARDS[1], price_text: "ราคาพิเศษ" },        // sent; API: no_price
+        CARDS[2],                                       // sent; API: over_max_price
+        { ...CARDS[0], url: "https://www.lazada.co.th/products/z-i5.html", price_text: "" }, // client: no price
+        { ...CARDS[1], url: "https://shopee.co.th/t-i.1.1", title: "" },                     // client: no title/url
+        { ...CARDS[2], url: "https://amazon.com/dp/x", marketplace: "amazon" },              // client: unsupported
+      ],
+    });
+    expect(calls[0].body.items).toHaveLength(3);
+    // 1 kept + 2 + 1 + 1 + 1 = 6 sent
+    expect(textOf(res)).toMatch(/^compared: 1 of 6 \(dropped: 2 no readable price, 1 no title\/url, 1 over max_price, 1 unsupported marketplace\)$/m);
+  });
+
+  it("names what the API left unexplained rather than inventing a reason", async () => {
+    // An API answer with no `dropped` (or one whose buckets do not add up):
+    // the arithmetic is still shown, the reason is not made up.
+    mockFetch(() => ({ data: { count: 1, options: OPTIONS.slice(1, 2) } }));
+    const res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS });
+    expect(textOf(res)).toMatch(/^compared: 1 of 3 \(dropped: 2 not ranked \(no reason given\)\)$/m);
+    expect(textOf(res)).not.toMatch(/readable price/);
   });
 
   it("renders a 4xx as a plain sentence with isError false", async () => {
@@ -507,11 +548,11 @@ describe("firestarter_marketplace_compare", () => {
   });
 
   it("answers an empty comparison honestly", async () => {
-    mockFetch(() => ({ data: { count: 0, options: [] } }));
+    mockFetch(() => ({ data: { count: 0, dropped: { ...NONE, no_price: 1 }, options: [] } }));
     const res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: [{ ...CARDS[2], price_text: "ราคาพิเศษ" }] });
     const text = textOf(res);
-    expect(text).toMatch(/^compared: 0 of 1 \(dropped 1 with no readable price\)$/m);
-    expect(text).toMatch(/none of the cards had a readable price/i);
+    expect(text).toMatch(/^compared: 0 of 1 \(dropped: 1 no readable price\)$/m);
+    expect(text).toMatch(/none of the cards could be ranked: 1 no readable price\./i);
     expect(res.isError).toBeFalsy();
   });
 
@@ -527,7 +568,7 @@ describe("firestarter_marketplace_compare", () => {
       // The blank-price card is not the API's problem: it is dropped here.
       expect(body.items).toHaveLength(4);
       expect(body.items.every((it: any) => it.price_text.trim().length > 0)).toBe(true);
-      return { data: { count: 4, options: FOUR } };
+      return { data: { count: 4, dropped: NONE, options: FOUR } };
     });
     const res = await callViaSdk("firestarter_marketplace_compare", {
       country: "TH",
@@ -536,13 +577,13 @@ describe("firestarter_marketplace_compare", () => {
     expect(calls).toHaveLength(1);
     expect(res.isError).toBeFalsy();
     const text = textOf(res);
-    expect(text).toMatch(/^compared: 4 of 5 \(dropped 1 with no readable price\)$/m);
+    expect(text).toMatch(/^compared: 4 of 5 \(dropped: 1 no readable price\)$/m);
     expect(text).toContain("Cotton buds 500");
     expect(text).not.toContain("No price shown");
   });
 
   it("drops a card from an unsupported marketplace through the SDK instead of failing the call, and forgives case", async () => {
-    const calls = mockFetch(() => ({ data: { count: 2, options: OPTIONS.slice(0, 2) } }));
+    const calls = mockFetch(() => ({ data: { count: 2, dropped: NONE, options: OPTIONS.slice(0, 2) } }));
     const res = await callViaSdk("firestarter_marketplace_compare", {
       country: "TH",
       items: [
@@ -554,20 +595,20 @@ describe("firestarter_marketplace_compare", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].body.items.map((it: any) => it.marketplace)).toEqual(["lazada", "shopee"]);
     expect(res.isError).toBeFalsy();
-    expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped 1 from an unsupported marketplace\)$/m);
+    expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped: 1 unsupported marketplace\)$/m);
   });
 
-  it("reports both drop reasons when both apply", async () => {
-    mockFetch(() => ({ data: { count: 1, options: OPTIONS.slice(1, 2) } }));
+  it("merges a client-side drop and an API-side drop into one header", async () => {
+    mockFetch(() => ({ data: { count: 1, dropped: { ...NONE, no_price: 1 }, options: OPTIONS.slice(1, 2) } }));
     const res = await captureTools().firestarter_marketplace_compare({
       country: "TH",
       items: [CARDS[0], { ...CARDS[1], price_text: "ราคาพิเศษ" }, { ...CARDS[2], marketplace: "tokopedia" }],
     });
-    expect(textOf(res)).toMatch(/^compared: 1 of 3 \(dropped 1 with no readable price; 1 from an unsupported marketplace\)$/m);
+    expect(textOf(res)).toMatch(/^compared: 1 of 3 \(dropped: 1 no readable price, 1 unsupported marketplace\)$/m);
   });
 
   it("says so plainly, without calling the API, when nothing can be sent", async () => {
-    const calls = mockFetch(() => ({ data: { count: 0, options: [] } }));
+    const calls = mockFetch(() => ({ data: { count: 0, dropped: NONE, options: [] } }));
     let res = await callViaSdk("firestarter_marketplace_compare", { country: "TH", items: [] });
     expect(res.isError).toBeFalsy();
     expect(textOf(res)).toMatch(/^compared: 0 of 0$/m);
@@ -575,8 +616,8 @@ describe("firestarter_marketplace_compare", () => {
 
     res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: [{ ...CARDS[0], price_text: " " }, { ...CARDS[1], marketplace: "amazon" }] });
     expect(res.isError).toBeFalsy();
-    expect(textOf(res)).toMatch(/^compared: 0 of 2 \(dropped 1 with no readable price; 1 from an unsupported marketplace\)$/m);
-    expect(textOf(res)).toMatch(/nothing to rank/i);
+    expect(textOf(res)).toMatch(/^compared: 0 of 2 \(dropped: 1 no readable price, 1 unsupported marketplace\)$/m);
+    expect(textOf(res)).toMatch(/none of the cards could be ranked: 1 no readable price, 1 unsupported marketplace\./i);
     expect(calls).toHaveLength(0);
   });
 
@@ -596,7 +637,7 @@ describe("firestarter_marketplace_compare", () => {
       }
       // The card whose image_url was "" travels without the key at all.
       expect(body.items.find((it: any) => it.title === "Cotton buds 300")).not.toHaveProperty("image_url");
-      return { data: { count: 3, options: THREE } };
+      return { data: { count: 3, dropped: NONE, options: THREE } };
     });
     const res = await captureTools().firestarter_marketplace_compare({
       country: "TH",
@@ -610,17 +651,17 @@ describe("firestarter_marketplace_compare", () => {
     });
     expect(calls).toHaveLength(1);
     expect(res.isError).toBeFalsy();
-    expect(textOf(res)).toMatch(/^compared: 3 of 5 \(dropped 1 with no readable price; 1 with no title\/url\)$/m);
+    expect(textOf(res)).toMatch(/^compared: 3 of 5 \(dropped: 1 no readable price, 1 no title\/url\)$/m);
   });
 
   it("drops a card whose url is not a URL, counted with the blank titles", async () => {
-    const calls = mockFetch(() => ({ data: { count: 2, options: OPTIONS.slice(0, 2) } }));
+    const calls = mockFetch(() => ({ data: { count: 2, dropped: NONE, options: OPTIONS.slice(0, 2) } }));
     const res = await captureTools().firestarter_marketplace_compare({
       country: "TH",
       items: [CARDS[0], CARDS[1], { ...CARDS[2], url: "lazada.co.th/products/no-scheme" }],
     });
     expect(calls[0].body.items).toHaveLength(2);
-    expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped 1 with no title\/url\)$/m);
+    expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped: 1 no title\/url\)$/m);
   });
 
   it("caps price_text at the API's 80 characters on the wire", () => {
