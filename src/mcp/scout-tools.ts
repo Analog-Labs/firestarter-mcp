@@ -252,7 +252,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         limit: z.number().int().min(1).max(50).optional().describe("Max results per source (default 20)."),
         job_id: z.string().optional().describe("Re-poll an earlier search instead of starting a new one — pass the job_id from a partial result."),
         wait_ms: z.number().int().min(0).max(MAX_SCOUT_WAIT_MS).optional()
-          .describe("How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000."),
+          .describe("How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. When set, no image blocks are inlined (each row's `image:` line carries the photo URL instead), so the budget bounds the whole call."),
       },
       outputSchema: marketplaceOutputShape,
       annotations: { title: "Search Marketplaces", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -322,7 +322,14 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         }
         if (results.length) lines.push("", ...renderScoutRows(results));
         lines.push("", BUY_PROSE);
-        const images = await inlineImageBlocks(results.slice(0, 8).map((r) => (typeof r?.image_url === "string" ? r.image_url : null)));
+        // wait_ms bounds the poll loop only; inlining is up to 3 image fetches
+        // at 8 s each (plus redirect hops) AFTER it, which on a slow CDN turns
+        // a 20 s budget into a 30 s host timeout — and the timeout loses the
+        // job_id line with it. A host that passes wait_ms discards image
+        // blocks anyway; the `image:` line per row is what it reads.
+        const images = wait_ms == null
+          ? await inlineImageBlocks(results.slice(0, 8).map((r) => (typeof r?.image_url === "string" ? r.image_url : null)))
+          : [];
         return { content: [{ type: "text" as const, text: lines.join("\n") }, ...images], structuredContent };
       } catch (err: any) {
         if (err?.status === 404 && !scoutGateText(err)) {
@@ -353,22 +360,60 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
     async ({ country, items, max_price }) => {
       const plain = (text: string) => ({ content: [{ type: "text" as const, text }], isError: false });
       const cc = country ? country.toUpperCase() : undefined;
-      const body: Record<string, unknown> = { items };
+      const hasMax = typeof max_price === "number";
+
+      // Drop here what the API would refuse outright, so one bad card never
+      // costs the comparison: a blank price (browser_products emits "" for a
+      // card with no price shown) or a store the API does not know. Both are
+      // counted and named in the header; nothing is silently lost.
+      const sendable: any[] = [];
+      let unpriced = 0;
+      let unsupported = 0;
+      for (const it of items ?? []) {
+        const marketplace = String(it?.marketplace ?? "").trim().toLowerCase();
+        if (marketplace !== "lazada" && marketplace !== "shopee") { unsupported++; continue; }
+        if (!String(it?.price_text ?? "").trim()) { unpriced++; continue; }
+        sendable.push({ ...it, marketplace });
+      }
+      const sent = items?.length ?? 0;
+      const header = (apiDropped: number) => {
+        const parts: string[] = [];
+        const noPrice = unpriced + apiDropped;
+        if (noPrice) parts.push(`${noPrice} with no readable price${hasMax ? " or above max_price" : ""}`);
+        if (unsupported) parts.push(`${unsupported} from an unsupported marketplace`);
+        return `compared: ${sent - noPrice - unsupported} of ${sent}${parts.length ? ` (dropped ${parts.join("; ")})` : ""}`;
+      };
+      const nothingToRank = (apiDropped: number) => {
+        const why = unpriced + apiDropped
+          ? `None of the cards had a readable price${hasMax ? " at or under max_price" : ""}${unsupported ? " or came from a supported marketplace (lazada, shopee)" : ""}`
+          : "None of the cards came from a supported marketplace (lazada, shopee)";
+        return `${why}, so there is nothing to rank. Send each price EXACTLY as the page shows it (e.g. ฿29, RM12.90, 1,290), or search with \`firestarter_marketplace_search\`.`;
+      };
+
+      if (sent === 0) return plain("compared: 0 of 0\n\nNothing to compare — send at least one card from browser_products (marketplace, title, price text as shown, url).");
+      if (sendable.length === 0) return plain(`${header(0)}\n\n${nothingToRank(0)}`);
+
+      const body: Record<string, unknown> = { items: sendable };
       if (cc) body.country = cc;
-      if (typeof max_price === "number") {
+      if (hasMax) {
         // MY/SG/TH are all exponent-2 today; the exponent table keeps this
         // honest if a zero-decimal storefront is ever added.
         body.max_price_minor = Math.round(max_price * 10 ** currencyExponent(STOREFRONT_CURRENCY[cc ?? ""]));
       }
       try {
         const res = await apiRequest("POST", "/v1/scout/compare", body);
-        const options: any[] = Array.isArray(res?.options) ? res.options : [];
+        // A 200 without a result list (a proxy's JSON page, a wrong route) is
+        // a failure. Rendering it as "dropped N with no readable price" would
+        // be a false statement about the cards.
+        if (!Array.isArray(res?.options)) {
+          return plain("Couldn't compare the cards: the API answered without a result list. Nothing was ranked; try again in a moment.");
+        }
+        const options: any[] = res.options;
         const count = Number.isInteger(res?.count) ? res.count : options.length;
-        const dropped = Math.max(0, items.length - count);
-        const why = `no readable price${typeof max_price === "number" ? " or above max_price" : ""}`;
-        const lines: string[] = [`compared: ${count} of ${items.length}${dropped ? ` (dropped ${dropped} with ${why})` : ""}`];
+        const apiDropped = Math.max(0, sendable.length - count);
+        const lines: string[] = [header(apiDropped)];
         if (options.length === 0) {
-          lines.push("", `None of the cards had a readable price${typeof max_price === "number" ? " at or under max_price" : ""}, so there is nothing to rank. Send each price EXACTLY as the page shows it (e.g. ฿29, RM12.90, 1,290), or search with \`firestarter_marketplace_search\`.`);
+          lines.push("", nothingToRank(apiDropped));
           return plain(lines.join("\n"));
         }
         lines.push("", ...renderScoutRows(options), "", COMPARE_BUY_PROSE);

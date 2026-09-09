@@ -10,6 +10,9 @@
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 vi.hoisted(() => {
   process.env.FIRESTARTER_MCP_POLL_INTERVAL_MS = "1";
@@ -26,6 +29,25 @@ function captureTools(): Record<string, ToolHandler> {
   const tools: Record<string, ToolHandler> = {};
   registerTools({ tool: (...args: any[]) => { tools[args[0] as string] = args[args.length - 1] as ToolHandler; } } as any, "fsk_test", "http://api.test");
   return tools;
+}
+
+/**
+ * Call a tool THROUGH the SDK, the way a host does. captureTools() hands the
+ * handler back directly and so bypasses the SDK's input validation — which is
+ * exactly the layer that can reject a call before the handler's plain-sentence
+ * refusals ever run (mcp.js: `McpError InvalidParams` on any Zod failure).
+ */
+async function callViaSdk(name: string, args: Record<string, unknown>): Promise<any> {
+  const server = new McpServer({ name: "scout-probe", version: "0.0.0" });
+  registerTools(server as any, "fsk_test", "http://api.test");
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "probe", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    return await client.callTool({ name, arguments: args });
+  } finally {
+    await client.close();
+  }
 }
 
 /** The description a client reads for one tool — the prose that steers the agent. */
@@ -236,7 +258,8 @@ describe("firestarter_marketplace_search for a text-only host", () => {
 
   it("honours wait_ms and prints the job_id on its own line when the job is still running", async () => {
     // The file's default budget is 60 ms (env above); wait_ms must override it
-    // in BOTH directions — a longer wait here, a shorter one for Cole in prod.
+    // in BOTH directions — lengthened here, shortened (Cole's direction) in the
+    // wait_ms: 0 case below.
     mockFetch((method) => method === "POST"
       ? { status: 202, data: { job: job({ id: "job_1", status: "running", results: [], progress: { lazada: "running" } }) } }
       : { data: { job: job({ id: "job_1", status: "running", results: [], progress: { lazada: "running" } }) } });
@@ -249,6 +272,37 @@ describe("firestarter_marketplace_search for a text-only host", () => {
     expect(text).toMatch(/^job_id: job_1$/m);
     expect(text).not.toMatch(CLAIMS_NO_RESULTS);
     expect(res.isError).toBeFalsy();
+  });
+
+  it("wait_ms: 0 makes exactly one POST and one GET, and still prints the job_id line", async () => {
+    // Cole's actual direction, and deterministic: no loop at all, one read of
+    // the job, hand back whatever exists with the job_id to come back for.
+    const calls = mockFetch((method) => method === "POST"
+      ? { status: 202, data: { job: job({ id: "job_0", status: "queued", results: [], progress: { lazada: "queued" } }) } }
+      : { data: { job: job({ id: "job_0", status: "running", results: [], progress: { lazada: "running" } }) } });
+    const res = await captureTools().firestarter_marketplace_search({ query: "cotton buds", wait_ms: 0 });
+    expect(calls.map((c) => c.method)).toEqual(["POST", "GET"]);
+    expect(textOf(res)).toMatch(/^job_id: job_0$/m);
+    expect(textOf(res)).not.toMatch(CLAIMS_NO_RESULTS);
+    expect(res.isError).toBeFalsy();
+  });
+
+  it("skips image inlining when wait_ms is set — the budget must bound the whole call", async () => {
+    // Image inlining is up to 3 fetches at 8 s each behind the poll budget; a
+    // slow CDN redirect chain on top of wait_ms: 20000 blows Cole's 30 s and
+    // loses the job_id with it. The host that passes wait_ms discards image
+    // blocks anyway; the `image:` line per row is what it reads.
+    const completed = () => ({ status: 202, data: { job: job({ results: [LAZADA], progress: { lazada: "done" } }) } });
+    let calls = mockFetch(completed);
+    let res = await captureTools().firestarter_marketplace_search({ query: "cotton buds", wait_ms: 1000 });
+    expect(calls.every((c) => c.url.startsWith("http://api.test/"))).toBe(true);
+    expect(res.content.every((b: any) => b.type === "text")).toBe(true);
+    expect(textOf(res)).toMatch(/^  image: https:\/\/img\.test\/1\.jpg$/m);
+
+    // Control: without wait_ms the photo is still fetched for hosts that render it.
+    calls = mockFetch(completed);
+    res = await captureTools().firestarter_marketplace_search({ query: "cotton buds" });
+    expect(calls.some((c) => c.url === "https://img.test/1.jpg")).toBe(true);
   });
 
   it("prints image and major-unit price lines per row, after the id line", async () => {
@@ -374,6 +428,102 @@ describe("firestarter_marketplace_compare", () => {
     expect(text).toMatch(/^compared: 0 of 1 \(dropped 1 with no readable price\)$/m);
     expect(text).toMatch(/none of the cards had a readable price/i);
     expect(res.isError).toBeFalsy();
+  });
+
+  /* One bad card must never cost the whole comparison. browser_products types
+   * `price` as a non-nullable string, so a card with price "" is routine; the
+   * SDK enforces the Zod shape BEFORE the handler and answers a JSON-RPC error
+   * the host throws on — so these go through the real SDK, not the stub. */
+  it("tolerates an unpriced card through the SDK: 5 cards, one with price_text '' → compared: 4 of 5", async () => {
+    const FOUR = [...OPTIONS, { ...OPTIONS[0], id: "lazada:9", title: "Cotton buds 500", price_minor: 4900, image_url: null }];
+    const calls = mockFetch((method, url, body) => {
+      expect(url).toBe("http://api.test/v1/scout/compare");
+      // The blank-price card is not the API's problem: it is dropped here.
+      expect(body.items).toHaveLength(4);
+      expect(body.items.every((it: any) => it.price_text.trim().length > 0)).toBe(true);
+      return { data: { count: 4, options: FOUR } };
+    });
+    const res = await callViaSdk("firestarter_marketplace_compare", {
+      country: "TH",
+      items: [...CARDS, { marketplace: "lazada", title: "Cotton buds 500", price_text: "฿49", url: "https://www.lazada.co.th/products/y-i9.html" }, { marketplace: "shopee", title: "No price shown", price_text: "", url: "https://shopee.co.th/c-i.5.6" }],
+    });
+    expect(calls).toHaveLength(1);
+    expect(res.isError).toBeFalsy();
+    const text = textOf(res);
+    expect(text).toMatch(/^compared: 4 of 5 \(dropped 1 with no readable price\)$/m);
+    expect(text).toContain("Cotton buds 500");
+    expect(text).not.toContain("No price shown");
+  });
+
+  it("drops a card from an unsupported marketplace through the SDK instead of failing the call, and forgives case", async () => {
+    const calls = mockFetch(() => ({ data: { count: 2, options: OPTIONS.slice(0, 2) } }));
+    const res = await callViaSdk("firestarter_marketplace_compare", {
+      country: "TH",
+      items: [
+        { ...CARDS[0], marketplace: "Lazada" },
+        CARDS[1],
+        { marketplace: "amazon", title: "Bundle", price_text: "$12.00", url: "https://amazon.com/dp/x" },
+      ],
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.items.map((it: any) => it.marketplace)).toEqual(["lazada", "shopee"]);
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped 1 from an unsupported marketplace\)$/m);
+  });
+
+  it("reports both drop reasons when both apply", async () => {
+    mockFetch(() => ({ data: { count: 1, options: OPTIONS.slice(1, 2) } }));
+    const res = await captureTools().firestarter_marketplace_compare({
+      country: "TH",
+      items: [CARDS[0], { ...CARDS[1], price_text: "ราคาพิเศษ" }, { ...CARDS[2], marketplace: "tokopedia" }],
+    });
+    expect(textOf(res)).toMatch(/^compared: 1 of 3 \(dropped 1 with no readable price; 1 from an unsupported marketplace\)$/m);
+  });
+
+  it("says so plainly, without calling the API, when nothing can be sent", async () => {
+    const calls = mockFetch(() => ({ data: { count: 0, options: [] } }));
+    let res = await callViaSdk("firestarter_marketplace_compare", { country: "TH", items: [] });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/^compared: 0 of 0$/m);
+    expect(textOf(res)).toMatch(/at least one card/i);
+
+    res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: [{ ...CARDS[0], price_text: " " }, { ...CARDS[1], marketplace: "amazon" }] });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/^compared: 0 of 2 \(dropped 1 with no readable price; 1 from an unsupported marketplace\)$/m);
+    expect(textOf(res)).toMatch(/nothing to rank/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("treats a 200 without a result list as a failure, not as a claim about the cards", async () => {
+    // A proxy's JSON page, or a wrong route answering 200 {}: rendering it as
+    // "dropped 3 with no readable price" would be a false statement.
+    for (const data of [{}, { count: 3 }, { options: "nope" }, null]) {
+      mockFetch(() => ({ data }));
+      const res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS });
+      expect(res.isError).toBe(false);
+      const text = textOf(res);
+      expect(text).toMatch(/Couldn't compare the cards/);
+      expect(text).not.toMatch(/readable price/);
+      expect(text).not.toMatch(/^compared:/m);
+    }
+  });
+
+  it("renders a 5xx, a thrown fetch and a non-JSON body as a plain sentence with isError false", async () => {
+    mockFetch(() => ({ status: 503, data: { error: "upstream down", status: 503 } }));
+    let res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS });
+    expect(res.isError).toBe(false);
+    expect(textOf(res)).toMatch(/Couldn't compare the cards: .*upstream down/);
+
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed"); }));
+    res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS });
+    expect(res.isError).toBe(false);
+    expect(textOf(res)).toMatch(/Couldn't compare the cards: .*fetch failed/);
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>502</html>", { status: 200, headers: { "Content-Type": "text/html" } })));
+    res = await captureTools().firestarter_marketplace_compare({ country: "TH", items: CARDS });
+    expect(res.isError).toBe(false);
+    expect(textOf(res)).toMatch(/Couldn't compare the cards/);
+    expect(textOf(res)).not.toMatch(/readable price/);
   });
 
   it("describes itself as ranking what the person's own browser captured", () => {
