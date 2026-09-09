@@ -683,6 +683,48 @@ describe("firestarter_marketplace_compare", () => {
     expect(textOf(res)).toMatch(/^compared: 3 of 3$/m);
   });
 
+  it("keeps every card inside the route's widths: sold_text sliced to 80, an over-long image_url omitted, the batch succeeds", async () => {
+    // The SDK caps are sanity bounds (sold_text 100, url/image_url 2048); the
+    // route's are 80 and 2000 and it 400s the whole batch past them.
+    const SOLD = "ขายแล้ว 1.2พัน " + "x".repeat(80);            // 95 chars
+    const IMG = "https://img.test/" + "a".repeat(2040 - 17);    // 2040 chars
+    expect(SOLD.length).toBe(95);
+    expect(IMG.length).toBe(2040);
+    const calls = mockFetch((_m, _u, body) => {
+      expect(body.items).toHaveLength(3);
+      const a = body.items.find((it: any) => it.title === "Cotton buds 100");
+      expect(a.sold_text).toBe(SOLD.slice(0, 80));
+      expect(a.sold_text.length).toBe(80);
+      const b = body.items.find((it: any) => it.title === "Cotton buds 300");
+      expect(b).not.toHaveProperty("image_url");
+      for (const it of body.items) {
+        expect(it.url.length).toBeLessThanOrEqual(2000);
+        if ("image_url" in it) expect(it.image_url.length).toBeLessThanOrEqual(2000);
+        if ("sold_text" in it) expect(it.sold_text.length).toBeLessThanOrEqual(80);
+      }
+      return { data: { count: 3, dropped: NONE, options: OPTIONS } };
+    });
+    const res = await callViaSdk("firestarter_marketplace_compare", {
+      country: "TH",
+      items: [{ ...CARDS[0], sold_text: SOLD }, { ...CARDS[1], image_url: IMG }, CARDS[2]],
+    });
+    expect(calls).toHaveLength(1);
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/^compared: 3 of 3$/m);
+  });
+
+  it("drops a card whose url is over the route's 2000 characters, counted as no title/url", async () => {
+    const LONG_URL = "https://shopee.co.th/" + "b".repeat(2001 - 21);
+    expect(LONG_URL.length).toBe(2001);
+    const calls = mockFetch(() => ({ data: { count: 2, dropped: NONE, options: OPTIONS.slice(0, 2) } }));
+    const res = await captureTools().firestarter_marketplace_compare({
+      country: "TH",
+      items: [CARDS[0], CARDS[1], { ...CARDS[2], url: LONG_URL }],
+    });
+    expect(calls[0].body.items).toHaveLength(2);
+    expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped: 1 no title\/url\)$/m);
+  });
+
   it("keeps only a generous sanity cap on price_text on the wire, and no minimums", () => {
     const schema = z.toJSONSchema(z.object(marketplaceCompareInputShape)) as any;
     expect(schema.properties.items.items.properties.price_text.maxLength).toBe(400);

@@ -719,7 +719,7 @@
             "type": "string"
           },
           "wait_ms": {
-            "description": "How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. The budget bounds the whole call — the search request and every read of the job — and when set, no image blocks are inlined (each row's `image:` line carries the photo URL instead).",
+            "description": "How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. The search POST's time counts against the budget and every poll read is bounded by what remains; when set, no image blocks are inlined (each row's `image:` line carries the photo URL instead).",
             "type": "integer",
             "minimum": 0,
             "maximum": 55000

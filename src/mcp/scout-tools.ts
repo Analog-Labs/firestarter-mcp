@@ -64,12 +64,18 @@ const MARKETPLACE_LABEL: Record<string, string> = { shopee: "Shopee", lazada: "L
 const STOREFRONT_CURRENCY: Record<string, string> = { TH: "THB", MY: "MYR", SG: "SGD" };
 
 /**
- * The compare route caps `price_text` at 80 and 400s the whole batch past it.
- * Its parser reads the first price in the text, so a long range with a promo
- * tail loses nothing by being cut here — and one long card must never cost
- * the other cards their comparison.
+ * The compare route's field widths (firestarter-commerce routes/scout.ts,
+ * `capturedItem`): it 400s the WHOLE batch past any of them, while the SDK
+ * shape here keeps only sanity bounds. So every card is fitted to the route
+ * before it is sent: text the parser reads from the front (`price_text`,
+ * `sold_text` — first price, first number) is sliced; an over-long
+ * `image_url` is omitted; an over-long `url` drops the card (it IS the card's
+ * identity and Buy link). One long card must never cost the other cards their
+ * comparison.
  */
 const API_PRICE_TEXT_MAX = 80;
+const API_SOLD_TEXT_MAX = 80;
+const API_URL_MAX = 2000;
 
 /** What the compare route's `z.url()` will take: an absolute http(s) URL. */
 function isHttpUrl(s: string): boolean {
@@ -310,7 +316,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         limit: z.number().int().min(1).max(50).optional().describe("Max results per source (default 20)."),
         job_id: z.string().optional().describe("Re-poll an earlier search instead of starting a new one — pass the job_id from a partial result."),
         wait_ms: z.number().int().min(0).max(MAX_SCOUT_WAIT_MS).optional()
-          .describe("How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. The budget bounds the whole call — the search request and every read of the job — and when set, no image blocks are inlined (each row's `image:` line carries the photo URL instead)."),
+          .describe("How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. The search POST's time counts against the budget and every poll read is bounded by what remains; when set, no image blocks are inlined (each row's `image:` line carries the photo URL instead)."),
       },
       outputSchema: marketplaceOutputShape,
       annotations: { title: "Search Marketplaces", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -431,9 +437,11 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
       // Drop here what the API would refuse outright, so one bad card never
       // costs the comparison. The route 400s the WHOLE batch on: a blank price
       // (browser_products emits "" for a card with no price shown), a store it
-      // does not know, a blank title, a url or image_url that is not a URL.
-      // Every drop is counted and named in the header; an unusable image_url
-      // is simply omitted (never sent as ""), since the card itself is fine.
+      // does not know, a blank title, a url or image_url that is not a URL or
+      // is wider than it accepts, text wider than it accepts. Every drop is
+      // counted and named in the header; an unusable image_url is simply
+      // omitted (never sent as ""), and over-long text is sliced, since the
+      // card itself is fine.
       const sendable: any[] = [];
       let unpriced = 0;
       let unsupported = 0;
@@ -443,12 +451,13 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         if (marketplace !== "lazada" && marketplace !== "shopee") { unsupported++; continue; }
         const title = String(it?.title ?? "").trim();
         const url = String(it?.url ?? "").trim();
-        if (!title || !isHttpUrl(url)) { unaddressed++; continue; }
+        if (!title || !isHttpUrl(url) || url.length > API_URL_MAX) { unaddressed++; continue; }
         const price_text = String(it?.price_text ?? "").trim().slice(0, API_PRICE_TEXT_MAX);
         if (!price_text) { unpriced++; continue; }
-        const { image_url, ...rest } = it;
-        const image = typeof image_url === "string" && isHttpUrl(image_url.trim()) ? image_url.trim() : null;
-        sendable.push({ ...rest, marketplace, title, url, price_text, ...(image ? { image_url: image } : {}) });
+        const { image_url, sold_text, ...rest } = it;
+        const image = typeof image_url === "string" && isHttpUrl(image_url.trim()) && image_url.trim().length <= API_URL_MAX ? image_url.trim() : null;
+        const sold = typeof sold_text === "string" ? sold_text.trim().slice(0, API_SOLD_TEXT_MAX) : "";
+        sendable.push({ ...rest, marketplace, title, url, price_text, ...(image ? { image_url: image } : {}), ...(sold ? { sold_text: sold } : {}) });
       }
       const sent = items?.length ?? 0;
 
