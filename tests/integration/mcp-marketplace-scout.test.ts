@@ -664,9 +664,28 @@ describe("firestarter_marketplace_compare", () => {
     expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped: 1 no title\/url\)$/m);
   });
 
-  it("caps price_text at the API's 80 characters on the wire", () => {
+  it("slices a long price_text to the API's 80 characters instead of rejecting the batch", async () => {
+    // "฿1,290 - ฿1,590 (ราคาพิเศษ …)" and worse are per-card imperfections
+    // browser_products can emit; the API's parser reads the first price
+    // anyway, so the card travels sliced and the batch goes through the SDK.
+    const LONG = "฿1,290 - ฿1,590 " + "(ราคาพิเศษ ลดสูงสุด 60% เฉพาะวันนี้ ".repeat(4);
+    expect(LONG.length).toBeGreaterThan(120);
+    const calls = mockFetch((_m, _u, body) => {
+      expect(body.items).toHaveLength(3);
+      const sliced = body.items.find((it: any) => it.title === "Bundle").price_text;
+      expect(sliced).toBe(LONG.slice(0, 80));
+      expect(sliced.length).toBe(80);
+      return { data: { count: 3, dropped: NONE, options: OPTIONS } };
+    });
+    const res = await callViaSdk("firestarter_marketplace_compare", { country: "TH", items: [CARDS[0], CARDS[1], { ...CARDS[2], price_text: LONG }] });
+    expect(calls).toHaveLength(1);
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/^compared: 3 of 3$/m);
+  });
+
+  it("keeps only a generous sanity cap on price_text on the wire, and no minimums", () => {
     const schema = z.toJSONSchema(z.object(marketplaceCompareInputShape)) as any;
-    expect(schema.properties.items.items.properties.price_text.maxLength).toBe(80);
+    expect(schema.properties.items.items.properties.price_text.maxLength).toBe(400);
     expect(schema.properties.items.items.properties.price_text.minLength).toBeUndefined();
     expect(schema.properties.items.minItems).toBeUndefined();
   });

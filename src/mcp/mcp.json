@@ -760,8 +760,8 @@
                 },
                 "price_text": {
                   "type": "string",
-                  "maxLength": 80,
-                  "description": "The price EXACTLY as the page shows it — '฿29', '29 บาท', 'RM12.90', 'S$4.50', '1,290', '฿1,290 - ฿1,590'. Firestarter parses it; do not convert it or strip the currency. Send an empty string when the card shows no price: that card is dropped from the comparison, never priced 0, and the others still rank."
+                  "maxLength": 400,
+                  "description": "The price EXACTLY as the page shows it — '฿29', '29 บาท', 'RM12.90', 'S$4.50', '1,290', '฿1,290 - ฿1,590'. Firestarter parses it (the first price in the text wins; anything past 80 characters is cut off); do not convert it or strip the currency. Send an empty string when the card shows no price: that card is dropped from the comparison, never priced 0, and the others still rank."
                 },
                 "url": {
                   "type": "string",

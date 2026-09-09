@@ -63,6 +63,14 @@ const MARKETPLACE_LABEL: Record<string, string> = { shopee: "Shopee", lazada: "L
 /** Storefront currency per scout country — what a captured card's price text is parsed in. */
 const STOREFRONT_CURRENCY: Record<string, string> = { TH: "THB", MY: "MYR", SG: "SGD" };
 
+/**
+ * The compare route caps `price_text` at 80 and 400s the whole batch past it.
+ * Its parser reads the first price in the text, so a long range with a promo
+ * tail loses nothing by being cut here — and one long card must never cost
+ * the other cards their comparison.
+ */
+const API_PRICE_TEXT_MAX = 80;
+
 /** What the compare route's `z.url()` will take: an absolute http(s) URL. */
 function isHttpUrl(s: string): boolean {
   try {
@@ -436,10 +444,11 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         const title = String(it?.title ?? "").trim();
         const url = String(it?.url ?? "").trim();
         if (!title || !isHttpUrl(url)) { unaddressed++; continue; }
-        if (!String(it?.price_text ?? "").trim()) { unpriced++; continue; }
+        const price_text = String(it?.price_text ?? "").trim().slice(0, API_PRICE_TEXT_MAX);
+        if (!price_text) { unpriced++; continue; }
         const { image_url, ...rest } = it;
         const image = typeof image_url === "string" && isHttpUrl(image_url.trim()) ? image_url.trim() : null;
-        sendable.push({ ...rest, marketplace, title, url, ...(image ? { image_url: image } : {}) });
+        sendable.push({ ...rest, marketplace, title, url, price_text, ...(image ? { image_url: image } : {}) });
       }
       const sent = items?.length ?? 0;
 
