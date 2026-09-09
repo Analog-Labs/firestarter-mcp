@@ -111,6 +111,9 @@ const READ_ONLY_DESPITE_WRITE_VERB: Record<string, string> = {
   // string. Creates no execution, no approval, no record — it is the estimator a
   // buyer uses while still browsing.
   firestarter_shipping_estimate: "POST /v1/shipping/estimate is a pure calculation",
+  // Same shape: the cards travel in the body. Stateless on the API (no job
+  // row, nothing persisted) — it parses, ranks and answers.
+  firestarter_marketplace_compare: "POST /v1/scout/compare is a stateless parse-and-rank of cards sent in the body",
 };
 
 // Tools that spend, move, redirect, forgive, or destroy. Never read-only, always
@@ -154,6 +157,7 @@ const READ_ONLY = [
   "firestarter_track_order",
   "firestarter_shipping_options",
   "firestarter_shipping_estimate", // POSTs, but creates nothing and changes nothing
+  "firestarter_marketplace_compare", // ditto: ranks the cards it is sent, persists nothing
   "firestarter_market_preview",
   "firestarter_discover_markets",
 ];

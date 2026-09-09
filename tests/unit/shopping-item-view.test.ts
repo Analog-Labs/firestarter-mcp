@@ -77,6 +77,38 @@ describe("priceLabel", () => {
     expect(priceLabel({})).toBe("");
     expect(priceLabel({ price: { amount_minor: null, currency: "USD" } as any })).toBe("");
   });
+
+  // A marketplace-scout row carries price_usd from the API's RANKING key — a
+  // deliberately over-estimating static FX table, not a price. Preferring it
+  // made an RM 12.90 item render as "MYR 3.87": the wrong number under the
+  // wrong currency code, which is what "prices off by 100x" was reported as.
+  it("prefers the major-unit current_price over a foreign-currency price_usd", () => {
+    expect(priceLabel({
+      current_price: 12.9,
+      price_usd: 3.87,
+      currency: "MYR",
+      price: { amount_minor: 1290, currency: "MYR" },
+    })).toBe("MYR 12.90");
+  });
+
+  it("converts minor units before it will read price_usd", () => {
+    expect(priceLabel({ price_usd: 3.87, currency: "MYR", price: { amount_minor: 1290, currency: "MYR" } }))
+      .toBe("MYR 12.90");
+  });
+
+  it("never labels a price_usd value with a non-USD currency code", () => {
+    expect(priceLabel({ price_usd: 3.87, currency: "MYR" })).toBe("");
+    expect(priceLabel({ price_usd: 42, currency: "USD" })).toBe("USD 42.00");
+  });
+
+  it("does not divide a zero-decimal currency by 100", () => {
+    expect(priceLabel({ price: { amount_minor: 1290, currency: "JPY" } })).toBe("JPY 1290");
+    expect(priceLabel({ current_price: 1290, currency: "JPY" })).toBe("JPY 1290");
+  });
+
+  it("uses the three-decimal exponent for a Gulf currency", () => {
+    expect(priceLabel({ price: { amount_minor: 12900, currency: "KWD" } })).toBe("KWD 12.900");
+  });
 });
 
 describe("firstImage", () => {

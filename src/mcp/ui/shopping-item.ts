@@ -6,6 +6,11 @@
  * this module into the same IIFE, so these functions are what runs in the
  * sandboxed iframe.
  */
+// ./currency.js is import-free on purpose: it carries the ISO-4217 exponent
+// table for both the server and this bundle. Importing the same function from
+// ucp-schema.js instead would inline a server-side zod schema module into the
+// iframe's IIFE; this costs the bundle 348 bytes.
+import { currencyExponent } from "../currency.js";
 
 /** The subset of a preview option / catalog listing / shelf item the grid renders.
  *  Kept loose on purpose — the structured payload evolves server-side and a
@@ -16,7 +21,11 @@ export interface ShoppingItem {
   image_url?: string;
   image?: string;
   images?: unknown;
+  /** USD major units — trustworthy ONLY when `currency` is USD. A scout row
+   *  carries the API's FX-estimated ranking key here, never a real price. */
   price_usd?: number;
+  /** Major units in `currency` — the displayable price. Preferred over every
+   *  other price field. */
   current_price?: number;
   /** Catalog rows send {amount_minor, currency}; the firestarter_product
    *  projection sends a plain number. priceLabel accepts both. */
@@ -98,19 +107,34 @@ export function galleryImages(it: ShoppingItem): string[] {
   return out;
 }
 
+/**
+ * The card's price, in the row's OWN currency.
+ *
+ * Precedence is the whole point. `price_usd` used to win outright, so a
+ * marketplace-scout row — where that field is the API's ranking key, an FX
+ * over-estimate, not a price — rendered an RM 12.90 item as "MYR 3.87": the
+ * wrong number, wearing a currency code it was never denominated in. The
+ * correct major-unit fields win now, and `price_usd` is read ONLY when the row
+ * really is USD.
+ *
+ * The divisor is the currency's ISO-4217 exponent, not 100 — /100 renders
+ * ¥1290 as "JPY 12.90".
+ */
 export function priceLabel(it: ShoppingItem): string {
   const priceObj = typeof it.price === "object" && it.price !== null ? it.price : null;
   const currency = it.currency || priceObj?.currency || "USD";
+  const exp = currencyExponent(currency);
   const amount =
-    typeof it.price_usd === "number" ? it.price_usd
-      : typeof it.current_price === "number" ? it.current_price
-        : typeof it.price === "number" ? it.price
-          : typeof priceObj?.amount_minor === "number" ? priceObj.amount_minor / 100
+    typeof it.current_price === "number" ? it.current_price
+      // firestarter_product's projection sends a plain major-unit number here.
+      : typeof it.price === "number" ? it.price
+        : typeof priceObj?.amount_minor === "number" ? priceObj.amount_minor / 10 ** exp
+          : currency.trim().toUpperCase() === "USD" && typeof it.price_usd === "number" ? it.price_usd
             : null;
   // A zero price is "price unknown" (unclaimed feed pre-listings carry 0, and
   // listing creation enforces a positive minimum) — showing "USD 0.00" reads
   // as free-for-sale, so render no price instead.
-  return amount == null || amount === 0 ? "" : `${currency} ${amount.toFixed(2)}`;
+  return amount == null || amount === 0 ? "" : `${currency} ${amount.toFixed(exp)}`;
 }
 
 /**
