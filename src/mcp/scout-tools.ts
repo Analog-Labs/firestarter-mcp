@@ -28,8 +28,18 @@ export interface ScoutToolDeps {
   pollIntervalMs: number;
 }
 
-/** Wall-clock budget for one search call before handing back partial results. */
-const SCOUT_WAIT_MS = Number(process.env.FIRESTARTER_MCP_SCOUT_WAIT_MS || 55_000);
+/**
+ * Wall-clock budget for one search call before handing back partial results.
+ *
+ * The default suits a host with a generous tool budget. A host with a short
+ * one (Cole: 30 s per tool, and a timeout comes back with no job_id to re-poll)
+ * passes `wait_ms` and gets what exists plus the job_id inside its budget.
+ */
+const MAX_SCOUT_WAIT_MS = 55_000;
+const DEFAULT_SCOUT_WAIT_MS = Number(process.env.FIRESTARTER_MCP_SCOUT_WAIT_MS || MAX_SCOUT_WAIT_MS);
+function scoutWaitMs(input: { wait_ms?: number }): number {
+  return input.wait_ms == null ? DEFAULT_SCOUT_WAIT_MS : Math.min(input.wait_ms, MAX_SCOUT_WAIT_MS);
+}
 const POLL_MAX_CONSECUTIVE_ERRORS = 3;
 
 const MARKETPLACE_LABEL: Record<string, string> = { shopee: "Shopee", lazada: "Lazada", shopify: "Shopify stores", firestarter: "Firestarter" };
@@ -52,6 +62,14 @@ function label(m: string): string {
   return MARKETPLACE_LABEL[m] ?? m;
 }
 
+/**
+ * How to buy, and what NOT to record. A checkout Firestarter itself ran is
+ * recorded by its own /paid step; telling the agent to record it again
+ * produced duplicate history rows. Only a purchase made outside Firestarter
+ * (the buyer paying in the marketplace app) is recorded by hand, in MAJOR units.
+ */
+const BUY_PROSE = "**To buy:** open the Buy link in the person's own browser session and complete the purchase there. Each row says exactly what is left (\"Then: …\"): Shopify stores land on checkout with the item already added (pay only); Shopee and Lazada open the item in the app, where the buyer taps Buy Now and Place Order with what the app already has, plus a variant choice only when the row says so. Firestarter never touches their marketplace account. Do NOT call firestarter_record_purchase for a checkout that Firestarter itself ran (its /paid step records it). Record only purchases made outside Firestarter, in MAJOR units (the row's `price:` line, e.g. 12.90 — never 1290). **On Firestarter** items: buy with `firestarter_execute` using the listing id in the result.";
+
 /** Minor units → the prose price. Exponent-aware: /100 rendered ¥1290 as "JPY 12.90". */
 function money(minor: unknown, currency: unknown): string {
   const n = Number(minor);
@@ -67,6 +85,13 @@ function compact(n: unknown): string | null {
   return v >= 1000 ? `${(v / 1000).toFixed(v >= 10_000 ? 0 : 1)}k` : String(Math.round(v));
 }
 
+/**
+ * One row of the text block. Everything a text-only host needs is on its own
+ * line — `id:`, `image:`, `price:` — because such a host (Cole) discards
+ * structuredContent and image blocks and its model acts on the text alone.
+ * The price line uses the same exponent-aware `money()` as the row header, so
+ * the two never disagree.
+ */
 export function renderScoutRows(results: any[]): string[] {
   const lines: string[] = [];
   for (const r of results) {
@@ -83,9 +108,11 @@ export function renderScoutRows(results: any[]): string[] {
       r?.location ? sanitizeUntrusted(String(r.location), 60) : null,
       r?.in_stock === false ? "out of stock" : null,
     ].filter(Boolean).join(" · ");
+    const image = typeof r?.image_url === "string" && r.image_url ? r.image_url : null;
     lines.push(
       `- **${nameCell}** — ${money(r?.price_minor, r?.currency)} [${label(String(r?.source ?? ""))}] ${tag}` +
-      `${bits ? `\n  ${bits}` : ""}${buy && buy !== url ? `\n  Buy: ${buy}` : ""}${steps.length ? `\n  Then: ${steps.join(" → ")}` : ""}\n  id: \`${String(r?.id ?? "")}\``,
+      `${bits ? `\n  ${bits}` : ""}${buy && buy !== url ? `\n  Buy: ${buy}` : ""}${steps.length ? `\n  Then: ${steps.join(" → ")}` : ""}\n  id: \`${String(r?.id ?? "")}\`` +
+      `${image ? `\n  image: ${image}` : ""}\n  price: ${money(r?.price_minor, r?.currency)}`,
     );
   }
   return lines;
@@ -210,7 +237,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
     server,
     "firestarter_marketplace_search",
     {
-      description: "Search EXTERNAL marketplaces and the Firestarter catalog at once — Shopee (Thailand first; no login or connection needed — results come from localized Google Shopping filtered to shopee.co.th, or Shopee's affiliate API when the server has credentials), Lazada, seeded Shopify stores — and return one ranked comparison with photos, prices, ratings and sold counts, rendered like firestarter_catalog_search. Ranked by price, rating and popularity; on-network items get a small bonus. Each external row carries a Buy link that opens the item in that marketplace's app, where the buyer picks the variant and pays with what the app already holds; Firestarter never touches their account. After they pay, record the order with firestarter_record_purchase. Usually answers in seconds; if a source is still running you get what's back so far plus a job_id — call again with that job_id to collect the rest (never treat a partial answer as 'no results'). Admin-only while the feature is proven. PRICES: each row's `price.amount_minor` is an INTEGER in the currency's ISO-4217 minor units (1290 with currency MYR is RM 12.90; the exponent is 0 for JPY/KRW/VND, so 1290 JPY is ¥1290), `current_price` is that same amount in MAJOR units and is what you quote the buyer and copy into firestarter_record_purchase's `amount` — never pass `amount_minor` there.",
+      description: "Search EXTERNAL marketplaces and the Firestarter catalog at once — Shopee (Thailand first; no login or connection needed — results come from localized Google Shopping filtered to shopee.co.th, or Shopee's affiliate API when the server has credentials), Lazada, seeded Shopify stores — and return one ranked comparison with photos, prices, ratings and sold counts, rendered like firestarter_catalog_search. Ranked by price, rating and popularity; on-network items get a small bonus. Each external row carries a Buy link that opens the item in that marketplace's app, where the buyer picks the variant and pays with what the app already holds; Firestarter never touches their account. The text block carries, per row, `id:`, `image:` (the photo URL) and `price:` (MAJOR units, e.g. `MYR 12.90`) lines, so a host that keeps only text has everything. Usually answers in seconds; if a source is still running you get what's back so far plus a `job_id:` line — call again with that job_id to collect the rest (never treat a partial answer as 'no results'). Hosts with a short tool budget pass wait_ms (Cole: ~20000) so the call returns inside it. Admin-only while the feature is proven. PRICES: each row's `price.amount_minor` is an INTEGER in the currency's ISO-4217 minor units (1290 with currency MYR is RM 12.90; the exponent is 0 for JPY/KRW/VND, so 1290 JPY is ¥1290), `current_price` is that same amount in MAJOR units and is what you quote the buyer. RECORDING: a purchase the buyer completes outside Firestarter (in the marketplace app, via the Buy link) is recorded with firestarter_record_purchase in MAJOR units — never for a checkout Firestarter itself ran, which its /paid step records; never pass `amount_minor` there.",
       inputSchema: {
         query: z.string().min(2).max(200).describe("What the buyer wants, in their words, e.g. 'cotton buds 200pcs' or 'สำลีก้าน'. Put price limits in max_price, not the query."),
         marketplaces: z.array(z.enum(["shopee", "lazada", "shopify", "firestarter"])).optional().describe("Restrict sources. Default: every connected marketplace plus Shopify stores and the Firestarter catalog."),
@@ -219,13 +246,15 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         currency: z.string().length(3).optional().describe("Currency of max_price (MYR, SGD, THB). Default: the storefront's."),
         limit: z.number().int().min(1).max(50).optional().describe("Max results per source (default 20)."),
         job_id: z.string().optional().describe("Re-poll an earlier search instead of starting a new one — pass the job_id from a partial result."),
+        wait_ms: z.number().int().min(0).max(MAX_SCOUT_WAIT_MS).optional()
+          .describe("How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000."),
       },
       outputSchema: marketplaceOutputShape,
       annotations: { title: "Search Marketplaces", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       _meta: { ui: { resourceUri: SHOPPING_RESULTS_URI } },
     },
-    async ({ query, marketplaces, country, max_price, currency, limit, job_id }: {
-      query: string; marketplaces?: string[]; country?: string; max_price?: number; currency?: string; limit?: number; job_id?: string;
+    async ({ query, marketplaces, country, max_price, currency, limit, job_id, wait_ms }: {
+      query: string; marketplaces?: string[]; country?: string; max_price?: number; currency?: string; limit?: number; job_id?: string; wait_ms?: number;
     }) => {
       try {
         let jobId = job_id;
@@ -239,7 +268,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
           const created = await apiRequest("POST", "/v1/scout/search", body);
           jobId = String(created?.job?.id ?? created?.id ?? "");
         }
-        const job = await pollScoutJob(apiRequest, jobId, pollIntervalMs, SCOUT_WAIT_MS);
+        const job = await pollScoutJob(apiRequest, jobId, pollIntervalMs, scoutWaitMs({ wait_ms }));
         const results: any[] = Array.isArray(job?.results) ? job.results : [];
         const { done, pending, skipped } = progressSummary(job?.progress);
         const total = done.length + pending.length + skipped.length;
@@ -251,7 +280,7 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
           const what = ni.kind === "otp" ? "a one-time code" : ni.kind === "captcha" ? "a quick human check" : "a sign-in";
           lines.push(`**${label(ni.marketplace)} needs you for a second.** It asked for ${what}. Open this link, finish it, and the search continues on its own (expires ${String(ni.expires_at ?? "").replace("T", " ").slice(0, 16)}): ${ni.live_view_url}`);
           if (results.length > 0) lines.push("", `Meanwhile, ${results.length} result${results.length === 1 ? "" : "s"} from ${done.map(label).join(", ")}:`, "", ...renderScoutRows(results));
-          lines.push("", `When they're done, call \`firestarter_marketplace_search\` again with job_id \`${jobId}\`.`);
+          lines.push("", `When they're done, call \`firestarter_marketplace_search\` again with job_id \`${jobId}\`.`, `job_id: ${jobId}`);
           return { content: [{ type: "text" as const, text: lines.join("\n") }], structuredContent };
         }
 
@@ -279,12 +308,15 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
           lines.push(`**Marketplace search** — ${results.length} result${results.length === 1 ? "" : "s"} for "${sanitizeUntrusted(String(job?.query ?? query), 120)}" across ${done.map(label).join(", ") || "no sources"} (${checkoutable} checkoutable)`);
         }
         if (skipped.length) lines.push(`Skipped: ${skipped.join("; ")}.`);
+        // The job_id on its own line, so a text-only host can re-poll without
+        // parsing prose. Only while there is something to come back for.
+        if (stillRunning) lines.push(`job_id: ${jobId}`);
         if (results.length === 0 && !stillRunning) {
           lines.push("", "No matches. Try a broader term, a different spelling, or raise max_price.");
           return { content: [{ type: "text" as const, text: lines.join("\n") }], structuredContent };
         }
-        lines.push("", ...renderScoutRows(results));
-        lines.push("", "**To buy:** open the row's Buy link. Each row says exactly what is left (\"Then: …\"): Shopify stores land on checkout with the item already added (pay only); Shopee and Lazada open the item in the app, where the buyer taps Buy Now and Place Order with what the app already has, plus a variant choice only when the row says so. Firestarter never touches their marketplace account. When they've paid, ask for the order number and record it with `firestarter_record_purchase` so it shows in `firestarter_purchases`. **On Firestarter** items: buy with `firestarter_execute` using the listing id in the result.");
+        if (results.length) lines.push("", ...renderScoutRows(results));
+        lines.push("", BUY_PROSE);
         const images = await inlineImageBlocks(results.slice(0, 8).map((r) => (typeof r?.image_url === "string" ? r.image_url : null)));
         return { content: [{ type: "text" as const, text: lines.join("\n") }, ...images], structuredContent };
       } catch (err: any) {

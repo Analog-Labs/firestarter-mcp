@@ -28,6 +28,13 @@ function captureTools(): Record<string, ToolHandler> {
   return tools;
 }
 
+/** The description a client reads for one tool — the prose that steers the agent. */
+function describeOf(name: string): string {
+  let out = "";
+  registerTools({ tool: (n: string, description: string) => { if (n === name) out = description; } } as any, "fsk_test", "http://api.test");
+  return out;
+}
+
 type Route = (method: string, url: string, body: any, n: number) => { status?: number; data: any };
 
 function mockFetch(route: Route) {
@@ -212,6 +219,71 @@ describe("firestarter_marketplace_search", () => {
     const res = await captureTools().firestarter_marketplace_search({ query: "cotton buds" });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/limited to Firestarter admins/);
+  });
+});
+
+/* ─── Text-only hosts (Cole) ─────────────────────────────────────────────────
+ *
+ * Cole keeps only the text blocks of a tool result — structuredContent, image
+ * blocks and widget metadata are discarded — and its per-tool budget is 30 s,
+ * after which the call is a timeout with no job_id to come back for. So the
+ * search must (a) hand back inside a caller-chosen budget and (b) put every
+ * fact the model acts on into the text: the job_id on its own line, and per
+ * row the image URL and a major-unit price.
+ */
+describe("firestarter_marketplace_search for a text-only host", () => {
+  const LAZADA = { ...RESULT, id: "lazada:1", source: "lazada", checkoutable: false, title: "Cotton buds 300", price_minor: 1290, currency: "MYR", image_url: "https://img.test/1.jpg", product_url: "https://lazada.test/1" };
+
+  it("honours wait_ms and prints the job_id on its own line when the job is still running", async () => {
+    // The file's default budget is 60 ms (env above); wait_ms must override it
+    // in BOTH directions — a longer wait here, a shorter one for Cole in prod.
+    mockFetch((method) => method === "POST"
+      ? { status: 202, data: { job: job({ id: "job_1", status: "running", results: [], progress: { lazada: "running" } }) } }
+      : { data: { job: job({ id: "job_1", status: "running", results: [], progress: { lazada: "running" } }) } });
+    const started = Date.now();
+    const res = await captureTools().firestarter_marketplace_search({ query: "cotton buds", wait_ms: 300 });
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(250);
+    expect(elapsed).toBeLessThan(3000);
+    const text = textOf(res);
+    expect(text).toMatch(/^job_id: job_1$/m);
+    expect(text).not.toMatch(CLAIMS_NO_RESULTS);
+    expect(res.isError).toBeFalsy();
+  });
+
+  it("prints image and major-unit price lines per row, after the id line", async () => {
+    mockFetch(() => ({ status: 202, data: { job: job({ results: [LAZADA, NET], progress: { lazada: "done", firestarter: "done" } }) } }));
+    const res = await captureTools().firestarter_marketplace_search({ query: "cotton buds" });
+    const text = textOf(res);
+    expect(text).toMatch(/image: https:\/\/img\.test\/1\.jpg/);
+    // One formatter for every price in the text block: the row header and the
+    // price line agree, code first (money()).
+    expect(text).toMatch(/^  price: MYR 12\.90$/m);
+    expect(text.indexOf("id: `lazada:1`")).toBeLessThan(text.indexOf("image: https://img.test/1.jpg"));
+    expect(text.indexOf("image: https://img.test/1.jpg")).toBeLessThan(text.indexOf("price: MYR 12.90"));
+    // A row with no image gets no image line — never "image: null".
+    expect(text).not.toMatch(/image: null/);
+    expect(text).not.toMatch(/image: undefined/);
+  });
+
+  it("no longer tells the agent to record_purchase after a Firestarter-run checkout", async () => {
+    mockFetch(() => ({ status: 202, data: { job: job() } }));
+    const res = await captureTools().firestarter_marketplace_search({ query: "x" });
+    const text = textOf(res);
+    // The old instruction: "When they've paid ... record it with firestarter_record_purchase".
+    expect(text).not.toMatch(/record it with `firestarter_record_purchase`/);
+    expect(text).not.toMatch(/ask for the order number/);
+    expect(text).toMatch(/Do NOT call firestarter_record_purchase for a checkout that Firestarter itself ran/);
+    expect(text).toMatch(/MAJOR units/);
+  });
+
+  it("states the record_purchase rule in both tool descriptions", () => {
+    const search = describeOf("firestarter_marketplace_search");
+    expect(search).not.toMatch(/After they pay, record the order with firestarter_record_purchase/);
+    expect(search).toMatch(/never for a checkout Firestarter itself ran/i);
+    const record = describeOf("firestarter_record_purchase");
+    expect(record).toMatch(/MAJOR units/);
+    expect(record).toMatch(/never for a checkout Firestarter itself ran/i);
   });
 });
 
