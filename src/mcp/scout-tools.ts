@@ -454,10 +454,20 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         if (!title || !isHttpUrl(url) || url.length > API_URL_MAX) { unaddressed++; continue; }
         const price_text = String(it?.price_text ?? "").trim().slice(0, API_PRICE_TEXT_MAX);
         if (!price_text) { unpriced++; continue; }
-        const { image_url, sold_text, ...rest } = it;
+        const { image_url, sold_text, rating, reviews, ...rest } = it;
         const image = typeof image_url === "string" && isHttpUrl(image_url.trim()) && image_url.trim().length <= API_URL_MAX ? image_url.trim() : null;
         const sold = typeof sold_text === "string" ? sold_text.trim().slice(0, API_SOLD_TEXT_MAX) : "";
-        sendable.push({ ...rest, marketplace, title, url, price_text, ...(image ? { image_url: image } : {}), ...(sold ? { sold_text: sold } : {}) });
+        // A scraped rating/review count is a per-card imperfection too: a
+        // negative or unreadable value is left off, a fractional count rounded.
+        const stars = typeof rating === "number" && Number.isFinite(rating) && rating >= 0 ? rating : null;
+        const count = typeof reviews === "number" && Number.isFinite(reviews) && reviews >= 0 ? Math.round(reviews) : null;
+        sendable.push({
+          ...rest, marketplace, title, url, price_text,
+          ...(image ? { image_url: image } : {}),
+          ...(sold ? { sold_text: sold } : {}),
+          ...(stars != null ? { rating: stars } : {}),
+          ...(count != null ? { reviews: count } : {}),
+        });
       }
       const sent = items?.length ?? 0;
 

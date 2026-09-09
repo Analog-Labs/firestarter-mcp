@@ -639,10 +639,13 @@ export type MarketplaceStructured = z.infer<typeof marketplaceOutputSchema>;
  * throws on. So one card with `price: ""` (routine: browser_products types
  * price as a non-nullable string) or one from a store the API does not know
  * must not be able to fail the other four. No `min(1)` on `price_text`,
- * `title`, `url` or `items`, and `marketplace` is a string rather than an
- * enum; the handler drops what the API would refuse and says so in the
- * `compared:` header, and the API remains the validator for everything else
- * (its 400 renders as a plain sentence). `price_text` keeps only a sanity cap
+ * `title`, `url` or `items`; `marketplace` is a string rather than an enum;
+ * `rating`/`reviews` are any number (a scraped -1 or 1234.5 is normalised or
+ * omitted per card). The handler drops or fits what the API would refuse and
+ * says so in the `compared:` header, and the API remains the validator for
+ * everything else (its 400 renders as a plain sentence). What is left that
+ * can reject a whole call at this layer is a wrong JSON type or a string past
+ * a sanity bound — caller bugs, not card imperfections. `price_text` keeps only a sanity cap
  * here: the route's own cap is 80, and the handler slices to it, because a
  * long price range is a per-card imperfection — a row to trim, never a batch
  * to reject.
@@ -657,8 +660,8 @@ const capturedItem = z.object({
   url: z.string().max(2048).describe("The card's product page URL — becomes the row id and the Buy link."),
   image_url: z.string().max(2048).nullable().optional().describe("Product photo URL from the card, if any. Omit it (or send null) when the card has none; a value that is not a URL is ignored, never a reason to drop the card."),
   sold_text: z.string().max(100).nullable().optional().describe("The sold count EXACTLY as shown — 'ขายแล้ว 1.2พัน', '2.5k sold', '350 sold', '10K+ sold'. Parsed server-side into a number for ranking."),
-  rating: z.number().min(0).nullable().optional().describe("Star rating on the card, if shown (e.g. 4.8)."),
-  reviews: z.number().int().min(0).nullable().optional().describe("Review count on the card, if shown."),
+  rating: z.number().nullable().optional().describe("Star rating on the card, if shown (e.g. 4.8). A negative or unreadable value is ignored, never a reason to drop the card."),
+  reviews: z.number().nullable().optional().describe("Review count on the card, if shown. Rounded to a whole number; a negative or unreadable value is ignored, never a reason to drop the card."),
 });
 
 /** Raw shape advertised as `firestarter_marketplace_compare`'s input. */

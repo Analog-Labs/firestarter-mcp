@@ -725,11 +725,44 @@ describe("firestarter_marketplace_compare", () => {
     expect(textOf(res)).toMatch(/^compared: 2 of 3 \(dropped: 1 no title\/url\)$/m);
   });
 
-  it("keeps only a generous sanity cap on price_text on the wire, and no minimums", () => {
+  it("normalises a scraped rating/reviews per card instead of rejecting the batch: -1 omitted, 1234.5 rounded", async () => {
+    const calls = mockFetch((_m, _u, body) => {
+      expect(body.items).toHaveLength(4);
+      const a = body.items.find((it: any) => it.title === "Cotton buds 100");
+      expect(a).not.toHaveProperty("rating");
+      const b = body.items.find((it: any) => it.title === "Cotton buds 300");
+      expect(b.reviews).toBe(1235);
+      expect(b.rating).toBe(4.8);
+      const c = body.items.find((it: any) => it.title === "Bundle");
+      expect(c).not.toHaveProperty("rating");
+      expect(c).not.toHaveProperty("reviews");
+      const d = body.items.find((it: any) => it.title === "Cotton buds 500");
+      expect(d).not.toHaveProperty("reviews");
+      return { data: { count: 4, dropped: NONE, options: [...OPTIONS, { ...OPTIONS[0], id: "lazada:9", title: "Cotton buds 500" }] } };
+    });
+    const res = await callViaSdk("firestarter_marketplace_compare", {
+      country: "TH",
+      items: [
+        { ...CARDS[0], rating: -1 },
+        { ...CARDS[1], reviews: 1234.5 },
+        { ...CARDS[2], rating: null, reviews: null },
+        { marketplace: "lazada", title: "Cotton buds 500", price_text: "฿49", url: "https://www.lazada.co.th/products/y-i9.html", reviews: -3 },
+      ],
+    });
+    expect(calls).toHaveLength(1);
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toMatch(/^compared: 4 of 4$/m);
+  });
+
+  it("keeps only generous sanity caps on the wire, and no minimums", () => {
     const schema = z.toJSONSchema(z.object(marketplaceCompareInputShape)) as any;
-    expect(schema.properties.items.items.properties.price_text.maxLength).toBe(400);
-    expect(schema.properties.items.items.properties.price_text.minLength).toBeUndefined();
+    const card = schema.properties.items.items.properties;
+    expect(card.price_text.maxLength).toBe(400);
+    expect(card.price_text.minLength).toBeUndefined();
     expect(schema.properties.items.minItems).toBeUndefined();
+    // rating/reviews: any number (or null) the scraper produces; the handler normalises.
+    expect(JSON.stringify(card.rating)).not.toMatch(/minimum/);
+    expect(JSON.stringify(card.reviews)).not.toMatch(/minimum|integer/);
   });
 
   it("treats a 200 without a result list as a failure, not as a claim about the cards", async () => {

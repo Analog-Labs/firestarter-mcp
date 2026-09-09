@@ -793,11 +793,10 @@
                   ]
                 },
                 "rating": {
-                  "description": "Star rating on the card, if shown (e.g. 4.8).",
+                  "description": "Star rating on the card, if shown (e.g. 4.8). A negative or unreadable value is ignored, never a reason to drop the card.",
                   "anyOf": [
                     {
-                      "type": "number",
-                      "minimum": 0
+                      "type": "number"
                     },
                     {
                       "type": "null"
@@ -805,12 +804,10 @@
                   ]
                 },
                 "reviews": {
-                  "description": "Review count on the card, if shown.",
+                  "description": "Review count on the card, if shown. Rounded to a whole number; a negative or unreadable value is ignored, never a reason to drop the card.",
                   "anyOf": [
                     {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
+                      "type": "number"
                     },
                     {
                       "type": "null"
