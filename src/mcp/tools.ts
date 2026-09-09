@@ -3970,11 +3970,11 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_record_purchase
   server.tool(
     "firestarter_record_purchase",
-    "Record a purchase completed OUTSIDE the network — e.g. after driving checkout on Lazada, a Shopify storefront, or any other store — so Firestarter keeps one purchase history across every marketplace and can reorder the item later. Call this right after an off-network checkout succeeds, with whatever details are visible on the confirmation page. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+    "Record a purchase completed OUTSIDE the network — e.g. after driving checkout on Lazada, a Shopify storefront, or any other store — so Firestarter keeps one purchase history across every marketplace and can reorder the item later. Call this right after an off-network checkout succeeds, with whatever details are visible on the confirmation page. Never for a checkout Firestarter itself ran (firestarter_execute/firestarter_approve, or a marketplace checkout Firestarter drove): its own /paid step records those, and recording them again duplicates the history. `amount` is in MAJOR units (12.90, never 1290). Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
     {
       source: z.string().describe("Where the purchase happened, lowercase (e.g. \"lazada\", \"shopify\", \"shopee\", \"amazon\", \"other\")"),
       title: z.string().describe("Product title as shown by the store"),
-      amount: z.number().optional().describe("Total paid, in the purchase currency and in MAJOR units — 12.90, never 1290. Copy a search row's `current_price`, not its `price.amount_minor` (which is minor units)."),
+      amount: z.number().optional().describe("Total paid, in the purchase currency and in MAJOR units — 12.90, never 1290. Copy a search row's `price:` line / `current_price`, not its `price.amount_minor` (which is minor units). Never for a Firestarter-run checkout."),
       currency: z.string().optional().describe("ISO currency code (e.g. \"MYR\", \"USD\")"),
       seller_name: z.string().optional().describe("Store / seller name"),
       seller_domain: z.string().optional().describe("Seller's domain (e.g. \"watsons.com.my\") — powers later reorders and seller discovery"),

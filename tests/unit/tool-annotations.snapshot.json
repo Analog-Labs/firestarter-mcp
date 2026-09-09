@@ -219,6 +219,12 @@
     "destructiveHint": false,
     "openWorldHint": true
   },
+  "firestarter_marketplace_compare": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+  },
   "firestarter_marketplace_search": {
     "readOnlyHint": false,
     "destructiveHint": false,

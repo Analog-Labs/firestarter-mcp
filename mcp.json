@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.19.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 95 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 96 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -668,7 +668,7 @@
     },
     {
       "name": "firestarter_marketplace_search",
-      "description": "Search EXTERNAL marketplaces and the Firestarter catalog at once — Shopee (Thailand first; no login or connection needed — results come from localized Google Shopping filtered to shopee.co.th, or Shopee's affiliate API when the server has credentials), Lazada, seeded Shopify stores — and return one ranked comparison with photos, prices, ratings and sold counts, rendered like firestarter_catalog_search. Ranked by price, rating and popularity; on-network items get a small bonus. Each external row carries a Buy link that opens the item in that marketplace's app, where the buyer picks the variant and pays with what the app already holds; Firestarter never touches their account. After they pay, record the order with firestarter_record_purchase. Usually answers in seconds; if a source is still running you get what's back so far plus a job_id — call again with that job_id to collect the rest (never treat a partial answer as 'no results'). Admin-only while the feature is proven. PRICES: each row's `price.amount_minor` is an INTEGER in the currency's ISO-4217 minor units (1290 with currency MYR is RM 12.90; the exponent is 0 for JPY/KRW/VND, so 1290 JPY is ¥1290), `current_price` is that same amount in MAJOR units and is what you quote the buyer and copy into firestarter_record_purchase's `amount` — never pass `amount_minor` there.",
+      "description": "Search EXTERNAL marketplaces and the Firestarter catalog at once — Shopee (Thailand first; no login or connection needed — results come from localized Google Shopping filtered to shopee.co.th, or Shopee's affiliate API when the server has credentials), Lazada, seeded Shopify stores — and return one ranked comparison with photos, prices, ratings and sold counts, rendered like firestarter_catalog_search. Ranked by price, rating and popularity; on-network items get a small bonus. Each external row carries a Buy link that opens the item in that marketplace's app, where the buyer picks the variant and pays with what the app already holds; Firestarter never touches their account. The text block carries, per row, `id:`, `image:` (the photo URL) and `price:` (MAJOR units, e.g. `MYR 12.90`) lines, so a host that keeps only text has everything. Usually answers in seconds; if a source is still running you get what's back so far plus a `job_id:` line — call again with that job_id to collect the rest (never treat a partial answer as 'no results'). Hosts with a short tool budget pass wait_ms (Cole: ~20000) so the call returns inside it. Admin-only while the feature is proven. PRICES: each row's `price.amount_minor` is an INTEGER in the currency's ISO-4217 minor units (1290 with currency MYR is RM 12.90; the exponent is 0 for JPY/KRW/VND, so 1290 JPY is ¥1290), `current_price` is that same amount in MAJOR units and is what you quote the buyer. RECORDING: a purchase the buyer completes outside Firestarter (in the marketplace app, via the Buy link) is recorded with firestarter_record_purchase in MAJOR units — never for a checkout Firestarter itself ran, which its /paid step records; never pass `amount_minor` there.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -717,6 +717,12 @@
           "job_id": {
             "description": "Re-poll an earlier search instead of starting a new one — pass the job_id from a partial result.",
             "type": "string"
+          },
+          "wait_ms": {
+            "description": "How long to wait for results before returning what exists plus a job_id to re-poll. Hosts with a short tool budget (Cole: 30 s) should pass ~20000. The search POST's time counts against the budget and every poll read is bounded by what remains; when set, no image blocks are inlined (each row's `image:` line carries the photo URL instead).",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 55000
           }
         },
         "required": [
@@ -725,8 +731,113 @@
       }
     },
     {
+      "name": "firestarter_marketplace_compare",
+      "description": "Rank product cards the person's OWN browser captured (browser_products) across Lazada and Shopee. Send the price text exactly as shown on the page; Firestarter parses it. Rows with no readable price are dropped, never priced 0. One stateless call — no job, no polling — answering `compared: <kept> of <sent> (dropped: <n> no readable price, <n> no title/url, <n> duplicate title, <n> over max_price, <n> unsupported marketplace)` (zero buckets omitted; two cards with the same title collapse to the cheapest) and then the same rows firestarter_marketplace_search renders: per row `id:`, `image:` (photo URL) and `price:` (MAJOR units, e.g. `THB 39.00`) lines, plus the Buy link. Use it whenever the person has a store open in their own browser; fall back to firestarter_marketplace_search only when they have no store to search in. Admin-only while the feature is proven; other callers get a plain refusal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "description": "Storefront country the cards came from — TH, MY or SG. Sets the currency the prices are parsed in (THB, MYR, SGD). Default: the buyer's connected marketplace's country, else the API's default storefront.",
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2
+          },
+          "items": {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "marketplace": {
+                  "type": "string",
+                  "maxLength": 32,
+                  "description": "Which storefront the card came from: lazada or shopee. A card from any other store is dropped from the comparison (the header says how many)."
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 500,
+                  "description": "Product title as shown on the card."
+                },
+                "price_text": {
+                  "type": "string",
+                  "maxLength": 400,
+                  "description": "The price EXACTLY as the page shows it — '฿29', '29 บาท', 'RM12.90', 'S$4.50', '1,290', '฿1,290 - ฿1,590'. Firestarter parses it (the first price in the text wins; anything past 80 characters is cut off); do not convert it or strip the currency. Send an empty string when the card shows no price: that card is dropped from the comparison, never priced 0, and the others still rank."
+                },
+                "url": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "description": "The card's product page URL — becomes the row id and the Buy link."
+                },
+                "image_url": {
+                  "description": "Product photo URL from the card, if any. Omit it (or send null) when the card has none; a value that is not a URL is ignored, never a reason to drop the card.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 2048
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sold_text": {
+                  "description": "The sold count EXACTLY as shown — 'ขายแล้ว 1.2พัน', '2.5k sold', '350 sold', '10K+ sold'. Parsed server-side into a number for ranking.",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "rating": {
+                  "description": "Star rating on the card, if shown (e.g. 4.8). A negative or unreadable value is ignored, never a reason to drop the card.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reviews": {
+                  "description": "Review count on the card, if shown. Rounded to a whole number; a negative or unreadable value is ignored, never a reason to drop the card.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "marketplace",
+                "title",
+                "price_text",
+                "url"
+              ]
+            },
+            "description": "The cards browser_products returned — up to 50, from every marketplace the person searched, in ONE call. Cards with no readable price or from an unsupported store are dropped, never the whole call."
+          },
+          "max_price": {
+            "description": "Drop rows above this price, in the storefront currency's MAJOR units (e.g. 30 for ฿30 / RM30).",
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "items"
+        ]
+      }
+    },
+    {
       "name": "firestarter_record_purchase",
-      "description": "Record a purchase completed OUTSIDE the network — e.g. after driving checkout on Lazada, a Shopify storefront, or any other store — so Firestarter keeps one purchase history across every marketplace and can reorder the item later. Call this right after an off-network checkout succeeds, with whatever details are visible on the confirmation page. Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
+      "description": "Record a purchase completed OUTSIDE the network — e.g. after driving checkout on Lazada, a Shopify storefront, or any other store — so Firestarter keeps one purchase history across every marketplace and can reorder the item later. Call this right after an off-network checkout succeeds, with whatever details are visible on the confirmation page. Never for a checkout Firestarter itself ran (firestarter_execute/firestarter_approve, or a marketplace checkout Firestarter drove): its own /paid step records those, and recording them again duplicates the history. `amount` is in MAJOR units (12.90, never 1290). Test-environment keys only for now: live keys get a TEST_MODE_ONLY refusal.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -740,7 +851,7 @@
           },
           "amount": {
             "type": "number",
-            "description": "Total paid, in the purchase currency and in MAJOR units — 12.90, never 1290. Copy a search row's `current_price`, not its `price.amount_minor` (which is minor units)."
+            "description": "Total paid, in the purchase currency and in MAJOR units — 12.90, never 1290. Copy a search row's `price:` line / `current_price`, not its `price.amount_minor` (which is minor units). Never for a Firestarter-run checkout."
           },
           "currency": {
             "type": "string",

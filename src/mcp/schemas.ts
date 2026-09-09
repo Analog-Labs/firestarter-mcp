@@ -630,6 +630,47 @@ export const marketplaceOutputShape = {
 export const marketplaceOutputSchema = z.object(marketplaceOutputShape);
 export type MarketplaceStructured = z.infer<typeof marketplaceOutputSchema>;
 
+/**
+ * One product card as the buyer's OWN browser saw it (Cole's browser_products).
+ *
+ * Deliberately loose, and that is load-bearing: the MCP SDK enforces this
+ * shape BEFORE the handler runs and answers any failure as an `isError: true`
+ * result carrying "MCP error -32602" text — which the host this exists for
+ * throws on. So one card with `price: ""` (routine: browser_products types
+ * price as a non-nullable string) or one from a store the API does not know
+ * must not be able to fail the other four. No `min(1)` on `price_text`,
+ * `title`, `url` or `items`; `marketplace` is a string rather than an enum;
+ * `rating`/`reviews` are any number (a scraped -1 or 1234.5 is normalised or
+ * omitted per card). The handler drops or fits what the API would refuse and
+ * says so in the `compared:` header, and the API remains the validator for
+ * everything else (its 400 renders as a plain sentence). What is left that
+ * can reject a whole call at this layer is a wrong JSON type or a string past
+ * a sanity bound — caller bugs, not card imperfections. `price_text` keeps only a sanity cap
+ * here: the route's own cap is 80, and the handler slices to it, because a
+ * long price range is a per-card imperfection — a row to trim, never a batch
+ * to reject.
+ *
+ * Only `.describe()` reaches the wire, so the parsing contract for `price_text`
+ * and `sold_text` lives there, not in a comment.
+ */
+const capturedItem = z.object({
+  marketplace: z.string().max(32).describe("Which storefront the card came from: lazada or shopee. A card from any other store is dropped from the comparison (the header says how many)."),
+  title: z.string().max(500).describe("Product title as shown on the card."),
+  price_text: z.string().max(400).describe("The price EXACTLY as the page shows it — '฿29', '29 บาท', 'RM12.90', 'S$4.50', '1,290', '฿1,290 - ฿1,590'. Firestarter parses it (the first price in the text wins; anything past 80 characters is cut off); do not convert it or strip the currency. Send an empty string when the card shows no price: that card is dropped from the comparison, never priced 0, and the others still rank."),
+  url: z.string().max(2048).describe("The card's product page URL — becomes the row id and the Buy link."),
+  image_url: z.string().max(2048).nullable().optional().describe("Product photo URL from the card, if any. Omit it (or send null) when the card has none; a value that is not a URL is ignored, never a reason to drop the card."),
+  sold_text: z.string().max(100).nullable().optional().describe("The sold count EXACTLY as shown — 'ขายแล้ว 1.2พัน', '2.5k sold', '350 sold', '10K+ sold'. Parsed server-side into a number for ranking."),
+  rating: z.number().nullable().optional().describe("Star rating on the card, if shown (e.g. 4.8). A negative or unreadable value is ignored, never a reason to drop the card."),
+  reviews: z.number().nullable().optional().describe("Review count on the card, if shown. Rounded to a whole number; a negative or unreadable value is ignored, never a reason to drop the card."),
+});
+
+/** Raw shape advertised as `firestarter_marketplace_compare`'s input. */
+export const marketplaceCompareInputShape = {
+  country: z.string().length(2).optional().describe("Storefront country the cards came from — TH, MY or SG. Sets the currency the prices are parsed in (THB, MYR, SGD). Default: the buyer's connected marketplace's country, else the API's default storefront."),
+  items: z.array(capturedItem).max(50).describe("The cards browser_products returned — up to 50, from every marketplace the person searched, in ONE call. Cards with no readable price or from an unsupported store are dropped, never the whole call."),
+  max_price: z.number().positive().optional().describe("Drop rows above this price, in the storefront currency's MAJOR units (e.g. 30 for ฿30 / RM30)."),
+};
+
 const SCOUT_BLOCKER_LABELS: Record<string, string> = {
   NOT_CONNECTED: "buy in the marketplace app via the link",
   EXTERNAL_LINK: "buy directly via the link",
