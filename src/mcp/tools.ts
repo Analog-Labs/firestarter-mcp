@@ -109,6 +109,39 @@ const SELLER_DASHBOARD_URL = process.env.SELLER_DASHBOARD_URL || "https://firest
 const DASHBOARD_SETTINGS_URL =
   process.env.DASHBOARD_SETTINGS_URL || "https://firestarter.network/dashboard?tab=settings";
 
+/** Buyer dashboard root; `?dispute=<id>` deep-links straight into one thread. */
+const BUYER_DASHBOARD_URL = process.env.BUYER_DASHBOARD_URL || "https://firestarter.network/dashboard";
+
+/**
+ * The dashboard page that opens a dispute thread with a real file picker
+ * (commerce#1148).
+ *
+ * The listing drop zone has always had a non-widget fallback — "send them to
+ * the dashboard uploader" — because a host that renders no widget leaves the
+ * user with nothing else. The dispute path never got one: its fallback was
+ * "take a public photo URL from them", which is precisely the dead end
+ * commerce#1007 was filed about. A photo attached in chat has no URL, and
+ * telling a buyer to go host one is the advice that made evidence unattachable.
+ *
+ * Both dashboards accept `?dispute=<id>` and open that conversation, and both
+ * conversations carry an `<input type="file">` — apps/web Dashboard.tsx
+ * (uploadDisputeImage) and SellerDashboard.tsx (uploadSellerDisputeImage). So
+ * there IS a working, host-independent path; it simply was never named.
+ */
+function disputeDashboardUrl(disputeId: string, side: "buyer" | "seller"): string {
+  const base = side === "seller" ? SELLER_DASHBOARD_URL : BUYER_DASHBOARD_URL;
+  try {
+    const u = new URL(base);
+    u.searchParams.set("dispute", disputeId);
+    return u.toString();
+  } catch {
+    // Both bases are env-overridable, and one caller is an ERROR handler — a
+    // throw from here would replace a useful failure message with an opaque
+    // one. Degrade to the bare dashboard instead.
+    return side === "seller" ? "https://firestarter.network/seller" : "https://firestarter.network/dashboard";
+  }
+}
+
 /** What GET /v1/sellers/payout-method serves about the selling gate (#949). */
 export interface SellingGate {
   hold_cap_cents?: number;
@@ -4553,10 +4586,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           // Same STOP phrasing as the firestarter_list draft reply — a
           // conditional fallback here would be executed immediately by a model
           // that cannot see whether the widget rendered.
+          // Built once — the dispute branch below needs it twice (linked, then
+          // bare for hosts that render no markdown).
+          const disputeDeskUrl = uploadRequest.dispute_id
+            ? disputeDashboardUrl(String(uploadRequest.dispute_id), uploadRequest.dispute_side === "seller" ? "seller" : "buyer")
+            : "";
           const zoneText = uploadRequest.verify_listing_id
             ? `A drop zone is displayed — tell the seller to drop the verification photo onto it (the item and the handwritten FS-XXXX code both visible in one shot), or click it to pick the file.${attachNote} A \`[photo-upload widget]\` note will report whether it verified — do NOT call firestarter_verify or any other tool now, and END YOUR TURN after telling the seller. Only if they REPLY that no drop zone is visible: take a public photo URL from them and call firestarter_verify with it. Never re-encode a chat-attached photo as base64.`
             : uploadRequest.dispute_id
-            ? `An upload drop zone is displayed — tell them to drop the evidence photo(s) onto it, or click it to pick files (up to 5 per message).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any dispute tool again now, and END YOUR TURN after telling them. Only if they REPLY that no drop zone is visible: take a public photo URL from them and pass it to firestarter_${dispute_side === "seller" ? "seller_" : ""}disputes as image_urls. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`
+            ? `An upload drop zone is displayed — tell them to drop the evidence photo(s) onto it, or click it to pick files (up to 5 per message).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any dispute tool again now, and END YOUR TURN after telling them. Only if they REPLY that no drop zone is visible: ${mdLink("send them to the dispute on their dashboard", disputeDeskUrl) ?? `send them to ${disputeDeskUrl}`}, where the thread has a file picker that takes the photo straight off their device — or, if they already have one, take a public photo URL and pass it to firestarter_${dispute_side === "seller" ? "seller_" : ""}disputes as image_urls. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`
             : `An upload drop zone is displayed — tell the seller to drop the product photo(s) or video(s) onto it, or click it to pick files (several at once is fine; the first photo becomes the cover, videos join the listing's clips, and more can be dropped afterwards to grow the gallery).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: send them to the dashboard uploader (https://firestarter.network/seller) or take a public photo/video URL from them. Never re-encode a chat attachment as base64 — that path truncates the file and can stall.`;
           return {
             content: [{ type: "text" as const, text: zoneText }],
@@ -4592,12 +4630,19 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // Claude quota ran out — and it is not even reliably true that nothing
         // happened, since the API can finish an ingest after the client stops
         // waiting. Say what to do DIFFERENTLY instead.
+        // commerce#1148: whatever went wrong, a dispute has a response deadline
+        // and the user is holding a photo with no URL. Name the dashboard
+        // thread — it has a file picker — rather than leaving the agent to fall
+        // back on "send me a publicly hosted link", the dead end of #1007.
+        const disputeFallback = dispute_id
+          ? ` Or open the dispute on the dashboard, which has a file picker that takes the photo straight off their device: ${disputeDashboardUrl(cleanListingId(dispute_id), dispute_side === "seller" ? "seller" : "buyer")}`
+          : "";
         if (isTimeoutMessage(msg)) {
           const nextStep = image_base64 && !image_url
             ? "Do not resend the same base64 — a large data URI is the slow path. For a chat-attached photo, call this tool again with NO image to display the drop zone; otherwise get a public URL and pass it as image_url."
             : "Do not immediately repeat the same call. Check the listing first: the upload may have completed on the server after this call stopped waiting.";
           return {
-            content: [{ type: "text" as const, text: `The image upload didn't return in time. ${nextStep}` }],
+            content: [{ type: "text" as const, text: `The image upload didn't return in time. ${nextStep}${disputeFallback}` }],
             isError: true,
           };
         }
@@ -4606,7 +4651,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const brokenBase64Hint = image_base64 && !image_url
           ? " For a photo attached in this chat, call this tool again with NO image to display the drop zone — never rebuild the base64."
           : "";
-        return { content: [{ type: "text" as const, text: `Error uploading image: ${msg}${brokenBase64Hint}` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error uploading image: ${msg}${brokenBase64Hint}${disputeFallback}` }], isError: true };
       }
     }
   );
