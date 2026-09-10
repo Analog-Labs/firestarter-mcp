@@ -137,8 +137,10 @@ function disputeDashboardUrl(disputeId: string, side: "buyer" | "seller"): strin
   } catch {
     // Both bases are env-overridable, and one caller is an ERROR handler — a
     // throw from here would replace a useful failure message with an opaque
-    // one. Degrade to the bare dashboard instead.
-    return side === "seller" ? "https://firestarter.network/seller" : "https://firestarter.network/dashboard";
+    // one. Degrade to the configured base itself (still the right dashboard,
+    // just not deep-linked) rather than inventing a fourth hardcoded origin
+    // that would ignore the very override this guard exists for.
+    return base;
   }
 }
 
@@ -4475,6 +4477,15 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           };
         }
       };
+      // commerce#1148: a dispute is running a response deadline and the user is
+      // holding a photo with no URL, so EVERY way this tool can fail has to end
+      // somewhere the photo can actually be attached. Built out here rather
+      // than in the catch: most of the failures below `return` from inside the
+      // try — a too-large phone photo above all — and a fallback that only
+      // covers thrown errors leaves those at the #1007 dead end.
+      const disputeFallback = dispute_id
+        ? ` Or open the dispute on the dashboard, which has a file picker that takes the photo straight off their device: ${disputeDashboardUrl(cleanListingId(dispute_id), dispute_side === "seller" ? "seller" : "buyer")}`
+        : "";
       try {
         // The host bound the user's chat attachment to this call. FIRST, ahead
         // of every other input: it is the only one that is the ORIGINAL file
@@ -4490,7 +4501,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           }, UPLOAD_IMAGE_TIMEOUT_MS);
           const url = (res as any)?.url;
           if (!url) {
-            return { content: [{ type: "text" as const, text: "Error: the attached file could not be stored. It must be a JPEG, PNG, WebP or GIF under 6 MB — ask for a different photo, or call this tool with no image to display the drop zone." }], isError: true };
+            return { content: [{ type: "text" as const, text: `Error: the attached file could not be stored. It must be a JPEG, PNG, WebP or GIF under 6 MB — ask for a different photo, or call this tool with no image to display the drop zone.${disputeFallback}` }], isError: true };
           }
           return await finishUpload(url);
         }
@@ -4518,7 +4529,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_base64: dataUri, filename: filename || basename(image_path) }, UPLOAD_IMAGE_TIMEOUT_MS);
           const url = (res as any)?.url;
           if (!url) {
-            return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The file may not be a valid image." }], isError: true };
+            return { content: [{ type: "text" as const, text: `Error: image upload returned no URL. The file may not be a valid image.${disputeFallback}` }], isError: true };
           }
           return await finishUpload(url);
         }
@@ -4526,7 +4537,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const res = await apiRequest("POST", "/v1/sellers/upload-image", { image_url, filename }, UPLOAD_IMAGE_TIMEOUT_MS);
           const url = (res as any)?.url;
           if (!url) {
-            return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The URL must point to a public JPEG, PNG, WebP, GIF, or AVIF under 6 MB." }], isError: true };
+            return { content: [{ type: "text" as const, text: `Error: image upload returned no URL. The URL must point to a public JPEG, PNG, WebP, GIF, or AVIF under 6 MB.${disputeFallback}` }], isError: true };
           }
           return await finishUpload(url);
         }
@@ -4594,7 +4605,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           const zoneText = uploadRequest.verify_listing_id
             ? `A drop zone is displayed — tell the seller to drop the verification photo onto it (the item and the handwritten FS-XXXX code both visible in one shot), or click it to pick the file.${attachNote} A \`[photo-upload widget]\` note will report whether it verified — do NOT call firestarter_verify or any other tool now, and END YOUR TURN after telling the seller. Only if they REPLY that no drop zone is visible: take a public photo URL from them and call firestarter_verify with it. Never re-encode a chat-attached photo as base64.`
             : uploadRequest.dispute_id
-            ? `An upload drop zone is displayed — tell them to drop the evidence photo(s) onto it, or click it to pick files (up to 5 per message).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any dispute tool again now, and END YOUR TURN after telling them. Only if they REPLY that no drop zone is visible: ${mdLink("send them to the dispute on their dashboard", disputeDeskUrl) ?? `send them to ${disputeDeskUrl}`}, where the thread has a file picker that takes the photo straight off their device — or, if they already have one, take a public photo URL and pass it to firestarter_${dispute_side === "seller" ? "seller_" : ""}disputes as image_urls. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`
+            ? `An upload drop zone is displayed — tell them to drop the evidence photo(s) onto it, or click it to pick files (up to 5 per message).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any dispute tool again now, and END YOUR TURN after telling them. Do NOT paste any link yet. ONLY if they REPLY that no drop zone is visible: ${mdLink("send them to the dispute on their dashboard", disputeDeskUrl) ?? `send them to ${disputeDeskUrl}`}, where the thread has a file picker that takes the photo straight off their device — or, if they already have one, take a public photo URL and pass it to firestarter_${dispute_side === "seller" ? "seller_" : ""}disputes as image_urls. Never re-encode a chat-attached photo as base64 — that path truncates the image and can stall.`
             : `An upload drop zone is displayed — tell the seller to drop the product photo(s) or video(s) onto it, or click it to pick files (several at once is fine; the first photo becomes the cover, videos join the listing's clips, and more can be dropped afterwards to grow the gallery).${attachNote} A \`[photo-upload widget]\` note will report the result — do NOT call this or any other tool again now, and END YOUR TURN after telling the seller. Only if the seller REPLIES that no drop zone is visible: send them to the dashboard uploader (https://firestarter.network/seller) or take a public photo/video URL from them. Never re-encode a chat attachment as base64 — that path truncates the file and can stall.`;
           return {
             content: [{ type: "text" as const, text: zoneText }],
@@ -4608,7 +4619,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const MAX_BYTES = 6 * 1024 * 1024;
         if (approxBytes > MAX_BYTES) {
           return {
-            content: [{ type: "text" as const, text: `Error: image is too large (${(approxBytes / 1024 / 1024).toFixed(1)} MB). Max is 6 MB.` }],
+            content: [{ type: "text" as const, text: `Error: image is too large (${(approxBytes / 1024 / 1024).toFixed(1)} MB). Max is 6 MB.${disputeFallback}` }],
             isError: true,
           };
         }
@@ -4619,7 +4630,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         }, UPLOAD_IMAGE_TIMEOUT_MS);
         const url = (res as any)?.url;
         if (!url) {
-          return { content: [{ type: "text" as const, text: "Error: image upload returned no URL. The image may be invalid or too large (max 6 MB)." }], isError: true };
+          return { content: [{ type: "text" as const, text: `Error: image upload returned no URL. The image may be invalid or too large (max 6 MB).${disputeFallback}` }], isError: true };
         }
         return await finishUpload(url, compressedUploadNote(approxBytes));
       } catch (err: any) {
@@ -4630,13 +4641,6 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         // Claude quota ran out — and it is not even reliably true that nothing
         // happened, since the API can finish an ingest after the client stops
         // waiting. Say what to do DIFFERENTLY instead.
-        // commerce#1148: whatever went wrong, a dispute has a response deadline
-        // and the user is holding a photo with no URL. Name the dashboard
-        // thread — it has a file picker — rather than leaving the agent to fall
-        // back on "send me a publicly hosted link", the dead end of #1007.
-        const disputeFallback = dispute_id
-          ? ` Or open the dispute on the dashboard, which has a file picker that takes the photo straight off their device: ${disputeDashboardUrl(cleanListingId(dispute_id), dispute_side === "seller" ? "seller" : "buyer")}`
-          : "";
         if (isTimeoutMessage(msg)) {
           const nextStep = image_base64 && !image_url
             ? "Do not resend the same base64 — a large data URI is the slow path. For a chat-attached photo, call this tool again with NO image to display the drop zone; otherwise get a public URL and pass it as image_url."

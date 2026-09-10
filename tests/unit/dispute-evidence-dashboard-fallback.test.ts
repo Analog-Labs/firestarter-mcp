@@ -82,6 +82,33 @@ describe("dispute evidence names the dashboard, not a hosted-URL dead end (#1148
     expect(out).toContain("https://firestarter.network/dashboard?dispute=disp_fail1");
   });
 
+  it("names the dashboard for a photo REJECTED before any request is made", async () => {
+    // The failures that never throw are the likely ones — a phone photo over
+    // the 6 MB cap returns from inside the try. A fallback built in the catch
+    // covered only thrown errors, so the single most common dispute-evidence
+    // failure still ended at the #1007 dead end.
+    const tenMb = "data:image/jpeg;base64," + "A".repeat(10 * 1024 * 1024);
+
+    const res = await captureTool("firestarter_upload_image")({
+      dispute_id: "disp_big1", image_base64: tenMb,
+    });
+    const out = text(res);
+
+    expect(res.isError).toBe(true);
+    expect(out).toMatch(/too large/i);
+    expect(out).toContain("https://firestarter.network/dashboard?dispute=disp_big1");
+  });
+
+  it("names the dashboard when the API accepts the upload but returns no URL", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) })));
+
+    const out = text(await captureTool("firestarter_upload_image")({
+      dispute_id: "disp_nourl", image_url: "https://cdn.example.com/photo.jpg",
+    }));
+
+    expect(out).toContain("https://firestarter.network/dashboard?dispute=disp_nourl");
+  });
+
   it("stays quiet about the dashboard when no dispute is involved", async () => {
     // A listing upload failure has its own fallbacks; a dispute link there
     // would be noise pointing at an unrelated screen.
