@@ -1349,7 +1349,7 @@ export function arrivalDateFromDays(days: unknown, now: Date = new Date()): stri
 export function capEnforcementLine(capCents: number, testKey: boolean): string {
   const cap = `$${(capCents / 100).toFixed(2)}`;
   return testKey
-    ? `Purchases that would exceed ${cap} in a calendar month are automatically rejected on a LIVE key. This is a TEST key: sandbox purchases are simulated, so the cap is not applied to them and one going through is not a failure.`
+    ? `Purchases that would exceed ${cap} in a calendar month are automatically rejected in LIVE mode. This session is in TEST mode: sandbox purchases are simulated, so the cap is not applied to them and one going through is not a failure.`
     : `Purchases that would exceed ${cap} in a calendar month are automatically rejected.`;
 }
 
@@ -2233,25 +2233,157 @@ function unpaidCountryHeadline(rails: Array<{ provider: string; verdict: string 
 }
 
 /**
- * "Account:" line for firestarter_status — who the configured API key belongs
- * to (the org's owner user + the org), from GET /v1/me. Best-effort by design:
- * identity is garnish on a status check, and an older API without the endpoint
- * (rolling deploy) must not break it — any failure just drops the line.
+ * GET /v1/me — the identity and environment of the credential in hand.
+ *
+ * Best-effort by design: it backs garnish (an "Account:" line) and a fallback
+ * that already has an answer (the key prefix), so an older API without the
+ * endpoint, or a rolling deploy mid-swap, must never break a tool. Any failure
+ * is null and each caller decides what that means.
  */
-async function fetchAccountLine(apiRequest: ReturnType<typeof makeApiRequest>): Promise<string | null> {
+async function fetchMe(apiRequest: ReturnType<typeof makeApiRequest>): Promise<any | null> {
   try {
-    const me = await apiRequest("GET", "/v1/me");
-    const parts: string[] = [];
-    const person = [me?.user?.name, me?.user?.email ? `<${me.user.email}>` : null].filter(Boolean).join(" ");
-    if (person) parts.push(person);
-    if (me?.org?.id || me?.org?.name) {
-      const plan = me?.org?.plan ? `, ${me.org.plan} plan` : "";
-      parts.push(`org "${me.org.name || me.org.id}" (${me.org.id}${plan})`);
-    }
-    return parts.length ? `Account: ${parts.join(" — ")}` : null;
+    return await apiRequest("GET", "/v1/me");
   } catch {
     return null;
   }
+}
+
+/**
+ * "Account:" line for firestarter_status — who the credential belongs to (the
+ * org's owner user + the org).
+ */
+function accountLineFromMe(me: any): string | null {
+  const parts: string[] = [];
+  const person = [me?.user?.name, me?.user?.email ? `<${me.user.email}>` : null].filter(Boolean).join(" ");
+  if (person) parts.push(person);
+  if (me?.org?.id || me?.org?.name) {
+    const plan = me?.org?.plan ? `, ${me.org.plan} plan` : "";
+    parts.push(`org "${me.org.name || me.org.id}" (${me.org.id}${plan})`);
+  }
+  return parts.length ? `Account: ${parts.join(" — ")}` : null;
+}
+
+export type KeyEnvironment = "test" | "live";
+
+/**
+ * What the bearer STRING itself spells, or null when it spells nothing.
+ *
+ * A raw API key is authoritative here — routes/keys.ts mints the prefix from
+ * the row's environment, so the two cannot disagree — and answering from it
+ * costs no round trip. The bug in commerce#1138 was not consulting the prefix,
+ * it was treating "does not start with fs_test_" as PROOF of live: an
+ * `fs_oauth_…` connector grant spells neither, and got read as live.
+ */
+function environmentFromPrefix(bearer: string): KeyEnvironment | null {
+  if (typeof bearer !== "string") return null;
+  if (bearer.startsWith("fs_test")) return "test";
+  if (bearer.startsWith("fs_live")) return "live";
+  return null;
+}
+
+/**
+ * The answer when /v1/me could not give one: what the bearer spells, else what
+ * this session already learned for it, else the historical default.
+ *
+ * The cache lookup is the load-bearing middle term. Without it a single /v1/me
+ * blip mid-session dropped an OAuth sandbox session straight back to "LIVE
+ * (real orders, real charges)" — the exact #1138 string — with the correct
+ * answer already sitting in the map.
+ */
+function environmentFallback(bearer: string): KeyEnvironment {
+  return environmentFromPrefix(bearer) ?? environmentByBearer.get(bearerDigest(bearer)) ?? "live";
+}
+
+/**
+ * Resolved environments, keyed by a DIGEST of the bearer they were resolved
+ * for. A credential's environment is a property of the api_keys row and does
+ * not change under it, and a refreshed OAuth token is a new bearer with its own
+ * entry — so this never serves a stale answer for the key in hand.
+ *
+ * Hashed, not the raw token: this is a process-wide map outliving the sessions
+ * that fill it, and a live credential is not something to retain in one for an
+ * environment lookup. The digest distinguishes bearers, which is all it is for.
+ */
+const environmentByBearer = new Map<string, KeyEnvironment>();
+
+const bearerDigest = (bearer: string) => createHash("sha256").update(String(bearer)).digest("hex").slice(0, 32);
+
+/**
+ * The environment the API says this credential runs in — not the one its
+ * prefix spells.
+ *
+ * commerce#1138: three call sites decided test-vs-live by string-matching the
+ * bearer for `fs_test_`. That is right for a raw API key and wrong for the
+ * connector, whose bearer is `fs_oauth_…` while its environment lives on the
+ * api_keys ROW (routes/oauth.ts stamps it from the org's default_environment).
+ * So every OAuth session in test mode reported LIVE, while apps/api — which
+ * reads that row — ran every buy and sell against the sandbox. Reported as
+ * "Environment: LIVE (real orders and charges)" on an account whose operations
+ * were all simulated, which is the mismatch that matters most to get right:
+ * a buyer who believes a real charge is coming, or worse, believes a simulated
+ * one was real.
+ *
+ * /v1/me carries `environment` for exactly this ("test" | "live", or null for a
+ * dashboard-JWT caller that has none). On any failure — old API, network, a
+ * null — environmentFallback answers, so this is never worse than what it
+ * replaced. A fallback answer is deliberately NOT cached: a transient blip must
+ * not pin a guess to the session for the rest of its life.
+ *
+ * A bearer that spells its own environment short-circuits before the network.
+ * That is not only speed: /v1/me sits behind a per-IP rate limit that every
+ * remote-MCP session shares, and making three tools call it on every raw-key
+ * invocation would spend that budget to re-learn what `fs_test_` already says
+ * — and a 429 would silently turn this fix back off.
+ */
+async function resolveEnvironment(
+  apiRequest: ReturnType<typeof makeApiRequest>,
+  sessionApiKey: string,
+): Promise<KeyEnvironment> {
+  const bearer = currentBearer(sessionApiKey);
+  const spelled = environmentFromPrefix(bearer);
+  if (spelled) return spelled;
+  const cached = environmentByBearer.get(bearerDigest(bearer));
+  if (cached) return cached;
+  return rememberEnvironment(bearer, await fetchMe(apiRequest)) ?? environmentFallback(bearer);
+}
+
+/**
+ * Record what /v1/me said about a bearer, so a caller that has already fetched
+ * it (firestarter_status) pays for one round trip instead of two. Returns the
+ * environment, or null when the response carries none.
+ */
+function rememberEnvironment(bearer: string, me: any): KeyEnvironment | null {
+  const env = me?.environment;
+  if (env !== "test" && env !== "live") return null;
+  // Bounded: a long-lived Streamable HTTP session refreshes its OAuth token
+  // hourly, so bearers accumulate for as long as the process lives. Oldest out
+  // first — Map iterates in insertion order.
+  while (environmentByBearer.size >= 500) {
+    environmentByBearer.delete(environmentByBearer.keys().next().value as string);
+  }
+  environmentByBearer.set(bearerDigest(bearer), env);
+  return env;
+}
+
+/**
+ * A listing's status, qualified by the environment it lives in.
+ *
+ * commerce#1142: creation replied `Status: active` for a sandbox listing, the
+ * agent read "active" as "live" and told the seller their sandals were "listed
+ * and live" — then, asked for the share link, correctly said the listing was
+ * test-mode with no public page. Two contradictory answers about one listing in
+ * consecutive turns.
+ *
+ * A listing's environment is its OWN column, not the caller's: /v1/listings
+ * returns `test_mode` and `environment` on every row, and a test key cannot
+ * create a live listing or vice versa. So this reads the listing, and needs no
+ * key resolution — unlike the account-level report in resolveEnvironment.
+ */
+export function listingStatusLine(listing: any): string {
+  const status = listing?.status || "active";
+  const sandbox = listing?.test_mode === true || listing?.environment === "test";
+  if (!sandbox) return status;
+  return `${status} (TEST MODE — sandbox listing: no public share page, and real buyers cannot find or buy it)`;
 }
 
 /**
@@ -2389,8 +2521,12 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
     recentZones.set(id, Date.now());
   };
-  /** Sandbox key: several real-money guarantees do not apply — say so where we make them. */
-  const isTestKey = typeof apiKey === "string" && apiKey.startsWith("fs_test");
+  /**
+   * Sandbox: several real-money guarantees do not apply — say so where we make
+   * them. Resolved from the API rather than the bearer string, because a
+   * connector grant is `fs_oauth_…` in either environment (#1138).
+   */
+  const isSandbox = async () => (await resolveEnvironment(apiRequest, apiKey)) === "test";
 
   // MCP App resource backing the buyer-facing shopping tools' inline product
   // grid (firestarter_preview advertises it via _meta.ui.resourceUri). No-op on
@@ -2755,30 +2891,34 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
   // Tool: firestarter_status
   server.tool(
     "firestarter_status",
-    "The buyer's ORDER HISTORY and order status on Firestarter — check one order, or list recent orders (\"my orders\", \"order history\", \"past orders\", \"what did I buy\"); works on every key, live and test. Also reports the current ENVIRONMENT (test vs live) plus the ACCOUNT the configured API key belongs to (user + organization). Use this to check on orders, see what options were found, get tracking updates, confirm whether you are in test/sandbox mode, or answer 'which account/user am I operating as?' (call it with no arguments for the environment + account summary). Firestarter DOES have a test mode: an `fs_test_…` API key runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted); an `fs_live_…` key is real. The mode is fixed by the configured API key, not a per-call option.",
+    "The buyer's ORDER HISTORY and order status on Firestarter — check one order, or list recent orders (\"my orders\", \"order history\", \"past orders\", \"what did I buy\"); works on every key, live and test. Also reports the current ENVIRONMENT (test vs live) plus the ACCOUNT the configured API key belongs to (user + organization). Use this to check on orders, see what options were found, get tracking updates, confirm whether you are in test/sandbox mode, or answer 'which account/user am I operating as?' (call it with no arguments for the environment + account summary). Firestarter DOES have a test mode: it runs every purchase through a fully simulated sandbox (mock payment, shipping, and tracking — no real money moves and no real seller is contacted). The mode belongs to the connected credential, not to a per-call option, and it is NOT always spelled by the key: an `fs_test_…` / `fs_live_…` API key says so in its prefix, but a connector grant (`fs_oauth_…`) carries its environment server-side and can be either. Do not infer the mode from the credential string — the Environment line this tool returns is the authoritative answer.",
     {
       execution_id: z.string().optional().describe("Specific execution ID to check (e.g. 'exec_abc123'). Omit to list recent executions."),
       status_filter: z.string().optional().describe("Filter executions by status: finding, awaiting_approval, approved, paid, shipping, completed, failed, cancelled"),
     },
     { title: "Check Order Status", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ execution_id, status_filter }) => {
-      // Environment is determined by the API key prefix (auth.ts): fs_test_* ->
-      // sandbox, anything else -> live. Surfaced so the agent can correctly
-      // answer "are we in test mode?" instead of assuming there is none.
-      const environment = apiKey.startsWith("fs_test_")
-        ? "TEST (sandbox — simulated payment/shipping/tracking, no real money, no real seller contacted)"
-        : "LIVE (real orders, real charges)";
       try {
         if (execution_id) {
           const exec = await apiRequest("GET", `/v1/executions/${execution_id}`);
           return { content: await formatExecution(exec) };
         }
-        // In parallel with the list fetch; resolves to null on any failure.
-        const accountPromise = fetchAccountLine(apiRequest);
+        // Identity AND environment come from the same /v1/me, in parallel with
+        // the list fetch. The prefix is only the fallback: an OAuth connector
+        // bearer (`fs_oauth_…`) spells neither environment, and reading test
+        // mode off it reported LIVE for every connector sandbox session
+        // (commerce#1138) — see resolveEnvironment.
+        const bearer = currentBearer(apiKey);
+        const mePromise = fetchMe(apiRequest);
         let path = "/v1/executions";
         if (status_filter) path += `?status=${encodeURIComponent(status_filter)}`;
         const data = await apiRequest("GET", path);
-        const accountLine = await accountPromise;
+        const me = await mePromise;
+        const environment =
+          (rememberEnvironment(bearer, me) ?? environmentFallback(bearer)) === "test"
+            ? "TEST (sandbox — simulated payment/shipping/tracking, no real money, no real seller contacted)"
+            : "LIVE (real orders, real charges)";
+        const accountLine = accountLineFromMe(me);
         const identity = accountLine ? `\n${accountLine}` : "";
         const executions = data.executions || data;
         if (!Array.isArray(executions) || executions.length === 0) {
@@ -3570,7 +3710,14 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     { title: "Check Spending Cap", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async (args: any = {}) => {
       try {
-        const balance = await apiRequest("GET", "/v1/billing/balance");
+        // In parallel, not after: both are 12s-timeout calls, and chaining them
+        // put a stalled /v1/me on top of the balance fetch and past some hosts'
+        // tool-call deadline. resolveEnvironment answers without a round trip
+        // for a raw key, and from cache after the first OAuth lookup.
+        const [balance, sandbox] = await Promise.all([
+          apiRequest("GET", "/v1/billing/balance"),
+          isSandbox(),
+        ]);
         const cap = balance.spend_cap_cents;
         const threshold = balance.alert_threshold_pct || 80;
         if (!cap) {
@@ -3583,7 +3730,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const position = Number.isFinite(spent)
           ? `\nUsed this month: $${(spent / 100).toFixed(2)} of $${(cap / 100).toFixed(2)} (${Math.min(999, Math.round((spent / cap) * 100))}%)`
           : "";
-        return { content: [{ type: "text" as const, text: `**Monthly spend cap: $${(cap / 100).toFixed(2)}**${position}\nAlert threshold: ${threshold}%\n\n${capEnforcementLine(cap, isTestKey)}${readOnlyArgsNotice(args, "firestarter_set_spend_cap")}` }] };
+        return { content: [{ type: "text" as const, text: `**Monthly spend cap: $${(cap / 100).toFixed(2)}**${position}\nAlert threshold: ${threshold}%\n\n${capEnforcementLine(cap, sandbox)}${readOnlyArgsNotice(args, "firestarter_set_spend_cap")}` }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error reading spend cap: ${toErrorMessage(err)}` }], isError: true };
       }
@@ -3618,11 +3765,16 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         const body: any = {};
         if (spend_cap_dollars !== undefined) body.spend_cap_cents = Math.round(spend_cap_dollars * 100);
         if (alert_threshold_pct !== undefined) body.alert_threshold_pct = alert_threshold_pct;
-        await apiRequest("PATCH", "/v1/billing/settings", body);
+        // Parallel for the same reason as the reader above: a stalled /v1/me
+        // must not land on top of the write's own timeout.
+        const [, sandbox] = await Promise.all([
+          apiRequest("PATCH", "/v1/billing/settings", body),
+          isSandbox(),
+        ]);
         let text = `**Spend cap updated.**\n`;
         if (spend_cap_dollars !== undefined) text += `Monthly limit: $${spend_cap_dollars}\n`;
         if (alert_threshold_pct !== undefined) text += `Alert at: ${alert_threshold_pct}% of cap\n`;
-        if (spend_cap_dollars !== undefined) text += `\n${capEnforcementLine(Math.round(spend_cap_dollars * 100), isTestKey)}`;
+        if (spend_cap_dollars !== undefined) text += `\n${capEnforcementLine(Math.round(spend_cap_dollars * 100), sandbox)}`;
         return { content: [{ type: "text" as const, text }] };
       } catch (err: any) {
         return { content: [{ type: "text" as const, text: `Error updating spend cap: ${toErrorMessage(err)}` }], isError: true };
@@ -3718,14 +3870,28 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     { title: "Get Receipt", readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ execution_id }) => {
       try {
-        const data = await apiRequest("GET", `/v1/executions/${execution_id}/receipt`);
+        // In parallel: the receipt itself, and the credential's environment as
+        // a fallback for an API too old to stamp the order (below).
+        const [data, credentialEnv] = await Promise.all([
+          apiRequest("GET", `/v1/executions/${execution_id}/receipt`),
+          resolveEnvironment(apiRequest, apiKey),
+        ]);
         // A sandbox purchase moves no money, contacts no seller, and mints a
         // fake charge id — but the receipt printed exactly like a live one, so
         // it could be screenshotted as proof of payment. Say so, first line.
-        // Environment comes from the key prefix, the same signal
-        // firestarter_status reports.
+        //
+        // Keyed on the ORDER's environment, not the caller's — the same rule as
+        // a listing's status (#1142): a receipt describes one order, and
+        // /v1/executions/:id/receipt returns `test_mode` off the execution row.
+        // Reading the credential instead gets it wrong in both directions, and
+        // the route filters by org_id rather than environment so both are
+        // reachable inside one org: a sandbox order read with a live key lost
+        // the banner entirely, and a genuinely card-charged order read with a
+        // test key got stamped "No money moved". The credential only answers
+        // when the payload carries no test_mode at all.
+        const sandbox = typeof data?.test_mode === "boolean" ? data.test_mode : credentialEnv === "test";
         let text = `**Receipt — Order ${execution_id}**\n`;
-        if (apiKey.startsWith("fs_test_")) {
+        if (sandbox) {
           text = `**TEST MODE — simulated order. No money moved, no seller was paid.**\n\n${text}`;
         }
         text += `Date: ${formatBuyerDate(data.paid_at || data.created_at) || "N/A"}\n`;
@@ -4661,7 +4827,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
           if (value !== undefined) body[key] = value;
         }
         const listing = await apiRequest("POST", "/v1/listings", body, listingWriteTimeoutMs(body));
-        let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listing.status || "active"}\nBase price: $${listing.base_price}\n`;
+        let text = `**Listing created: ${listing.product_name}**\nID: \`${listing.id}\`\nStatus: ${listingStatusLine(listing)}\nBase price: $${listing.base_price}\n`;
         if (listing.floor_price) text += `Floor: $${listing.floor_price}\n`;
         if (listing.ceiling_price) text += `Ceiling: $${listing.ceiling_price}\n`;
         if (listing.dynamic_pricing) text += `Dynamic pricing: enabled\n`;
@@ -4689,8 +4855,18 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         } else if (listingShareUrl(listing)) {
           text += `Share link: ${mdUrlLink(listingShareUrl(listing)) ?? listingShareUrl(listing)}\n`;
           text += `\nPaste the share link bare in chat — it unfurls into a product card, humans see "ask your AI agent to buy this", and any agent that opens it gets purchase instructions. Buyers' agents also discover this via network search. Use \`firestarter_listings\` to view it anytime.`;
-        } else {
+        } else if (listing.test_mode === true || listing.environment === "test") {
           text += `\n**Sandbox-only listing.** No public share link is created in test mode. It remains available through test-mode catalog and listing tools.`;
+        } else {
+          // The sandbox line above used to be the bare `else`: ANY listing
+          // without a share link was told it was test-mode, an unconditional
+          // claim about the environment made without ever reading it. Today
+          // nothing live reaches here — listing-create.ts sets status from
+          // activationBlocks (`length === 0 ? "active" : "draft"`), so a live
+          // draft always carries blocks and takes the first branch, and a live
+          // active listing always has a share_url. This is the honest default
+          // for the case that claim was wrong about, not a fix for a report.
+          text += `\nNo public share link yet — a listing gets one once it is active. Activate it with \`firestarter_update_listing\` (status "active").`;
         }
         // No photo on the listing → this reply CARRIES the drop zone (widget
         // hosts render it inline via structuredContent.upload_request below),
@@ -6353,7 +6529,9 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         if (listing.description) text += `Description: ${listing.description.slice(0, 100)}${listing.description.length > 100 ? "..." : ""}\n`;
         if (listing.category) text += `Category: ${listing.category}\n`;
         if (listing.inventory_qty !== undefined) text += `Inventory: ${listing.inventory_qty}\n`;
-        if (listing.status) text += `Status: ${listing.status}\n`;
+        // Same qualifier as creation (#1142): activating through an update is
+        // the other way a seller reaches `Status: active` on a sandbox listing.
+        if (listing.status) text += `Status: ${listingStatusLine(listing)}\n`;
         // An edit replaces the gallery wholesale, so a refused photo here can
         // mean the seller ended up with FEWER photos than they started with
         // (commerce#775). Never report that as a clean update.

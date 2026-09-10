@@ -240,12 +240,17 @@ describe("spend-cap enforcement copy (P0-1, re-scoped)", () => {
     );
   });
 
-  it("says plainly on a test key that the cap does not apply", () => {
+  it("says plainly in test mode that the cap does not apply", () => {
     // The gate skips test-mode purchases by design, so the unqualified promise
     // was false in exactly the environment QA was testing in — which is how a
     // sandbox purchase over a $1 cap got filed as a P0 enforcement failure.
+    //
+    // Says "session", not "key" (#1138): the caller is no longer always a
+    // credential whose prefix spells the mode — a connector grant is
+    // `fs_oauth_…` in either environment, so naming the key pointed a sandbox
+    // connector buyer at a string that would not confirm it.
     const line = capEnforcementLine(100, true);
-    expect(line).toContain("TEST key");
+    expect(line).toContain("TEST mode");
     expect(line.toLowerCase()).toContain("not applied");
   });
 });
