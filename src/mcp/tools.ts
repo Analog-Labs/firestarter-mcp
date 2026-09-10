@@ -729,7 +729,7 @@ function disputeWindowClosedText(err: unknown): string | null {
     `What you can still do:\n` +
     `- **Message the seller directly** — most problems get resolved this way, and they may refund voluntarily.\n` +
     `- **Ask your bank or card issuer for a chargeback**, if the item never arrived or was materially not as described.\n` +
-    `- **Contact Firestarter support** with the order id, and a human can look at the case.`
+    `- **Open a support ticket** with firestarter_support_ticket (pass this order_id), and a human can look at the case.`
   );
 }
 
@@ -750,7 +750,7 @@ function holdFrozenText(err: unknown): string | null {
   }
   return (
     `**This order's funds are already frozen**, so a new dispute cannot hold them again. ${toErrorMessage(err)}\n\n` +
-    `That is usually a card chargeback or an admin hold in progress. Contact Firestarter support with the order id if the buyer believes it should be a dispute.`
+    `That is usually a card chargeback or an admin hold in progress. If the buyer believes it should be a dispute, open a support ticket with firestarter_support_ticket (pass this order_id).`
   );
 }
 
@@ -4018,6 +4018,81 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
     }
   );
 
+  // Tool: firestarter_support_ticket (commerce#1110)
+  //
+  // Before this, the agent's honest answer to "raise it with Firestarter" was to
+  // draft an email for the person to send themselves — the only ticket route was
+  // the dashboard's, under user JWT. /v1/support/tickets is the same write under
+  // the API key, and this is its tool. Disputes stay a separate surface: they
+  // move money (freeze a payout, refund), a ticket only reaches a person.
+  server.tool(
+    "firestarter_support_ticket",
+    "Open a Firestarter SUPPORT TICKET on the user's behalf, or check on one — a human at Firestarter reads it. Use for an account, billing, payout, listing, market or marketplace problem, a question no tool answers, or an ORDER problem the dispute flow does not cover. For a DELIVERED order that arrived wrong, damaged, or never arrived, use firestarter_disputes FIRST: a dispute freezes the seller's payout and can refund; a ticket only reaches a person. Pass order_id (exec_...) whenever the question is about an order so support opens it with the case attached. action 'create' (default) needs message — the person's own words, not a summary; 'list' shows this account's tickets and whether support has replied; 'get' returns one ticket with support's replies — check it when the user asks whether support has answered. Never draft an email to support for the user to send instead: this tool IS the support channel.",
+    {
+      action: z.enum(["create", "list", "get"]).optional().describe("'create' (default) opens a ticket; 'list' shows this account's tickets; 'get' returns one ticket's thread (needs ticket_id)."),
+      message: z.string().optional().describe("For 'create': what the person needs help with, in their own words (up to 8000 characters). Required to open a ticket."),
+      subject: z.string().optional().describe("For 'create': one-line subject (up to 200 characters). Omit to use the first line of the message."),
+      order_id: z.string().optional().describe("For 'create': the order (execution) id the problem is about, e.g. exec_abc123 — support opens the ticket with that order attached. Must be an order on this account."),
+      ticket_id: z.string().optional().describe("For 'get': the ticket id (tkt_...) from an earlier create or list."),
+    },
+    { title: "Support Ticket", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    async ({ action, message, subject, order_id, ticket_id }) => {
+      const mode = action ?? "create";
+      try {
+        if (mode === "list") {
+          const res = await apiRequest("GET", "/v1/support/tickets");
+          const tickets: any[] = Array.isArray(res?.tickets) ? res.tickets : [];
+          if (tickets.length === 0) {
+            return { content: [{ type: "text" as const, text: "No support tickets on this account yet. Use action 'create' with the person's message to open one." }] };
+          }
+          const lines = tickets.map((t) => {
+            const order = (Array.isArray(t.tags) ? t.tags : []).find((x: unknown) => typeof x === "string" && x.startsWith("order:"));
+            const replied = t.last_support_reply_at ? `support replied ${t.last_support_reply_at}` : "no reply from support yet";
+            return `- **${t.id}** [${t.status}] ${t.subject}${order ? ` (${String(order).slice("order:".length)})` : ""} — opened ${t.created_at}, ${replied}`;
+          });
+          return { content: [{ type: "text" as const, text: `**Support tickets (${tickets.length})**\n${lines.join("\n")}\n\nUse action 'get' with a ticket_id to read the thread.` }] };
+        }
+        if (mode === "get") {
+          if (!ticket_id?.trim()) {
+            return { content: [{ type: "text" as const, text: "ticket_id is required for action 'get' — use action 'list' to find it." }], isError: true };
+          }
+          const t = await apiRequest("GET", `/v1/support/tickets/${encodeURIComponent(ticket_id.trim())}`);
+          const msgs: any[] = Array.isArray(t?.messages) ? t.messages : [];
+          const thread = msgs.length
+            ? msgs.map((m) => `[${m.created_at}] ${m.sender_type === "support" ? "Firestarter support" : m.sender_type === "system" ? "system" : "you"}: ${m.content}${m.attachment_url ? ` (attachment: ${m.attachment_url})` : ""}`).join("\n")
+            : "(no messages yet)";
+          const awaiting = msgs.some((m) => m.sender_type === "support")
+            ? ""
+            : "\n\nSupport has not replied yet. Tell the person the ticket is open and that a human will answer; there is nothing further to do in this tool until then.";
+          return { content: [{ type: "text" as const, text: `**Ticket ${t.id}** [${t.status}] — ${t.subject}\n\n${thread}${awaiting}` }] };
+        }
+        // create
+        const text = (message ?? "").trim();
+        if (!text) {
+          return { content: [{ type: "text" as const, text: "message is required to open a ticket: pass what the person needs help with, in their own words." }], isError: true };
+        }
+        const body: Record<string, unknown> = { message: text };
+        if (subject?.trim()) body.subject = subject.trim();
+        if (order_id?.trim()) body.order_id = order_id.trim();
+        const created = await apiRequest("POST", "/v1/support/tickets", body);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `✅ Support ticket **${created.id}** opened: ${created.subject}${created.order_id ? ` (order ${created.order_id})` : ""}.\n\nA human at Firestarter will pick it up; replies land on the ticket and in the account's dashboard. Tell the person the ticket id. To check for an answer later, call this tool with action 'get' and ticket_id ${created.id}.`,
+          }],
+        };
+      } catch (err: any) {
+        if (err instanceof ApiError && err.code === "ORDER_NOT_FOUND") {
+          return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)} Check the order id with firestarter_purchases, or open the ticket without order_id and name the order in the message.` }], isError: true };
+        }
+        if (err instanceof ApiError && err.code === "NO_ACCOUNT_OWNER") {
+          return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: `Error: ${toErrorMessage(err)}` }], isError: true };
+      }
+    }
+  );
+
   // Tool: firestarter_message
   server.tool(
     "firestarter_message",
@@ -7124,7 +7199,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
             if (!res.dispute_id) {
               // The escrow was frozen but the dispute row didn't materialize — say
               // so honestly rather than implying a live, timed dispute exists.
-              return textBlock(`The escrow hold on order ${execution_id} was frozen, but the dispute record couldn't be created. ${res.message || ""} Please retry, or contact support so this doesn't sit frozen.`.trim());
+              return textBlock(`The escrow hold on order ${execution_id} was frozen, but the dispute record couldn't be created. ${res.message || ""} Please retry, or open a support ticket with firestarter_support_ticket (pass this order_id) so this doesn't sit frozen.`.trim());
             }
             // commerce#1007: the reporter opened a dispute here and then could
             // not attach the photo — the tool asked for a "publicly hosted
@@ -7184,7 +7259,7 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
               return textBlock(`Dispute ${did} withdrawn. The escrow hold is unfrozen and the order goes back to normal processing (the usual release timer resumes). If the problem persists, a new dispute can be opened on this order while its inspection window is still open.`);
             }
             if (w?.escrow_unfrozen === false) {
-              return textBlock(`Dispute ${did} withdrawn. The escrow hold on this order was NOT thawed by the withdrawal: either nothing was frozen, or it is frozen for another reason (a card chargeback or an admin hold) that a withdrawal must not undo. If the buyer expected the order to go back to normal processing, contact Firestarter support with the order id.`);
+              return textBlock(`Dispute ${did} withdrawn. The escrow hold on this order was NOT thawed by the withdrawal: either nothing was frozen, or it is frozen for another reason (a card chargeback or an admin hold) that a withdrawal must not undo. If the buyer expected the order to go back to normal processing, open a support ticket with firestarter_support_ticket (pass this order_id).`);
             }
             return textBlock(`Dispute ${did} withdrawn. The order goes back to normal processing once its escrow hold is released from this dispute.`);
           }
