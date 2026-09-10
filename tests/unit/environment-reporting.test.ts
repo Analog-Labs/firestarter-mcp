@@ -120,11 +120,11 @@ describe("firestarter_status — environment comes from the API, not the key pre
   });
 });
 
-describe("firestarter_receipt — the TEST MODE banner reaches connector sessions", () => {
+describe("firestarter_receipt — the banner describes the ORDER, not the caller", () => {
   it("banners a sandbox receipt on an fs_oauth_ bearer (#1138)", async () => {
     stubRoutes({
       "/v1/me": { org: { id: "org_4" }, environment: "test" },
-      "/v1/executions/exec_1/receipt": { total_cents: 4999, product_title: "Tennis racket", stripe_charge_id: "ch_fake" },
+      "/v1/executions/exec_1/receipt": { total_cents: 4999, product_title: "Tennis racket", stripe_charge_id: "ch_fake", test_mode: true },
     });
 
     const out = text(await captureTool("firestarter_receipt", "fs_oauth_receipt_test")({ execution_id: "exec_1" }));
@@ -136,12 +136,87 @@ describe("firestarter_receipt — the TEST MODE banner reaches connector session
   it("leaves a live receipt unbannered", async () => {
     stubRoutes({
       "/v1/me": { org: { id: "org_5" }, environment: "live" },
-      "/v1/executions/exec_2/receipt": { total_cents: 4999, product_title: "Tennis racket" },
+      "/v1/executions/exec_2/receipt": { total_cents: 4999, product_title: "Tennis racket", test_mode: false },
     });
 
     const out = text(await captureTool("firestarter_receipt", "fs_oauth_receipt_live")({ execution_id: "exec_2" }));
 
     expect(out).not.toMatch(/TEST MODE/);
+  });
+
+  it("banners a SANDBOX order even when the credential is live", async () => {
+    // The receipt route filters by org_id, not environment, so one org can
+    // read across both. Keying the banner off the caller dropped it from a
+    // simulated order whenever the key was live — the screenshot-as-proof
+    // case this banner exists to prevent.
+    stubRoutes({
+      "/v1/me": { org: { id: "org_8" }, environment: "live" },
+      "/v1/executions/exec_3/receipt": { total_cents: 4999, product_title: "Tennis racket", test_mode: true },
+    });
+
+    const out = text(await captureTool("firestarter_receipt", "fs_live_receipt_crossenv")({ execution_id: "exec_3" }));
+
+    expect(out).toMatch(/TEST MODE/);
+  });
+
+  it("does not stamp a REAL charge as simulated on a test credential", async () => {
+    // The other direction, and the worse one: telling a buyer that a card
+    // charge that actually happened moved no money.
+    stubRoutes({
+      "/v1/me": { org: { id: "org_9" }, environment: "test" },
+      "/v1/executions/exec_4/receipt": { total_cents: 4999, product_title: "Tennis racket", stripe_charge_id: "ch_real", test_mode: false },
+    });
+
+    const out = text(await captureTool("firestarter_receipt", "fs_test_receipt_crossenv")({ execution_id: "exec_4" }));
+
+    expect(out).not.toMatch(/TEST MODE/);
+    expect(out).not.toMatch(/No money moved/i);
+  });
+
+  it("falls back to the credential when the payload carries no test_mode", async () => {
+    // An API old enough not to stamp the order still gets the old behaviour
+    // rather than silently losing the banner.
+    stubRoutes({
+      "/v1/me": { org: { id: "org_10" }, environment: "test" },
+      "/v1/executions/exec_5/receipt": { total_cents: 4999, product_title: "Tennis racket" },
+    });
+
+    const out = text(await captureTool("firestarter_receipt", "fs_oauth_receipt_nostamp")({ execution_id: "exec_5" }));
+
+    expect(out).toMatch(/TEST MODE/);
+  });
+});
+
+describe("resolveEnvironment — cheap and blip-proof", () => {
+  it("answers a raw fs_test_ key without calling /v1/me at all", async () => {
+    // /v1/me is per-IP rate limited and shared by every remote-MCP session.
+    // A prefix that already spells the environment must not spend that budget.
+    stubRoutes({ "/v1/executions/exec_9/receipt": { total_cents: 100, test_mode: true } });
+
+    const out = text(await captureTool("firestarter_receipt", "fs_test_noround_trip")({ execution_id: "exec_9" }));
+
+    expect(out).toMatch(/TEST MODE/);
+    const called = (globalThis.fetch as any).mock.calls.map((c: any[]) => String(c[0]));
+    expect(called.some((u: string) => u.includes("/v1/me"))).toBe(false);
+  });
+
+  it("keeps reporting TEST from cache when a later /v1/me blips", async () => {
+    // Without the cache in the fallback chain, one failed lookup mid-session
+    // printed "LIVE (real orders, real charges)" again — #1138, resurrected.
+    const BEARER = "fs_oauth_blip";
+    stubRoutes({
+      "/v1/me": { org: { id: "org_11" }, environment: "test" },
+      "/v1/executions": { executions: [] },
+    });
+    const first = text(await captureTool("firestarter_status", BEARER)({}));
+    expect(first).toMatch(/Environment: TEST/);
+
+    // Same bearer, /v1/me now unreachable.
+    stubRoutes({ "/v1/me": new Error("blip"), "/v1/executions": { executions: [] } });
+    const second = text(await captureTool("firestarter_status", BEARER)({}));
+
+    expect(second).toMatch(/Environment: TEST/);
+    expect(second).not.toContain("LIVE (real orders, real charges)");
   });
 });
 
@@ -239,7 +314,9 @@ describe("firestarter_list — the creation reply agrees with itself", () => {
 
     expect(out).not.toMatch(/Sandbox-only/);
     expect(out).not.toMatch(/test mode/i);
-    expect(out).toMatch(/active/);
+    // Asserts the STATUS line, not the word "Activate" in the fallback
+    // sentence below it — which is what a bare /active/ was matching.
+    expect(out).toContain("Status: draft\n");
   });
 
   it("still prints the share link for a live active listing", async () => {
