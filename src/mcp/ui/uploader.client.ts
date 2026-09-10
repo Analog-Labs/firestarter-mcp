@@ -25,6 +25,7 @@
  */
 import { esc } from "./escape.js";
 import type { Host } from "./host.client.js";
+import { canShrinkHere, shouldShrink, shrinkPhoto } from "./shrink-image.js";
 
 export interface UploadRequest {
   listing_id?: string;
@@ -197,7 +198,7 @@ export function renderUploader(
       ${title ? `<div class="dz-head">${esc(title)}</div>` : ""}
       <div class="dropzone" id="dz" role="button" tabindex="0" aria-label="${verifyId ? "Upload the possession verification photo: drop a file here or press Enter to browse" : marketId ? "Upload a community market avatar: drop a file here or press Enter to browse" : disputeId ? "Upload dispute evidence photos: drop files here or press Enter to browse" : "Upload product photos or videos: drop files here or press Enter to browse"}">
         <div class="dz-big">${verifyId ? "Drop the verification photo here" : marketId ? "Drop the community avatar here" : disputeId ? "Drop evidence photos here" : `Drop product photo${listingId ? "s" : "(s)"} or video${listingId ? "s" : "(s)"} here`}</div>
-        <small>${verifyId ? "the item and the handwritten code both visible — " : ""}or click to browse — ${imageOnly ? `JPEG, PNG, WebP or GIF, up to 6&nbsp;MB${marketId || verifyId ? "" : " each"}` : "photos up to 6&nbsp;MB · MP4/MOV/WebM clips up to 25&nbsp;MB"}${disputeId ? ` — up to ${MAX_DISPUTE_FILES}` : ""}</small>
+        <small>${verifyId ? "the item and the handwritten code both visible — " : ""}or click to browse — ${imageOnly ? `JPEG, PNG, WebP or GIF, up to 6&nbsp;MB${marketId || verifyId ? "" : " each"}` : "photos up to 6&nbsp;MB · MP4/MOV/WebM clips up to 25&nbsp;MB"}${disputeId ? ` — up to ${MAX_DISPUTE_FILES}` : ""} · big photos are downsized here first</small>
       </div>
       <div class="dz-thumbs" id="dzt" hidden></div>
       <div class="dz-status" id="dzs" role="status" aria-live="polite"></div>
@@ -232,11 +233,11 @@ export function renderUploader(
     } catch { /* a missing preview is cosmetic */ }
   };
 
-  const readAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  const readAsDataUrl = (blob: Blob, name: string) => new Promise<string>((resolve, reject) => {
     const r = new FileReader();
-    r.onerror = () => reject(new Error(`could not read ${file.name}`));
+    r.onerror = () => reject(new Error(`could not read ${name}`));
     r.onload = () => resolve(String(r.result));
-    r.readAsDataURL(file);
+    r.readAsDataURL(blob);
   });
 
   const handleFiles = async (list: FileList | null | undefined) => {
@@ -298,15 +299,34 @@ export function renderUploader(
      *  the verdict (verified / flagged / held), which is the whole point of
      *  the drop — so it goes back to the model verbatim. */
     let lastReply = "";
+    /** Photos re-encoded smaller before the bridge call — reported to the
+     *  model once so the seller can be told why the stored copy is not the
+     *  original bytes. */
+    const downsized: string[] = [];
     try {
       for (let i = 0; i < accepted.length; i++) {
         const { file, kind } = accepted[i];
-        status.textContent = accepted.length > 1
-          ? `Uploading ${i + 1} of ${accepted.length} — ${file.name}…`
-          : "Uploading…";
+        const progress = accepted.length > 1 ? `${i + 1} of ${accepted.length} — ${file.name}` : "";
+        status.textContent = progress ? `Uploading ${progress}…` : "Uploading…";
+        // The bytes ride inside a tool-call argument, and a chat host may cap
+        // that payload well below our 6 MB server limit — a full-size phone
+        // photo is a multi-MB JSON-RPC message. Downsize a big photo in the
+        // browser first; anything under the budget goes through as-is.
+        let payload: Blob = file;
+        let payloadName = file.name;
+        if (kind === "image" && shouldShrink(file) && canShrinkHere()) {
+          status.textContent = `Uploading ${progress || file.name} — downsizing first…`;
+          const r = await shrinkPhoto(file);
+          if (r.shrunk) {
+            payload = r.blob;
+            payloadName = r.filename;
+            downsized.push(`${file.name} ${(r.fromBytes / 1024 / 1024).toFixed(1)} MB → ${Math.max(1, Math.round(r.toBytes / 1024))} KB`);
+          }
+          status.textContent = progress ? `Uploading ${progress}…` : "Uploading…";
+        }
         let dataUrl: string;
         try {
-          dataUrl = await readAsDataUrl(file);
+          dataUrl = await readAsDataUrl(payload, file.name);
         } catch (e) {
           failed.push(`${file.name} — ${e instanceof Error ? e.message : "could not read the file"}`);
           continue;
@@ -323,7 +343,7 @@ export function renderUploader(
           ? await host.callToolFull("firestarter_upload_video", { video_base64: dataUrl, filename: file.name })
           : await host.callToolFull("firestarter_upload_image", {
             image_base64: dataUrl,
-            filename: file.name,
+            filename: payloadName,
             ...(verifyId ? { verify_listing_id: verifyId } : {}),
             ...(disputeId
               ? {
@@ -354,6 +374,9 @@ export function renderUploader(
 
       const uploaded = [...uploadedImages, ...uploadedVideos];
       const problems = [...skipped, ...failed];
+      if (downsized.length) {
+        tell(`downsized in the browser before upload, to fit the host's tool-call payload limit: ${downsized.join("; ")}`);
+      }
       if (uploaded.length === 0) {
         showError(`Upload failed: ${problems.join("; ").slice(0, 300)}`);
         tell(`upload FAILED: ${problems.join("; ").slice(0, 300)}`);
