@@ -4985,7 +4985,10 @@ export function registerTools(server: McpServer, apiKey: string, apiBase: string
         } else if (code === "DUPLICATE_LISTING" || /duplicate listing/i.test(msg)) {
           hint = "\n\nDUPLICATE_LISTING: this seller already has a listing with that name. Do NOT re-ask for details - either update the existing one (find it with firestarter_listings) or, if they genuinely want a second listing, retry with allow_duplicate: true.";
         } else if (code === "PROHIBITED_ITEM" || /prohibited/i.test(msg)) {
-          hint = "\n\nPROHIBITED_ITEM: this item can't be listed on Firestarter. Relay the reason above to the seller plainly and do NOT retry.";
+          // #1165: "do NOT retry" alone let an agent relist a refused "Glue Gun"
+          // as "Glue tool" — a retry under another name, filed where buyers
+          // searching "glue gun" never find it.
+          hint = "\n\nPROHIBITED_ITEM: this item can't be listed on Firestarter. Relay the reason above to the seller plainly and do NOT retry — not even under a different name, category or description. Never reword the product to get it past this check; if the seller believes it was refused by mistake, tell them that and stop.";
         }
         return { content: [{ type: "text" as const, text: `Error creating listing: ${msg}${hint}` }], isError: true };
       }

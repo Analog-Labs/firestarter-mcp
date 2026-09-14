@@ -249,3 +249,30 @@ describe("firestarter_listings detail view renders the extended fields", () => {
     expect(text).toContain("FS-7K2M");
   });
 });
+
+describe("firestarter_list PROHIBITED_ITEM reply", () => {
+  // #1165: a refused "Glue Gun with Glue sticks" was relisted as "Glue tool".
+  // The reply said "do NOT retry"; a retry under another name slipped past it.
+  it("tells the agent not to reword the product to get it past the check", async () => {
+    const tools = captureTools();
+    // The body apps/api sends: CreateListingError("PROHIBITED_ITEM", reason, 422, { category, tier }).
+    installFetch(() => ({
+      status: 422,
+      json: {
+        error: "Firearms, ammunition, and weapons cannot be sold or shipped on Firestarter.",
+        code: "PROHIBITED_ITEM",
+        status: 422,
+        category: "weapons",
+        tier: "prohibited",
+      },
+    }));
+
+    const res = await tools.firestarter_list.handler({ product_name: "Glue Gun with Glue sticks", base_price: 37 });
+
+    const text = textOf(res);
+    expect(res.isError).toBe(true);
+    expect(text).toContain("PROHIBITED_ITEM");
+    expect(text).toContain("not even under a different name, category or description");
+    expect(text).toContain("Never reword the product");
+  });
+});
