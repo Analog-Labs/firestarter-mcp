@@ -134,9 +134,12 @@ describe("MCP HTTP session binding", () => {
     expect(mcpSessionCount()).toBe(1);
 
     await new Promise((r) => setTimeout(r, 80)); // > MCP_SESSION_TTL_MS
-    // The sweep is lazy, so some request has to run it.
-    await followUp("fs_live_bob", "unknown-session-id");
-    expect(mcpSessionCount()).toBe(0);
+    // The sweep is lazy, so some request has to run it. A fresh initialize is
+    // the one request that cannot resurrect anything (a stale id on an
+    // initialize just starts a new session — see mcp-session-resurrection R4),
+    // so afterwards the only resident session is the new one.
+    await openSession("fs_live_bob");
+    expect(mcpSessionCount()).toBe(1);
   });
 
   it("S5: the resident session count is capped", async () => {
