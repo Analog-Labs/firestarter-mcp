@@ -125,6 +125,23 @@ describe("firestarter_connect_marketplace", () => {
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/MY, SG or TH/);
   });
+
+  // commerce#1169: a server with no cloud browser set up is not an outage.
+  it("says sign-in isn't set up and never offers a retry when the API has no provider configured", async () => {
+    mockFetch(() => ({ status: 503, data: { error: "Marketplace sign-in isn't set up on this server. Retrying won't help.", code: "PROVIDER_NOT_CONFIGURED", status: 503 } }));
+    const res = await captureTools().firestarter_connect_marketplace({ marketplace: "lazada", country: "TH", mobile: true });
+    expect(res.isError).toBe(true);
+    const text = textOf(res);
+    expect(text).toMatch(/Lazada sign-in isn't set up/);
+    expect(text).not.toMatch(/try again/i);
+    expect(text).toContain("firestarter_marketplace_search");
+  });
+
+  it("keeps the retry advice for a real provider failure", async () => {
+    mockFetch(() => ({ status: 502, data: { error: "Kernel session create failed: 500", code: "PROVIDER_ERROR", status: 502 } }));
+    const res = await captureTools().firestarter_connect_marketplace({ marketplace: "lazada", country: "TH" });
+    expect(textOf(res)).toMatch(/Try again in a minute/);
+  });
 });
 
 describe("firestarter_marketplace_search", () => {
