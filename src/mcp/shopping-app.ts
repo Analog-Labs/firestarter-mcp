@@ -44,7 +44,13 @@ import { SHOPPING_RESULTS_HTML } from "./ui/shopping-results.generated.js";
 // modes stay image-only.
 // v15: tier-1 format widening — AVIF photos and QuickTime (.mov) clips join
 // the accept lists, matching the API's brand-aware sniffers.
-export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v16";
+// v17: priceLabel stops preferring price_usd — on a marketplace-scout row that
+// field is the API's FX-estimated RANKING key, so an RM 12.90 item rendered as
+// "MYR 3.87" — and divides minor units by the currency's ISO-4217 exponent
+// rather than a hardcoded 100 (¥1290 was rendering as "JPY 12.90"). A stale
+// cache here keeps showing buyers the wrong price, which is the whole reason
+// this segment exists.
+export const SHOPPING_RESULTS_URI = "ui://firestarter/shopping-results/v17";
 
 // The same widget under a URI that NEVER moves, for ChatGPT.
 //
