@@ -419,6 +419,11 @@
     "destructiveHint": false,
     "openWorldHint": false
   },
+  "firestarter_support_ticket": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "openWorldHint": false
+  },
   "firestarter_sync_shopify": {
     "readOnlyHint": false,
     "destructiveHint": false,

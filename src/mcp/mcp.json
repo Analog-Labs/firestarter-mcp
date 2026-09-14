@@ -3,7 +3,7 @@
   "name": "firestarter",
   "displayName": "Firestarter Commerce",
   "version": "2.19.0",
-  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 95 tools, 7 resources, 10 prompts.",
+  "description": "AI-native commerce execution. Preview products keyless, search, buy with approval, track orders, manage listings and vouchers, connect Shopify, TikTok Shop, and 5 more platforms, monitor prices. 96 tools, 7 resources, 10 prompts.",
   "homepage": "https://firestarter.network",
   "transport": "stdio",
   "command": "npx",
@@ -546,6 +546,40 @@
         "required": [
           "execution_id"
         ]
+      }
+    },
+    {
+      "name": "firestarter_support_ticket",
+      "description": "Open a Firestarter SUPPORT TICKET on the user's behalf, or check on one — a human at Firestarter reads it. Use for an account, billing, payout, listing, market or marketplace problem, a question no tool answers, or an ORDER problem the dispute flow does not cover. For a DELIVERED order that arrived wrong, damaged, or never arrived, use firestarter_disputes FIRST: a dispute freezes the seller's payout and can refund; a ticket only reaches a person. Pass order_id (exec_...) whenever the question is about an order so support opens it with the case attached. action 'create' (default) needs message — the person's own words, not a summary; 'list' shows this account's tickets and whether support has replied; 'get' returns one ticket with support's replies — check it when the user asks whether support has answered. Never draft an email to support for the user to send instead: this tool IS the support channel.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "description": "'create' (default) opens a ticket; 'list' shows this account's tickets; 'get' returns one ticket's thread (needs ticket_id).",
+            "type": "string",
+            "enum": [
+              "create",
+              "list",
+              "get"
+            ]
+          },
+          "message": {
+            "description": "For 'create': what the person needs help with, in their own words (up to 8000 characters). Required to open a ticket.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "For 'create': one-line subject (up to 200 characters). Omit to use the first line of the message.",
+            "type": "string"
+          },
+          "order_id": {
+            "description": "For 'create': the order (execution) id the problem is about, e.g. exec_abc123 — support opens the ticket with that order attached. Must be an order on this account.",
+            "type": "string"
+          },
+          "ticket_id": {
+            "description": "For 'get': the ticket id (tkt_...) from an earlier create or list.",
+            "type": "string"
+          }
+        }
       }
     },
     {
