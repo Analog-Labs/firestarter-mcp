@@ -450,3 +450,32 @@ describe("the drop zone in verification mode", () => {
     expect(calls.some((c) => c.name === "firestarter_update_listing")).toBe(false);
   });
 });
+
+describe("drop zone: big photos and the host payload budget", () => {
+  it("still uploads a photo over the downsize budget as its original bytes when the browser cannot re-encode (jsdom)", async () => {
+    // commerce#1090/#1074/#1111/#1118: the fix downsizes in the browser. jsdom
+    // has no createImageBitmap, so the fallback path — send the original —
+    // must keep working, byte-for-byte, with the original filename.
+    const bytes = 1024 * 1024 + 4096;
+    const { host, calls } = fakeHost((name) => {
+      if (name === "firestarter_upload_image") return UPLOAD_OK;
+      return { ok: true, text: "updated", structured: null };
+    });
+    renderUploader(root, { listing_id: "lst_big", existing_image_urls: [], activate: false }, undefined, () => host);
+    await dropFiles([imageFile("huge.jpg", bytes)]);
+
+    const upload = calls.find((c) => c.name === "firestarter_upload_image")!;
+    expect(upload).toBeTruthy();
+    expect(upload.args.filename).toBe("huge.jpg");
+    const dataUrl = String(upload.args.image_base64);
+    expect(dataUrl.startsWith("data:image/jpeg;base64,")).toBe(true);
+    // base64 of N bytes is 4*ceil(N/3) chars — the payload is the whole file.
+    expect(dataUrl.length - "data:image/jpeg;base64,".length).toBe(4 * Math.ceil(bytes / 3));
+    expect(root.querySelector("#dzs")!.textContent).toMatch(/uploaded|on the listing/i);
+  });
+
+  it("tells the seller in the zone's own copy that big photos are downsized first", () => {
+    renderUploader(root, { listing_id: "lst_copy" }, undefined, () => null);
+    expect(root.querySelector(".dropzone small")!.textContent).toMatch(/big photos are downsized here first/);
+  });
+});
