@@ -193,6 +193,11 @@ export function registerScoutTools(server: McpServer, deps: ScoutToolDeps): void
         if (code === "INVALID_REQUEST") {
           return { content: [{ type: "text" as const, text: `Which country's ${name}? Pass country: MY, SG or TH.` }], isError: true };
         }
+        // commerce#1169: no cloud browser on the server is permanent until ops
+        // sets one up. Offering a retry had the agent send the buyer back in.
+        if (code === "PROVIDER_NOT_CONFIGURED") {
+          return { content: [{ type: "text" as const, text: `${name} sign-in isn't set up on this Firestarter server, so retrying won't help. firestarter_marketplace_search still works without a connected account.` }], isError: true };
+        }
         if (code === "PROVIDER_ERROR") {
           return { content: [{ type: "text" as const, text: `The cloud browser provider couldn't open a session right now: ${err.message}. Try again in a minute.` }], isError: true };
         }
